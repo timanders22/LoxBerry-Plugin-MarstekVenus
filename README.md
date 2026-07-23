@@ -1,0 +1,81 @@
+# LoxBerry-Plugin: Marstek Venus E
+
+Bindet **MARSTEK Venus E** Batteriespeicher lokal — ohne Cloud — an Loxone an.
+Unterstützt werden bis zu **4 Geräte** der Venus-E-Serie: Venus E Gen 3.0
+(5,12 kWh) und der **Venus E Mini** (2 kWh), gemischt möglich.
+
+Loxone ist der Energiemanager: Das Plugin liefert Status (SOC, Leistung,
+Temperatur, Firmware, Antwortzeit) und ein Spot-Stunden-Ranking (aWATTar), der
+Miniserver entscheidet und sendet Leistungs-Sollwerte im Passiv-Modus — mit
+doppeltem Sicherheitsnetz: Der Watchdog im Sollwert stoppt den Speicher, wenn
+Loxone ausfällt, und der optionale **Auto-Fallback** gibt danach die Regie an
+den Auto-Modus des Geräts zurück.
+
+Kompatibel mit LoxBerry 3.x und **LoxBerry 4** (reines PHP, läuft mit PHP 7.4 und 8.x).
+
+## Funktionen
+
+- Status, Passiv-Sollwert (+ = laden, − = entladen) und Modus-Rückgabe über die
+  lokale UDP-JSON-API (Port 30000), mit Cache zum Schutz der Geräte
+- **Mehrgeräte-Betrieb**: bis zu 4 Speicher, Auswahl per `&dev=N` (Standard 1),
+  je Gerät eigene Leistungsgrenzen (wichtig beim Venus E Mini)
+- **SOC-Tagesverlauf** als Mini-Grafik in der Plugin-Oberfläche (Messpunkte
+  sammelt ein minutlicher Cron automatisch, Aufbewahrung 8 Tage)
+- **Firmware- und Antwortzeit-Anzeige** im Status (auch als `FW=`/`MS=`-Felder
+  für Loxone und per MQTT)
+- **Auto-Fallback**: kommt X Minuten kein Sollwert mehr, wechselt das Gerät
+  selbsttätig in den Auto-Modus (0 = aus)
+- **Modbus TCP (optional, nur lesend)**: Venus E Gen 3.0 ab Firmware 144 direkt
+  über das LAN-Kabel (Port 502, kein RS485-Adapter) — liefert die kWh-Zähler des
+  Geräts (geladen/abgegeben gesamt/Tag/Monat), Zyklenzähler und Wirkungsgrad
+  (`?energy`). Die Steuerung bleibt bewusst auf der UDP-API, weil nur deren
+  Passiv-Modus einen Watchdog hat
+- Spot-Stunden-Ranking der nächsten 24 h (aWATTar DE/AT, USt-Faktor einstellbar):
+  `RANK` (1 = günstigste Stunde), `RANKD` (1 = teuerste), `NEG`, `CURP`
+- Optionales MQTT-Publish über das LoxBerry MQTT Gateway
+- Konfiguration und Log überleben Plugin-Updates und sogar eine Neuinstallation
+  (Sicherungskopie außerhalb des Plugin-Ordners)
+
+## Voraussetzungen
+
+- Lokale API an jedem Gerät einmalig aktivieren (Marstek-App bzw.
+  https://rweijnen.github.io/marstek-venus-monitor/ per Bluetooth), UDP-Port 30000.
+- Aktuelle Geräte-Firmware (die lokale API reift mit den Updates).
+- **Firmware-Eigenheit**: Manche Firmwaren (z. B. Venus E 3.0 mit FW 148)
+  antworten nur auf **Broadcast**-Pakete statt auf Unicast — das Plugin erkennt
+  und nutzt das automatisch. Der Reiter „Test" enthält eine **Diagnose**
+  (Unicast/Broadcast/Modbus-Selbsttest) zur schnellen Fehlersuche. Hinweis:
+  Bei mehreren Venus-Geräten im selben Netz erreichen Broadcast-Befehle alle
+  Geräte — dann sollten alle eine Firmware haben, die Unicast beantwortet.
+
+## Endpunkte (für Loxone)
+
+| Aufruf | Zweck |
+|---|---|
+| `/plugins/marstekvenus/marstek.php?status[&dev=N]` | `MARSTEK;OK=..;SOC=..;BATP=..;TEMP=..;GRIDP=..;FW=..;MS=..` (BATP: + = lädt) |
+| `/plugins/marstekvenus/marstek.php?ranks` | `RANKS;OK=..;N=..;RANK=..;RANKD=..;CURP=..;NEG=..` |
+| `/plugins/marstekvenus/marstek.php?p=WATT&t=SEK[&dev=N]` | Passiv-Sollwert (+ = laden, − = entladen, 0 = Leerlauf; t = Watchdog) |
+| `/plugins/marstekvenus/marstek.php?mode=auto\|ai[&dev=N]` | Regie an den Speicher zurückgeben |
+| `/plugins/marstekvenus/marstek.php?energy[&dev=N]` | `ENERGY;OK=..;CHGT=..;DIST=..;CHGD=..;DISD=..;CHGM=..;DISM=..;CYC=..;EFF=..` (Modbus TCP, muss je Gerät aktiviert sein) |
+
+Alle Ausgaben sind abwärtskompatibel zu Ein-Geräte-Installationen — ohne
+`&dev=` wird immer Gerät 1 angesprochen.
+
+## Oberfläche
+
+Reiter **Einstellungen** (Geräte-Tabelle, Leistungsgrenzen, Status-Cache,
+Auto-Fallback, aWATTar-Markt + USt-Faktor, MQTT), **Einbindung in Loxone**
+(Schritt-für-Schritt-Anleitung für Laien inkl. Befehlserkennungen und
+empfohlener Logik), **Test** (je Gerät Status/Leerlauf/Auto, Spot-Ranking)
+und **Logdateien**. Über den Reitern: Statuszeile und SOC-Tagesgrafik je Gerät.
+
+## Datenschutz
+
+Es sind **keine persönlichen Daten** im Plugin enthalten — IP-Adressen und alle
+Einstellungen liegen ausschließlich in der lokalen Konfiguration
+(`config/plugins/marstekvenus/marstek.json`). Externe Verbindungen gibt es nur
+zur aWATTar-Preis-API (ohne Kennung).
+
+## Lizenz
+
+MIT — siehe [LICENSE](LICENSE).
