@@ -210,6 +210,22 @@ $mv_host = e(isset($_SERVER['HTTP_HOST']) ? $_SERVER['HTTP_HOST'] : '<loxberry-i
 .mv-devtbl input { min-width: 60px; }
 .mv-wrap .mv-btn, .mv-wrap a.mv-btn, .mv-wrap button { text-shadow: none !important; box-shadow: none !important; }
 .mv-wrap a.mv-btn, .mv-wrap a.mv-btn:visited, .mv-wrap a.mv-btn:hover { color: #fff !important; text-decoration: none; }
+
+/* --- Einheitliches Kachel-Raster im Reiter Test (Standard aller Plugins) --- */
+.mv-h3 { color: #4f7d17; font-size: 1.0em; font-weight: 700; margin: 16px 0 2px; text-shadow: none !important; }
+.mv-knopfreihe { display: flex; flex-wrap: wrap; gap: 10px; margin: 10px 0 4px; align-items: stretch; }
+.mv-knopfreihe form { margin: 0; display: flex; }
+.mv-knopfreihe .mv-btn { flex: 0 0 auto; min-width: 250px; text-align: center;
+    display: inline-flex; align-items: center; justify-content: center; line-height: 1.25; }
+.mv-legende { display: flex; flex-wrap: wrap; gap: 14px; margin: 10px 0 2px; font-size: 0.86em; color: #555; }
+.mv-legende span { display: inline-flex; align-items: center; gap: 6px; }
+.mv-punkt { width: 13px; height: 13px; border-radius: 3px; display: inline-block; }
+.mv-btn.mv-b-lesen   { background: #6dac20; }
+.mv-btn.mv-b-technik { background: #546e7a; }
+.mv-btn.mv-b-aktion  { background: #e0620d; }
+.mv-punkt.mv-b-lesen   { background: #6dac20; }
+.mv-punkt.mv-b-technik { background: #546e7a; }
+.mv-punkt.mv-b-aktion  { background: #e0620d; }
 </style>
 <div class="mv-wrap">
 
@@ -507,17 +523,35 @@ Statusbaustein-Push mit geladen/entladen/Zyklen/Wirkungsgrad. Wochenbericht anal
 <!-- ================= Reiter: Test ================= -->
 <div class="mv-pane" id="tab-test">
 <h2>Test</h2>
+<div class="mv-legende">
+<span><i class="mv-punkt mv-b-lesen"></i> Ansehen &mdash; fragt nur ab, ver&auml;ndert nichts</span>
+<span><i class="mv-punkt mv-b-technik"></i> Technische Auskunft &mdash; f&uuml;r die Fehlersuche</span>
+<span><i class="mv-punkt mv-b-aktion"></i> L&ouml;st etwas aus &mdash; sendet oder ver&auml;ndert</span>
+</div>
+
+<h3 class="mv-h3">Technische Auskunft</h3>
+<div class="mv-knopfreihe">
+<a class="mv-btn mv-b-technik"  href="/plugins/<?= e($mv_plugindir) ?>/marstek.php?status&amp;debug=1<?= $q ?>" target="_blank">Status abrufen (Debug)</a>
+<a class="mv-btn mv-b-technik"  href="/plugins/<?= e($mv_plugindir) ?>/marstek.php?energy&amp;debug=1<?= $q ?>" target="_blank">kWh-Z&auml;hler (Modbus, Debug)</a>
+<a class="mv-btn mv-b-technik"  href="/plugins/<?= e($mv_plugindir) ?>/marstek.php?diag=1<?= $q ?>" target="_blank">Diagnose (Selbsttest)</a>
+<a class="mv-btn mv-b-technik"  href="/plugins/<?= e($mv_plugindir) ?>/marstek.php?ranks&amp;debug=1" target="_blank">Spot-Ranking (Debug)</a>
+</div>
+
+<h3 class="mv-h3">L&ouml;st etwas aus</h3>
+<div class="mv-knopfreihe">
+<a class="mv-btn mv-b-aktion"  href="/plugins/<?= e($mv_plugindir) ?>/marstek.php?p=0&amp;t=60<?= $q ?>" target="_blank">Leerlauf senden (p=0)</a>
+<a class="mv-btn mv-b-aktion"  href="/plugins/<?= e($mv_plugindir) ?>/marstek.php?mode=auto<?= $q ?>" target="_blank">Modus Auto (Handbetrieb)</a>
+</div>
+
 <?php $testdevs = $mv_devices ? $mv_devices : array(1 => array('name' => 'Ger&auml;t 1'));
 foreach ($testdevs as $n => $d) { $q = $n > 1 ? '&amp;dev=' . $n : ''; ?>
 <p><b><?= e($d['name']) ?></b><?= $n > 1 ? ' <span class="mv-small">(Aufrufe mit &amp;dev=' . $n . ')</span>' : '' ?><br>
-<a class="mv-btn" style="display:inline-block;margin-right:8px;" href="/plugins/<?= e($mv_plugindir) ?>/marstek.php?status&amp;debug=1<?= $q ?>" target="_blank">Status abrufen (Debug)</a>
-<a class="mv-btn" style="display:inline-block;margin-right:8px;background:#607d8b;" href="/plugins/<?= e($mv_plugindir) ?>/marstek.php?p=0&amp;t=60<?= $q ?>" target="_blank">Leerlauf senden (p=0)</a>
-<a class="mv-btn" style="display:inline-block;margin-right:8px;background:#607d8b;" href="/plugins/<?= e($mv_plugindir) ?>/marstek.php?mode=auto<?= $q ?>" target="_blank">Modus Auto (Handbetrieb)</a>
-<?php if (!empty($d['modbus'])) { ?><a class="mv-btn" style="display:inline-block;margin-right:8px;background:#455a64;" href="/plugins/<?= e($mv_plugindir) ?>/marstek.php?energy&amp;debug=1<?= $q ?>" target="_blank">kWh-Z&auml;hler (Modbus, Debug)</a><?php } ?>
-<a class="mv-btn" style="display:inline-block;background:#e65100;" href="/plugins/<?= e($mv_plugindir) ?>/marstek.php?diag=1<?= $q ?>" target="_blank">Diagnose (Selbsttest)</a>
+
+<?php if (!empty($d['modbus'])) { ?><?php } ?>
+
 </p>
 <?php } ?>
-<p><a class="mv-btn" style="display:inline-block;" href="/plugins/<?= e($mv_plugindir) ?>/marstek.php?ranks&amp;debug=1" target="_blank">Spot-Ranking (Debug)</a></p>
+
 <div class="mv-small">
 &bull; <b>Status abrufen</b> zeigt die Rohantworten des Ger&auml;ts (ES.GetStatus / Bat.GetStatus / Marstek.GetDevice
 mit Modell + Firmware) sowie Antwortzeit und die Loxone-Zeile.<br>
