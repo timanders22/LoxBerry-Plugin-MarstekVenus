@@ -540,6 +540,8 @@ Statusbaustein-Push mit geladen/entladen/Zyklen/Wirkungsgrad. Wochenbericht anal
 <h3 class="mv-h3">L&ouml;st etwas aus</h3>
 <div class="mv-knopfreihe">
 <a class="mv-btn mv-b-aktion"  href="/plugins/<?= e($mv_plugindir) ?>/marstek.php?p=0&amp;t=60<?= $q ?>" target="_blank">Leerlauf senden (p=0)</a>
+<a class="mv-btn mv-b-aktion"  href="/plugins/<?= e($mv_plugindir) ?>/marstek.php?p=-800&amp;t=120<?= $q ?>" target="_blank">Entladen pr&uuml;fen (p=-800)</a>
+<a class="mv-btn mv-b-aktion"  href="/plugins/<?= e($mv_plugindir) ?>/marstek.php?p=800&amp;t=120<?= $q ?>" target="_blank">Laden pr&uuml;fen (p=+800)</a>
 <a class="mv-btn mv-b-aktion"  href="/plugins/<?= e($mv_plugindir) ?>/marstek.php?mode=auto<?= $q ?>" target="_blank">Modus Auto (Handbetrieb)</a>
 </div>
 
@@ -557,6 +559,9 @@ foreach ($testdevs as $n => $d) { $q = $n > 1 ? '&amp;dev=' . $n : ''; ?>
 mit Modell + Firmware) sowie Antwortzeit und die Loxone-Zeile.<br>
 &bull; <b>Spot-Ranking</b> listet alle Stundenpreise der n&auml;chsten 24 h inkl. Rang der aktuellen Stunde.<br>
 &bull; <b>Leerlauf senden</b> setzt den Passiv-Sollwert auf 0 W f&uuml;r 60 s &mdash; ungef&auml;hrlicher Verbindungstest.<br>
+&bull; <b>Entladen pr&uuml;fen</b> / <b>Laden pr&uuml;fen</b> geben von Hand 800 W f&uuml;r 120 s vor. Damit l&auml;sst sich trennen,
+ob der Speicher selbst nicht abgibt oder ob aus Loxone einfach kein negativer Sollwert kommt: Reagiert das Ger&auml;t hier,
+liegt es an der Ansteuerung. Nach 120 s stoppt der Watchdog von selbst.<br>
 &bull; <b>Modus Auto</b> gibt die Regie an den Speicher zur&uuml;ck (z. B. wenn Loxone l&auml;ngere Zeit ausf&auml;llt).
 </div>
 </div>
