@@ -9,9 +9,12 @@
  *   ?ranks               -> RANKS;OK=..;N=..;RANK=..;RANKD=..;CURP=..;NEG=..
  *                           Rang der AKTUELLEN Stunde unter den naechsten 24 h
  *                           (RANK 1 = guenstigste, RANKD 1 = teuerste; aWATTar inkl. USt)
- *   ?p=WATT&t=SEK[&dev=N]-> Passiv-Modus: p>0 = LADEN, p<0 = ENTLADEN, p=0 = Leerlauf
+ *   ?p=WATT&t=SEK&token=T[&dev=N]-> Passiv-Modus: p>0 = LADEN, p<0 = ENTLADEN, p=0 = Leerlauf
  *                           (Loxone-Konvention; API-intern wird das Vorzeichen gedreht)
- *   ?mode=auto|ai[&dev=N]-> Betriebsmodus an das Geraet zurueckgeben (Handbetrieb)
+ *                           Schaltender Aufruf - erfordert das Token aus dem Reiter
+ *                           "Einbindung in Loxone" (?token=...), sonst HTTP 403.
+ *   ?mode=auto|ai&token=T[&dev=N]-> Betriebsmodus an das Geraet zurueckgeben (Handbetrieb)
+ *                           Ebenfalls token-pflichtig.
  *   ?energy[&dev=N]      -> ENERGY;OK=..;CHGT=..;DIST=..;CHGD=..;DISD=..;CHGM=..;DISM=..;CYC=..;EFF=..
  *                           kWh-Zaehler direkt vom Geraet via Modbus TCP (nur lesend;
  *                           muss beim Geraet aktiviert sein): gesamt/Tag/Monat geladen
@@ -23,6 +26,18 @@ require_once __DIR__ . '/marstek_lib.php';
 header('Content-Type: text/plain; charset=utf-8');
 $debug = isset($_GET['debug']);
 $dev = isset($_GET['dev']) ? max(1, min(9, (int) $_GET['dev'])) : 1;
+
+/* ---------- Token-Pruefung fuer schaltende Befehle (p, mode) ---------- */
+if (isset($_GET['p']) || isset($_GET['mode'])) {
+    $mv_cfg_tok = marstek_config();
+    $mv_soll = isset($mv_cfg_tok['aktionstoken']) ? (string) $mv_cfg_tok['aktionstoken'] : '';
+    $mv_ist = isset($_GET['token']) ? (string) $_GET['token'] : '';
+    if ($mv_soll === '' || !hash_equals($mv_soll, $mv_ist)) {
+        http_response_code(403);
+        echo "SET;OK=0;ERR=TOKEN\n";
+        exit;
+    }
+}
 
 /* ---------- Passiv-Sollwert ---------- */
 if (isset($_GET['p'])) {

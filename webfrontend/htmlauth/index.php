@@ -1,6 +1,6 @@
 <?php
 /**
- * Marstek Venus E - Admin-Oberflaeche (v1.0.0)
+ * Marstek Venus E - Admin-Oberflaeche
  * Reiter: Einstellungen | Einbindung in Loxone | Test | Logdateien
  * Mehrgeraete-Betrieb (bis 4 Speicher, auch Venus E Mini), SOC-Tagesverlauf,
  * Firmware-/Antwortzeit-Anzeige, Auto-Fallback.
@@ -63,6 +63,24 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['clearlog'])) {
     $mv_active_tab = 'tab-log';
 }
 
+// ---------- Neues Aktionstoken erzeugen ----------
+$mv_token_meldung = '';
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['token_neu'])) {
+    $mv_cfg_tok = function_exists('marstek_config') ? marstek_config() : array();
+    if (!is_array($mv_cfg_tok)) { $mv_cfg_tok = array(); }
+    $mv_cfg_tok['aktionstoken'] = function_exists('marstek_token_erzeugen') ? marstek_token_erzeugen() : bin2hex(random_bytes(12));
+    if (!is_dir($mv_config_dir)) {
+        @mkdir($mv_config_dir, 0775, true);
+    }
+    $mv_json_tok = json_encode($mv_cfg_tok, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    if (@file_put_contents($mv_config_file, $mv_json_tok) !== false) {
+        @copy($mv_config_file, $mv_backup_file);
+        $mv_token_meldung = 'Neues Token erzeugt. <b>Die Adressen in Loxone m&uuml;ssen '
+                          . 'angepasst werden</b> &ndash; die alten funktionieren nicht mehr.';
+    }
+    $mv_active_tab = 'tab-loxone';
+}
+
 // ---------- Speichern ----------
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save']) && !isset($_POST['clearlog'])) {
     $mv_cfg = array();
@@ -117,9 +135,22 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save']) && !isset($_P
 $mv_cfg = function_exists('marstek_config') ? marstek_config() : array();
 if (!is_array($mv_cfg)) { $mv_cfg = json_decode(json_encode($mv_cfg), true) ?: array(); }
 $mv_cfg += array('devices' => array(), 'cache_sec' => 40, 'vat' => 1.19, 'awattar' => 'de',
-    'mqtt_enabled' => 0, 'mqtt_topic' => 'marstek', 'fallback_min' => 30);
+    'mqtt_enabled' => 0, 'mqtt_topic' => 'marstek', 'fallback_min' => 30, 'aktionstoken' => '');
 if (!is_array($mv_cfg['devices'])) { $mv_cfg['devices'] = json_decode(json_encode($mv_cfg['devices']), true) ?: array(); }
 $mv_devices = function_exists('marstek_devices') ? marstek_devices() : array();
+
+// Beim ersten Aufruf ein Token erzeugen, damit der Endpunkt fuer Loxone sofort
+// benutzbar ist (schuetzt ?p= und ?mode= im unangemeldeten marstek.php).
+if (empty($mv_cfg['aktionstoken'])) {
+    $mv_cfg['aktionstoken'] = function_exists('marstek_token_erzeugen') ? marstek_token_erzeugen() : bin2hex(random_bytes(12));
+    if (!is_dir($mv_config_dir)) {
+        @mkdir($mv_config_dir, 0775, true);
+    }
+    $mv_json_init = json_encode($mv_cfg, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    if (@file_put_contents($mv_config_file, $mv_json_init) !== false) {
+        @copy($mv_config_file, $mv_backup_file);
+    }
+}
 
 // Letzter Status je Geraet (Cache von marstek.php - KEIN Live-Aufruf, damit die Seite schnell laedt)
 $mv_statuses = array();
@@ -181,96 +212,89 @@ if ($mv_use_frame) {
 $mv_host = e(isset($_SERVER['HTTP_HOST']) ? $_SERVER['HTTP_HOST'] : '<loxberry-ip>');
 ?>
 <style>
-.mv-wrap { max-width: 940px; margin: 0 auto; font-family: -apple-system, 'Segoe UI', Roboto, sans-serif; color: #333; }
-.mv-wrap h2 { color: #6dac20; margin: 24px 0 10px; font-size: 1.15em; border-bottom: 2px solid #e0e0e0; padding-bottom: 6px; }
-.mv-wrap label { display: block; font-weight: 600; font-size: 0.88em; color: #555; margin: 10px 0 4px; }
-.mv-wrap input[type=text], .mv-wrap input[type=number], .mv-wrap select {
+.sm-wrap { max-width: 940px; margin: 0 auto; font-family: -apple-system, 'Segoe UI', Roboto, sans-serif; color: #333; }
+.sm-wrap h2 { color: #6dac20; margin: 24px 0 10px; font-size: 1.15em; border-bottom: 2px solid #e0e0e0; padding-bottom: 6px; }
+.sm-wrap label { display: block; font-weight: 600; font-size: 0.88em; color: #555; margin: 10px 0 4px; }
+.sm-wrap input[type=text], .sm-wrap input[type=number], .sm-wrap select {
   width: 100%; padding: 8px 10px; border: 1px solid #ccc; border-radius: 6px; font-size: 0.95em; box-sizing: border-box; }
-.mv-wrap input[type=checkbox] { width: 17px; height: 17px; margin: 0; vertical-align: middle; }
-.mv-row { display: flex; gap: 12px; }
-.mv-row > div { flex: 1; }
-.mv-btn { background: #6dac20; color: #fff !important; border: 0; border-radius: 6px; padding: 10px 22px; font-size: 1em; cursor: pointer; margin-top: 18px; font-weight: 600; }
-.mv-alert { border-radius: 8px; padding: 10px 14px; margin: 12px 0; }
-.mv-ok { background: #e8f5e9; border: 1px solid #a5d6a7; }
-.mv-err { background: #ffebee; border: 1px solid #ef9a9a; }
-.mv-info { background: #e3f2fd; border: 1px solid #90caf9; font-size: 0.9em; }
-.mv-mono { font-family: ui-monospace, monospace; background: #f5f5f5; padding: 2px 6px; border-radius: 4px; }
-.mv-small { font-size: 0.82em; color: #666; margin-top: 3px; }
-.mv-tabs { display: flex; gap: 4px; margin: 14px 0 0; border-bottom: 2px solid #6dac20; flex-wrap: wrap; }
-.mv-tab { background: #eee; border: 1px solid #ccc; border-bottom: 0; border-radius: 8px 8px 0 0; padding: 9px 18px; cursor: pointer; font-size: 0.95em; color: #444 !important; text-shadow: none !important; }
-.mv-tab.mv-active { background: #6dac20; color: #fff !important; border-color: #6dac20; font-weight: 600; }
-.mv-pane { display: none; padding-top: 4px; }
-.mv-pane.mv-active { display: block; }
-.mv-log { text-shadow: none !important; background: #1e1e1e; color: #d4d4d4; font-family: ui-monospace, monospace; font-size: 0.82em; padding: 12px; border-radius: 8px; max-height: 480px; overflow: auto; white-space: pre-wrap; }
-.mv-step { margin: 10px 0; padding: 10px 14px; background: #fafafa; border-left: 4px solid #6dac20; border-radius: 0 8px 8px 0; }
-.mv-tbl { border-collapse: collapse; margin: 8px 0; }
-.mv-tbl th, .mv-tbl td { border: 1px solid #ddd; padding: 6px 10px; text-align: left; font-size: 0.9em; }
-.mv-tbl th { background: #f0f0f0; }
-.mv-devtbl { width: 100%; }
-.mv-devtbl input { min-width: 60px; }
-.mv-wrap .mv-btn, .mv-wrap a.mv-btn, .mv-wrap button { text-shadow: none !important; box-shadow: none !important; }
-.mv-wrap a.mv-btn, .mv-wrap a.mv-btn:visited, .mv-wrap a.mv-btn:hover { color: #fff !important; text-decoration: none; }
+.sm-wrap input[type=checkbox] { width: 17px; height: 17px; margin: 0; vertical-align: middle; }
+.sm-row { display: flex; gap: 12px; }
+.sm-row > div { flex: 1; }
+.sm-btn { background: #6dac20; color: #fff !important; border: 0; border-radius: 6px; padding: 10px 22px; font-size: 1em; cursor: pointer; margin-top: 18px; font-weight: 600; }
+.sm-alert { border-radius: 8px; padding: 10px 14px; margin: 12px 0; }
+.sm-ok { background: #e8f5e9; border: 1px solid #a5d6a7; }
+.sm-err { background: #ffebee; border: 1px solid #ef9a9a; }
+.sm-info { background: #e3f2fd; border: 1px solid #90caf9; font-size: 0.9em; }
+.sm-mono { font-family: ui-monospace, monospace; background: #f5f5f5; padding: 2px 6px; border-radius: 4px; }
+.sm-small { font-size: 0.82em; color: #666; margin-top: 3px; }
+.sm-tabs { display: flex; gap: 4px; margin: 14px 0 0; border-bottom: 2px solid #6dac20; flex-wrap: wrap; }
+.sm-tab { background: #eee; border: 1px solid #ccc; border-bottom: 0; border-radius: 8px 8px 0 0; padding: 9px 18px; cursor: pointer; font-size: 0.95em; color: #444 !important; text-shadow: none !important; }
+.sm-tab.sm-active { background: #6dac20; color: #fff !important; border-color: #6dac20; font-weight: 600; }
+.sm-pane { display: none; padding-top: 4px; }
+.sm-pane.sm-active { display: block; }
+.sm-log { text-shadow: none !important; background: #1e1e1e; color: #d4d4d4; font-family: ui-monospace, monospace; font-size: 0.82em; padding: 12px; border-radius: 8px; max-height: 480px; overflow: auto; white-space: pre-wrap; }
+.sm-step { margin: 10px 0; padding: 10px 14px; background: #fafafa; border-left: 4px solid #6dac20; border-radius: 0 8px 8px 0; }
+.sm-tbl { border-collapse: collapse; margin: 8px 0; }
+.sm-tbl th, .sm-tbl td { border: 1px solid #ddd; padding: 6px 10px; text-align: left; font-size: 0.9em; }
+.sm-tbl th { background: #f0f0f0; }
+.sm-devtbl { width: 100%; }
+.sm-devtbl input { min-width: 60px; }
+.sm-wrap .sm-btn, .sm-wrap a.sm-btn, .sm-wrap button { text-shadow: none !important; box-shadow: none !important; }
+.sm-wrap a.sm-btn, .sm-wrap a.sm-btn:visited, .sm-wrap a.sm-btn:hover { color: #fff !important; text-decoration: none; }
 
-/* --- Einheitliches Kachel-Raster im Reiter Test (Standard aller Plugins) --- */
-.mv-h3 { color: #4f7d17; font-size: 1.0em; font-weight: 700; margin: 16px 0 2px; text-shadow: none !important; }
-.mv-knopfreihe { display: flex; flex-wrap: wrap; gap: 10px; margin: 10px 0 4px; align-items: stretch; }
-.mv-knopfreihe form { margin: 0; display: flex; }
-.mv-knopfreihe .mv-btn { flex: 0 0 auto; min-width: 250px; text-align: center;
+/* --- Einheitliches Kachel-Raster im Reiter <?php echo marstek_t('TEXT.TEST'); ?> (Standard aller Plugins) --- */
+.sm-h3 { color: #4f7d17; font-size: 1.0em; font-weight: 700; margin: 16px 0 2px; text-shadow: none !important; }
+.sm-knopfreihe { display: flex; flex-wrap: wrap; gap: 10px; margin: 10px 0 4px; align-items: stretch; }
+.sm-knopfreihe form { margin: 0; display: flex; }
+.sm-knopfreihe .sm-btn { flex: 0 0 auto; min-width: 250px; text-align: center;
     display: inline-flex; align-items: center; justify-content: center; line-height: 1.25; }
-.mv-legende { display: flex; flex-wrap: wrap; gap: 14px; margin: 10px 0 2px; font-size: 0.86em; color: #555; }
-.mv-legende span { display: inline-flex; align-items: center; gap: 6px; }
-.mv-punkt { width: 13px; height: 13px; border-radius: 3px; display: inline-block; }
-.mv-btn.mv-b-lesen   { background: #6dac20; }
-.mv-btn.mv-b-technik { background: #546e7a; }
-.mv-btn.mv-b-aktion  { background: #e0620d; }
-.mv-punkt.mv-b-lesen   { background: #6dac20; }
-.mv-punkt.mv-b-technik { background: #546e7a; }
-.mv-punkt.mv-b-aktion  { background: #e0620d; }
+.sm-legende { display: flex; flex-wrap: wrap; gap: 14px; margin: 10px 0 2px; font-size: 0.86em; color: #555; }
+.sm-legende span { display: inline-flex; align-items: center; gap: 6px; }
+.sm-punkt { width: 13px; height: 13px; border-radius: 3px; display: inline-block; }
+.sm-btn.sm-b-lesen   { background: #6dac20; }
+.sm-btn.sm-b-technik { background: #546e7a; }
+.sm-btn.sm-b-aktion  { background: #e0620d; }
+.sm-punkt.sm-b-lesen   { background: #6dac20; }
+.sm-punkt.sm-b-technik { background: #546e7a; }
+.sm-punkt.sm-b-aktion  { background: #e0620d; }
 </style>
-<div class="mv-wrap">
+<div class="sm-wrap">
 
-<?php if ($mv_saved) { ?><div class="mv-alert mv-ok"><b>Konfiguration gespeichert</b> (inkl. Sicherungskopie f&uuml;r Updates).</div><?php } ?>
-<?php if ($mv_save_error !== '') { ?><div class="mv-alert mv-err"><b>Fehler:</b> <?= $mv_save_error ?></div><?php } ?>
+<?php if ($mv_saved) { ?><div class="sm-alert sm-ok"><b><?php echo marstek_t('TEXT.KONFIGURATION_GESPEICHERT'); ?></b> <?php echo marstek_t('TEXT.INKL_SICHERUNGSKOPIE_FR_UPDATES'); ?></div><?php } ?>
+<?php if ($mv_save_error !== '') { ?><div class="sm-alert sm-err"><b><?php echo marstek_t('TEXT.FEHLER'); ?></b> <?= $mv_save_error ?></div><?php } ?>
+<?php if ($mv_token_meldung !== '') { ?><div class="sm-alert sm-ok"><?= $mv_token_meldung ?></div><?php } ?>
 
 <?php foreach ($mv_statuses as $n => $st) { ?>
-<div class="mv-alert mv-info"><b><?= e($mv_devices[$n]['name']) ?></b> (<?= e(date('d.m.Y H:i:s', isset($st['ts']) ? (int) $st['ts'] : time())) ?>):
-Ladezustand <?= e($st['soc']) ?> % &middot; Batterieleistung <?= e($st['batp']) ?> W (+ = l&auml;dt) &middot;
-Temperatur <?= e($st['temp']) ?> &deg;C &middot; Verbindung <?= !empty($st['ok']) ? 'OK' : '<b>GEST&Ouml;RT</b>' ?>
-<?php if (!empty($st['ok'])) { ?> &middot; <?= e(isset($st['model']) && $st['model'] !== '' ? $st['model'] : 'Venus') ?>,
-Firmware <?= (int) (isset($st['fw']) ? $st['fw'] : 0) ?> &middot; Antwortzeit <?= (int) (isset($st['ms']) ? $st['ms'] : 0) ?> ms<?php } ?>
+<div class="sm-alert sm-info"><b><?= e($mv_devices[$n]['name']) ?></b> (<?= e(date('d.m.Y H:i:s', isset($st['ts']) ? (int) $st['ts'] : time())) ?><?php echo marstek_t('TEXT.LADEZUSTAND'); ?> <?= e($st['soc']) ?> <?php echo marstek_t('TEXT.BATTERIELEISTUNG'); ?> <?= e($st['batp']) ?> <?php echo marstek_t('TEXT.W_LDT_TEMPERATUR'); ?> <?= e($st['temp']) ?> <?php echo marstek_t('TEXT.C_VERBINDUNG'); ?> <?= !empty($st['ok']) ? 'OK' : '<b>GEST&Ouml;RT</b>' ?>
+<?php if (!empty($st['ok'])) { ?> &middot; <?= e(isset($st['model']) && $st['model'] !== '' ? $st['model'] : 'Venus') ?><?php echo marstek_t('TEXT.FIRMWARE'); ?> <?= (int) (isset($st['fw']) ? $st['fw'] : 0) ?> <?php echo marstek_t('TEXT.ANTWORTZEIT'); ?> <?= (int) (isset($st['ms']) ? $st['ms'] : 0) ?> ms<?php } ?>
 <?php if (!empty($mv_devices[$n]['modbus'])) {
     $en = @json_decode((string) @file_get_contents('/tmp/marstekvenus/energy_dev' . $n . '.json'), true);
     if (is_array($en) && !empty($en['ok'])) { ?>
-<br>Energie heute: <b><?= e($en['chgd']) ?> kWh</b> geladen / <b><?= e($en['disd']) ?> kWh</b> abgegeben &middot;
-Monat: <?= e($en['chgm']) ?> / <?= e($en['dism']) ?> kWh &middot; Zyklen: <?= (int) $en['cyc'] ?> &middot;
-Wirkungsgrad gesamt: <?= e($en['eff']) ?> %
+<br><?php echo marstek_t('TEXT.ENERGIE_HEUTE'); ?> <b><?= e($en['chgd']) ?> kWh</b> <?php echo marstek_t('TEXT.GELADEN'); ?> <b><?= e($en['disd']) ?> kWh</b> <?php echo marstek_t('TEXT.ABGEGEBEN_MONAT'); ?> <?= e($en['chgm']) ?> / <?= e($en['dism']) ?> <?php echo marstek_t('TEXT.KWH_ZYKLEN'); ?> <?= (int) $en['cyc'] ?> <?php echo marstek_t('TEXT.WIRKUNGSGRAD_GESAMT'); ?> <?= e($en['eff']) ?> %
 <?php } } ?>
 <?php $hist = function_exists('marstek_history_read') ? marstek_history_read($n) : array(); ?>
 <div style="margin-top:8px;"><?= mv_soc_svg($hist) ?></div>
-<div class="mv-small">SOC-Verlauf heute (%). Die Messpunkte sammelt das Plugin automatisch im Hintergrund (ca. alle 4 Minuten).</div>
+<div class="sm-small"><?php echo marstek_t('TEXT.SOC_VERLAUF_HEUTE_DIE_MESSPUNKTE_S'); ?></div>
 </div>
 <?php } ?>
 
-<div class="mv-tabs">
-    <div class="mv-tab" data-pane="tab-settings">Einstellungen</div>
-    <div class="mv-tab" data-pane="tab-loxone">Einbindung in Loxone</div>
-    <div class="mv-tab" data-pane="tab-test">Test</div>
-    <div class="mv-tab" data-pane="tab-log">Logdateien</div>
+<div class="sm-tabs">
+    <div class="sm-tab" data-pane="tab-settings"><?php echo marstek_t('REITER.EINSTELLUNGEN'); ?></div>
+    <div class="sm-tab" data-pane="tab-loxone"><?php echo marstek_t('REITER.LOXONE'); ?></div>
+    <div class="sm-tab" data-pane="tab-test"><?php echo marstek_t('REITER.TEST'); ?></div>
+    <div class="sm-tab" data-pane="tab-log"><?php echo marstek_t('REITER.LOG'); ?></div>
 </div>
 
-<!-- ================= Reiter: Einstellungen ================= -->
-<div class="mv-pane" id="tab-settings">
-<form method="post" autocomplete="off">
+<!-- ================= Reiter: <?php echo marstek_t('TEXT.EINSTELLUNG'); ?>en ================= -->
+<div class="sm-pane" id="tab-settings">
+<form action="index.php" method="post" autocomplete="off">
 <input data-role="none" type="hidden" name="save" value="1">
 <input data-role="none" type="hidden" name="activetab" value="tab-settings">
 
-<h2>Batteriespeicher (bis zu 4 Ger&auml;te)</h2>
-<div class="mv-small">Ger&auml;t 1 ist das Standardger&auml;t (alle Aufrufe ohne <span class="mv-mono">&amp;dev=</span>).
-Weitere Speicher (z.&nbsp;B. ein zweiter/dritter Venus E oder ein <b>Venus E Mini</b>) einfach in die n&auml;chste Zeile eintragen
-und in Loxone mit <span class="mv-mono">&amp;dev=2</span> usw. ansprechen. Die lokale API muss an JEDEM Ger&auml;t einmalig
-aktiviert werden (Marstek-App bzw. <a href="https://rweijnen.github.io/marstek-venus-monitor/latest/" target="_blank">Venus-Monitor-Tool</a> per Bluetooth), Standard-Port 30000.</div>
-<table class="mv-tbl mv-devtbl">
-<tr><th style="width:36px;">Nr.</th><th>Name (frei)</th><th>Ger&auml;te-IP</th><th style="width:90px;">UDP-Port</th><th style="width:110px;">Max. Laden (W)</th><th style="width:110px;">Max. Entladen (W)</th><th style="width:120px;">kWh-Z&auml;hler (Modbus)</th></tr>
+<h2><?php echo marstek_t('TEXT.BATTERIESPEICHER_BIS_ZU_4_GERTE'); ?></h2>
+<div class="sm-small"><?php echo marstek_t('TEXT.GERT_1_IST_DAS_STANDARDGERT_ALLE_A'); ?> <span class="sm-mono"><?php echo marstek_t('TEXT.DEV'); ?></span><?php echo marstek_t('TEXT.WEITERE_SPEICHER_Z_B_EIN_ZWEITER_D'); ?> <b><?php echo marstek_t('TEXT.VENUS_E_MINI'); ?></b><?php echo marstek_t('TEXT.EINFACH_IN_DIE_NCHSTE_ZEILE_EINTRA'); ?> <span class="sm-mono"><?php echo marstek_t('TEXT.DEV_2'); ?></span> <?php echo marstek_t('TEXT.USW_ANSPRECHEN_DIE_LOKALE_API_MUSS'); ?> <a href="https://rweijnen.github.io/marstek-venus-monitor/latest/" target="_blank"><?php echo marstek_t('TEXT.VENUS_MONITOR_TOOL'); ?></a> <?php echo marstek_t('TEXT.PER_BLUETOOTH_STANDARD_PORT_30000'); ?></div>
+<table class="sm-tbl sm-devtbl">
+<tr><th style="width:36px;">Nr.</th><th><?php echo marstek_t('TEXT.NAME_FREI'); ?></th><th><?php echo marstek_t('TEXT.GERTE_IP'); ?></th><th style="width:90px;"><?php echo marstek_t('TEXT.UDP_PORT'); ?></th><th style="width:110px;"><?php echo marstek_t('TEXT.MAX_LADEN_W'); ?></th><th style="width:110px;"><?php echo marstek_t('TEXT.MAX_ENTLADEN_W'); ?></th><th style="width:120px;"><?php echo marstek_t('TEXT.KWH_ZHLER_MODBUS'); ?></th></tr>
 <?php for ($i = 0; $i < 4; $i++) {
     $d = isset($mv_cfg['devices'][$i]) ? (array) $mv_cfg['devices'][$i] : array();
     $d += array('name' => '', 'ip' => '', 'port' => 30000, 'pmax_charge' => 2500, 'pmax_discharge' => 2500, 'modbus' => 1); ?>
@@ -281,314 +305,307 @@ aktiviert werden (Marstek-App bzw. <a href="https://rweijnen.github.io/marstek-v
 <td><input data-role="none" type="number" name="dev_port[]" value="<?= (int) $d['port'] ?>" min="1" max="65535"></td>
 <td><input data-role="none" type="number" name="dev_pc[]" value="<?= (int) $d['pmax_charge'] ?>" min="100" max="3600"></td>
 <td><input data-role="none" type="number" name="dev_pd[]" value="<?= (int) $d['pmax_discharge'] ?>" min="100" max="3600"></td>
-<td><select data-role="none" name="dev_mb[]"><option value="0"<?= empty($d['modbus']) ? ' selected' : '' ?>>aus</option><option value="1"<?= !empty($d['modbus']) ? ' selected' : '' ?>>ein</option></select></td>
+<td><select data-role="none" name="dev_mb[]"><option value="0"<?= empty($d['modbus']) ? ' selected' : '' ?><?php echo marstek_t('TEXT.AUS'); ?></option><option value="1"<?= !empty($d['modbus']) ? ' selected' : '' ?><?php echo marstek_t('TEXT.EIN'); ?></option></select></td>
 </tr>
 <?php } ?>
 </table>
-<div class="mv-small">Leistungsgrenzen (Sollwerte werden hart darauf begrenzt): <b>Venus E Gen 3.0</b>: 2500/2500 W &middot;
-<b>Venus E Mini</b> (2 kWh): 1500 W laden, 800 W entladen (Werkszustand; 1500 W mit Premium-Freischaltung).<br>
-<b>kWh-Z&auml;hler (Modbus)</b>: Venus E Gen 3.0 kann ab Firmware 144 zus&auml;tzlich per <b>Modbus TCP</b> direkt
-&uuml;ber das LAN-Kabel abgefragt werden (Port 502, kein Adapter n&ouml;tig). Das Plugin liest dar&uuml;ber NUR die
-Energiez&auml;hler des Ger&auml;ts (geladen/abgegeben gesamt/Tag/Monat), Zyklen und Wirkungsgrad &mdash;
-gesteuert wird weiterhin sicher &uuml;ber die UDP-API. Empfehlung: <b>einschalten</b>, wenn das Ger&auml;t per
-LAN angeschlossen ist.</div>
+<div class="sm-small"><?php echo marstek_t('TEXT.LEISTUNGSGRENZEN_SOLLWERTE_WERDEN_'); ?> <b><?php echo marstek_t('TEXT.VENUS_E_GEN_3_0'); ?></b><?php echo marstek_t('TEXT.2500_2500_W'); ?>
+<b>Venus E Mini</b> <?php echo marstek_t('TEXT.2_KWH_1500_W_LADEN_800_W_ENTLADEN_'); ?><br>
+<b>kWh-Z&auml;hler (Modbus)</b><?php echo marstek_t('TEXT.VENUS_E_GEN_3_0_KANN_AB_FIRMWARE_1'); ?> <b><?php echo marstek_t('TEXT.MODBUS_TCP'); ?></b> <?php echo marstek_t('TEXT.DIREKT_BER_DAS_LAN_KABEL_ABGEFRAGT'); ?> <b><?php echo marstek_t('TEXT.EINSCHALTEN'); ?></b><?php echo marstek_t('TEXT.WENN_DAS_GERT_PER_LAN_ANGESCHLOSSE'); ?></div>
 
-<div class="mv-row">
+<div class="sm-row">
     <div>
-        <label>Status-Cache (Sekunden)</label>
+        <label><?php echo marstek_t('TEXT.STATUS_CACHE_SEKUNDEN'); ?></label>
         <input data-role="none" type="number" name="cache_sec" value="<?= (int) $mv_cfg['cache_sec'] ?>" min="5" max="300">
-        <div class="mv-small">Schutz der Ger&auml;te: h&auml;ufigere Abfragen werden aus dem Cache beantwortet (Empfehlung 40; die Ger&auml;te m&ouml;gen keine Abfragen unter 60 s, der Cache f&auml;ngt das ab).</div>
+        <div class="sm-small"><?php echo marstek_t('TEXT.SCHUTZ_DER_GERTE_HUFIGERE_ABFRAGEN'); ?></div>
     </div>
     <div>
-        <label>Auto-Fallback (Minuten, 0 = aus)</label>
+        <label><?php echo marstek_t('TEXT.AUTO_FALLBACK_MINUTEN_0_AUS'); ?></label>
         <input data-role="none" type="number" name="fallback_min" value="<?= (int) $mv_cfg['fallback_min'] ?>" min="0" max="1440">
-        <div class="mv-small">Kommt so lange KEIN Sollwert mehr an (z.&nbsp;B. Miniserver ausgefallen), gibt das Plugin die Regie zur&uuml;ck an den Speicher (<b>Auto-Modus</b>), statt ihn im Leerlauf stehen zu lassen. Empfehlung: 30. Der Watchdog im Sollwert (t=240) stoppt nur &mdash; der Fallback &uuml;bergibt.</div>
+        <div class="sm-small"><?php echo marstek_t('TEXT.KOMMT_SO_LANGE_KEIN_SOLLWERT_MEHR_'); ?><b><?php echo marstek_t('TEXT.AUTO_MODUS'); ?></b><?php echo marstek_t('TEXT.STATT_IHN_IM_LEERLAUF_STEHEN_ZU_LA'); ?></div>
     </div>
 </div>
 
-<h2>Spotpreise (aWATTar)</h2>
-<div class="mv-row">
+<h2><?php echo marstek_t('TEXT.SPOTPREISE_AWATTAR'); ?></h2>
+<div class="sm-row">
     <div>
-        <label>Markt</label>
+        <label><?php echo marstek_t('TEXT.MARKT'); ?></label>
         <select data-role="none" name="awattar">
-            <option value="de"<?= $mv_cfg['awattar'] === 'de' ? ' selected' : '' ?>>Deutschland (api.awattar.de)</option>
-            <option value="at"<?= $mv_cfg['awattar'] === 'at' ? ' selected' : '' ?>>&Ouml;sterreich (api.awattar.at)</option>
+            <option value="de"<?= $mv_cfg['awattar'] === 'de' ? ' selected' : '' ?><?php echo marstek_t('TEXT.DEUTSCHLAND_API_AWATTAR_DE'); ?></option>
+            <option value="at"<?= $mv_cfg['awattar'] === 'at' ? ' selected' : '' ?><?php echo marstek_t('TEXT.OUML_STERREICH_API_AWATTAR_AT'); ?></option>
         </select>
     </div>
     <div>
-        <label>USt-Faktor</label>
+        <label><?php echo marstek_t('TEXT.UST_FAKTOR'); ?></label>
         <input data-role="none" type="text" name="vat" value="<?= e($mv_cfg['vat']) ?>" placeholder="1.19">
-        <div class="mv-small">B&ouml;rsenpreis (netto) wird damit multipliziert; DE: 1.19, AT: 1.20, ohne USt: 1.0.</div>
+        <div class="sm-small"><?php echo marstek_t('TEXT.BRSENPREIS_NETTO_WIRD_DAMIT_MULTIP'); ?></div>
     </div>
 </div>
 
-<h2>MQTT (optional)</h2>
+<h2><?php echo marstek_t('TEXT.MQTT_OPTIONAL'); ?></h2>
 <label style="display:inline-flex;align-items:center;gap:6px;">
-    <input data-role="none" type="checkbox" name="mqtt_enabled" <?= !empty($mv_cfg['mqtt_enabled']) ? 'checked' : '' ?>> Status zus&auml;tzlich per MQTT ver&ouml;ffentlichen
+    <input data-role="none" type="checkbox" name="mqtt_enabled" <?= !empty($mv_cfg['mqtt_enabled']) ? 'checked' : '' ?><?php echo marstek_t('TEXT.STATUS_ZUSTZLICH_PER_MQTT_VERFFENT'); ?>
 </label>
-<div class="mv-row" style="margin-top:6px;">
+<div class="sm-row" style="margin-top:6px;">
     <div>
-        <label>Topic-Pr&auml;fix</label>
+        <label><?php echo marstek_t('TEXT.TOPIC_PRFIX'); ?></label>
         <input data-role="none" type="text" name="mqtt_topic" value="<?= e($mv_cfg['mqtt_topic']) ?>" placeholder="marstek">
-        <div class="mv-small">Nutzt das <b>LoxBerry MQTT Gateway</b> (muss eingerichtet sein). Ver&ouml;ffentlicht bei jeder Status-Abfrage:
-        <span class="mv-mono"><?= e($mv_cfg['mqtt_topic']) ?>/soc</span>, <span class="mv-mono">/batp</span>, <span class="mv-mono">/temp</span>,
-        <span class="mv-mono">/gridp</span>, <span class="mv-mono">/ok</span>, <span class="mv-mono">/fw</span>, <span class="mv-mono">/ms</span>
-        (Ger&auml;t 2+: <span class="mv-mono"><?= e($mv_cfg['mqtt_topic']) ?>/2/soc</span> usw.).</div>
+        <div class="sm-small"><?php echo marstek_t('TEXT.NUTZT_DAS'); ?> <b><?php echo marstek_t('TEXT.LOXBERRY_MQTT_GATEWAY'); ?></b> <?php echo marstek_t('TEXT.MUSS_EINGERICHTET_SEIN_VERFFENTLIC'); ?>
+        <span class="sm-mono"><?= e($mv_cfg['mqtt_topic']) ?><?php echo marstek_t('TEXT.SOC'); ?></span>, <span class="sm-mono"><?php echo marstek_t('TEXT.BATP'); ?></span>, <span class="sm-mono"><?php echo marstek_t('TEXT.TEMP'); ?></span>,
+        <span class="sm-mono"><?php echo marstek_t('TEXT.GRIDP'); ?></span>, <span class="sm-mono">/ok</span>, <span class="sm-mono">/fw</span>, <span class="sm-mono">/ms</span>
+        <?php echo marstek_t('TEXT.GERT_2'); ?> <span class="sm-mono"><?= e($mv_cfg['mqtt_topic']) ?><?php echo marstek_t('TEXT.2_SOC'); ?></span> <?php echo marstek_t('TEXT.USW'); ?></div>
     </div>
 </div>
 
-<button data-role="none" class="mv-btn" type="submit">Speichern</button>
+<button data-role="none" class="sm-btn" type="submit"><?php echo marstek_t('TEXT.SPEICHERN'); ?></button>
 </form>
 </div>
 
 <!-- ================= Reiter: Einbindung in Loxone ================= -->
-<div class="mv-pane" id="tab-loxone">
-<h2>Einbindung in Loxone &mdash; Schritt f&uuml;r Schritt</h2>
-<p>Loxone ist der Energiemanager: Der Miniserver liest Status und Spot-Ranking vom Plugin, entscheidet
-(PV-&Uuml;berschuss, g&uuml;nstige/teure Stunden) und schickt dem Speicher alle 60 Sekunden einen Leistungs-Sollwert.
-F&auml;llt Loxone aus, l&auml;uft der Befehl nach wenigen Minuten ab und der Speicher geht sicher in den Leerlauf
-(mit aktiviertem <b>Auto-Fallback</b> danach zur&uuml;ck in den Auto-Modus).</p>
+<div class="sm-pane" id="tab-loxone">
+<h2><?php echo marstek_t('TEXT.EINBINDUNG_IN_LOXONE_SCHRITT_FR_SC'); ?></h2>
+<p><?php echo marstek_t('TEXT.LOXONE_IST_DER_ENERGIEMANAGER_DER_'); ?> <b><?php echo marstek_t('TEXT.AUTO_FALLBACK'); ?></b> <?php echo marstek_t('TEXT.DANACH_ZURCK_IN_DEN_AUTO_MODUS'); ?></p>
 
-<div class="mv-step"><b>Schritt 1: Virtueller HTTP-Eingang &bdquo;Speicher-Status&ldquo;</b> (Abfrage alle 60 s)
-<table class="mv-tbl">
-<tr><th>Eigenschaft</th><th>Wert</th></tr>
-<tr><td>URL</td><td><span class="mv-mono">http://<?= $mv_host ?>/plugins/<?= e($mv_plugindir) ?>/marstek.php?status</span></td></tr>
-<tr><td>Abfragezyklus</td><td>60 Sekunden</td></tr>
+<div class="sm-step"><b><?php echo marstek_t('TEXT.SCHRITT_1_VIRTUELLER_HTTP_EINGANG_'); ?></b> <?php echo marstek_t('TEXT.ABFRAGE_ALLE_60_S'); ?>
+<table class="sm-tbl">
+<tr><th><?php echo marstek_t('TEXT.EIGENSCHAFT'); ?></th><th><?php echo marstek_t('TEXT.WERT'); ?></th></tr>
+<tr><td>URL</td><td><span class="sm-mono"><?php echo marstek_t('TEXT.HTTP'); ?><?= $mv_host ?><?php echo marstek_t('TEXT.PLUGINS'); ?><?= e($mv_plugindir) ?><?php echo marstek_t('TEXT.MARSTEK_PHP_STATUS'); ?></span></td></tr>
+<tr><td><?php echo marstek_t('TEXT.ABFRAGEZYKLUS'); ?></td><td><?php echo marstek_t('TEXT.60_SEKUNDEN'); ?></td></tr>
 </table>
-Befehle (je ein &bdquo;Virtueller HTTP-Eingang Befehl&ldquo;; <span class="mv-mono">\i...\i</span> = Suchtext, <span class="mv-mono">\v</span> = Zahl dahinter):
-<table class="mv-tbl">
-<tr><th>Befehlserkennung</th><th>Bedeutung</th></tr>
-<tr><td><span class="mv-mono">\iSOC=\i\v</span></td><td>Ladezustand in Prozent</td></tr>
-<tr><td><span class="mv-mono">\iBATP=\i\v</span></td><td>Batterieleistung in Watt (<b>+ = l&auml;dt</b>, &minus; = entl&auml;dt)</td></tr>
-<tr><td><span class="mv-mono">\iTEMP=\i\v</span></td><td>Batterietemperatur in &deg;C</td></tr>
-<tr><td><span class="mv-mono">\iOK=\i\v</span></td><td>1 = Ger&auml;t antwortet, 0 = St&ouml;rung (f&uuml;r einen St&ouml;rungs-Push nach z. B. 15 min)</td></tr>
-<tr><td><span class="mv-mono">\iFW=\i\v</span></td><td>Firmware-Version des Ger&auml;ts (optional; z. B. f&uuml;r eine Info-Kachel)</td></tr>
-<tr><td><span class="mv-mono">\iMS=\i\v</span></td><td>Antwortzeit des Ger&auml;ts in ms (optional; Netzwerk-Diagnose)</td></tr>
+<?php echo marstek_t('TEXT.BEFEHLE_JE_EIN_VIRTUELLER_HTTP_EIN'); ?> <span class="sm-mono">\i...\i</span> <?php echo marstek_t('TEXT.SUCHTEXT'); ?> <span class="sm-mono">\v</span> <?php echo marstek_t('TEXT.ZAHL_DAHINTER'); ?>
+<table class="sm-tbl">
+<tr><th><?php echo marstek_t('TEXT.BEFEHLSERKENNUNG'); ?></th><th><?php echo marstek_t('TEXT.BEDEUTUNG'); ?></th></tr>
+<tr><td><span class="sm-mono"><?php echo marstek_t('TEXT.ISOC_I_V'); ?></span></td><td><?php echo marstek_t('TEXT.LADEZUSTAND_IN_PROZENT'); ?></td></tr>
+<tr><td><span class="sm-mono"><?php echo marstek_t('TEXT.IBATP_I_V'); ?></span></td><td><?php echo marstek_t('TEXT.BATTERIELEISTUNG_IN_WATT'); ?><b><?php echo marstek_t('TEXT.LDT'); ?></b><?php echo marstek_t('TEXT.ENTLDT'); ?></td></tr>
+<tr><td><span class="sm-mono"><?php echo marstek_t('TEXT.ITEMP_I_V'); ?></span></td><td><?php echo marstek_t('TEXT.BATTERIETEMPERATUR_IN_C'); ?></td></tr>
+<tr><td><span class="sm-mono"><?php echo marstek_t('TEXT.IOK_I_V'); ?></span></td><td><?php echo marstek_t('TEXT.1_GERT_ANTWORTET_0_STRUNG_FR_EINEN'); ?></td></tr>
+<tr><td><span class="sm-mono"><?php echo marstek_t('TEXT.IFW_I_V'); ?></span></td><td><?php echo marstek_t('TEXT.FIRMWARE_VERSION_DES_GERTS_OPTIONA'); ?></td></tr>
+<tr><td><span class="sm-mono"><?php echo marstek_t('TEXT.IMS_I_V'); ?></span></td><td><?php echo marstek_t('TEXT.ANTWORTZEIT_DES_GERTS_IN_MS_OPTION'); ?></td></tr>
 </table>
-<b>Mehrere Speicher?</b> F&uuml;r Ger&auml;t 2 einen zweiten virtuellen Eingang mit
-<span class="mv-mono">...marstek.php?status&amp;dev=2</span> anlegen (Ger&auml;t 3: <span class="mv-mono">&amp;dev=3</span> usw.).
+<b><?php echo marstek_t('TEXT.MEHRERE_SPEICHER'); ?></b> <?php echo marstek_t('TEXT.FR_GERT_2_EINEN_ZWEITEN_VIRTUELLEN'); ?>
+<span class="sm-mono"><?php echo marstek_t('TEXT.MARSTEK_PHP_STATUSDEV_2'); ?></span> <?php echo marstek_t('TEXT.ANLEGEN_GERT_3'); ?> <span class="sm-mono"><?php echo marstek_t('TEXT.DEV_3'); ?></span> usw.).
 </div>
 
-<div class="mv-step"><b>Schritt 2: Virtueller HTTP-Eingang &bdquo;Spot-Ranking&ldquo;</b> (Abfrage alle 300 s; gilt f&uuml;r alle Ger&auml;te gemeinsam)
-<table class="mv-tbl">
+<div class="sm-step"><b><?php echo marstek_t('TEXT.SCHRITT_2_VIRTUELLER_HTTP_EINGANG_'); ?></b> <?php echo marstek_t('TEXT.ABFRAGE_ALLE_300_S_GILT_FR_ALLE_GE'); ?>
+<table class="sm-tbl">
 <tr><th>Eigenschaft</th><th>Wert</th></tr>
-<tr><td>URL</td><td><span class="mv-mono">http://<?= $mv_host ?>/plugins/<?= e($mv_plugindir) ?>/marstek.php?ranks</span></td></tr>
+<tr><td>URL</td><td><span class="sm-mono">http://<?= $mv_host ?>/plugins/<?= e($mv_plugindir) ?><?php echo marstek_t('TEXT.MARSTEK_PHP_RANKS'); ?></span></td></tr>
+<tr><td>Abfragezyklus</td><td><?php echo marstek_t('TEXT.300_SEKUNDEN'); ?></td></tr>
+</table>
+<table class="sm-tbl">
+<tr><th>Befehlserkennung</th><th>Bedeutung</th></tr>
+<tr><td><span class="sm-mono"><?php echo marstek_t('TEXT.IRANK_I_V'); ?></span></td><td><?php echo marstek_t('TEXT.RANG_DER_AKTUELLEN_STUNDE_UNTER_DE'); ?></td></tr>
+<tr><td><span class="sm-mono"><?php echo marstek_t('TEXT.IRANKD_I_V'); ?></span></td><td><?php echo marstek_t('TEXT.RANG_ABSTEIGEND_1_TEUERSTE_STUNDE'); ?></td></tr>
+<tr><td><span class="sm-mono"><?php echo marstek_t('TEXT.INEG_I_V'); ?></span></td><td><?php echo marstek_t('TEXT.1_AKTUELLER_SPOTPREIS_IST_NEGATIV'); ?></td></tr>
+<tr><td><span class="sm-mono"><?php echo marstek_t('TEXT.ICURP_I_V'); ?></span></td><td><?php echo marstek_t('TEXT.AKTUELLER_SPOTPREIS_IN_EUR_KWH_INK'); ?></td></tr>
+<tr><td><span class="sm-mono">\iOK=\i\v</span></td><td><?php echo marstek_t('TEXT.1_RANKING_DATEN_GLTIG'); ?></td></tr>
+</table>
+<?php echo marstek_t('TEXT.DAMIT_BAUT_MAN_Z_B'); ?> <i><?php echo marstek_t('TEXT.LADE_IN_DEN_X_GNSTIGSTEN_STUNDEN'); ?></i> <?php echo marstek_t('TEXT.AUSWAHLTASTEN_BAUSTEIN_X_UND_VERGL'); ?>
+<span class="sm-mono"><?php echo marstek_t('TEXT.RANK_X'); ?></span>; <i><?php echo marstek_t('TEXT.ENTLADE_IN_DEN_Y_TEUERSTEN_STUNDEN'); ?></i> <?php echo marstek_t('TEXT.VERGLEICH'); ?> <span class="sm-mono"><?php echo marstek_t('TEXT.RANKD_Y'); ?></span>.
+</div>
+
+<div class="sm-step"><b><?php echo marstek_t('TEXT.SCHRITT_3_VIRTUELLER_AUSGANG_SOLLW'); ?></b>
+<table class="sm-tbl">
+<tr><th>Eigenschaft</th><th>Wert</th></tr>
+<tr><td><?php echo marstek_t('TEXT.ADRESSE_VIRTUELLER_AUSGANG'); ?></td><td><span class="sm-mono">http://<?= $mv_host ?></span></td></tr>
+<tr><td><?php echo marstek_t('TEXT.BEFEHL_BEI_EIN_ANALOG'); ?></td><td><span class="sm-mono">/plugins/<?= e($mv_plugindir) ?><?php echo marstek_t('TEXT.MARSTEK_PHP_P_VT_240'); ?></span></td></tr>
+</table>
+<span class="sm-mono">&lt;v&gt;</span> <?php echo marstek_t('TEXT.GEWNSCHTE_LEISTUNG_IN_WATT'); ?><b><?php echo marstek_t('TEXT.LADEN'); ?></b><?php echo marstek_t('TEXT.ENTLADEN_0_LEERLAUF'); ?>
+<span class="sm-mono">t=240</span> <?php echo marstek_t('TEXT.WATCHDOG_OHNE_NEUEN_BEFEHL_STOPPT_'); ?> <span class="sm-mono"><?php echo marstek_t('TEXT.T_240DEV_2'); ?></span> <?php echo marstek_t('TEXT.ANLEGEN_DEN_SOLLWERT_ALLE_60_S_NEU'); ?> <span class="sm-mono">I1+I2</span>
+<?php echo marstek_t('TEXT.AUF_DEN_SOLLWERT_ADDIEREN_DAS_1_WA'); ?>
+<div class="sm-alert sm-warn"><b>Token n&ouml;tig:</b> Der Endpunkt liegt unangemeldet und ist deshalb mit einem Token abgesichert &ndash; ohne passendes <span class="sm-mono">&amp;token=...</span> antwortet er mit HTTP 403. Die vollst&auml;ndige Adresse mit Token steht im n&auml;chsten Abschnitt.</div>
+</div>
+
+<div class="sm-step"><b>Aktionstoken</b>
+<table class="sm-tbl">
+<tr><th>Eigenschaft</th><th>Wert</th></tr>
+<tr><td>Aktuelles Token</td><td><span class="sm-mono"><?= e($mv_cfg['aktionstoken']) ?></span></td></tr>
+<tr><td>Adresse Sollwert (Beispiel)</td><td><span class="sm-mono">http://<?= $mv_host ?>/plugins/<?= e($mv_plugindir) ?>/marstek.php?p=&lt;v&gt;&amp;t=240&amp;token=<?= e($mv_cfg['aktionstoken']) ?></span></td></tr>
+<tr><td>Adresse Modus (Beispiel)</td><td><span class="sm-mono">http://<?= $mv_host ?>/plugins/<?= e($mv_plugindir) ?>/marstek.php?mode=auto&amp;token=<?= e($mv_cfg['aktionstoken']) ?></span></td></tr>
+</table>
+<div class="sm-knopfreihe sm-b-aktion">
+  <form method="post" action="index.php">
+    <input data-role="none" type="hidden" name="activetab" value="tab-loxone">
+    <button data-role="none" type="submit" name="token_neu" value="1">Neues Token erzeugen</button>
+  </form>
+</div>
+<div class="sm-legende">
+<span><i class="sm-punkt sm-b-aktion"></i> Aktion &ndash; &auml;ndert bestehende Loxone-Adressen</span>
+</div>
+</div>
+
+<div class="sm-step"><b><?php echo marstek_t('TEXT.SCHRITT_4_EMPFOHLENE_LOXONE_LOGIK'); ?></b> <?php echo marstek_t('TEXT.SO_IST_ES_IM_REFERENZPROJEKT_GEBAU'); ?><br><br>
+<?php echo marstek_t('TEXT.TEXT_2'); ?> <b><?php echo marstek_t('TEXT.PV_UUML_BERSCHUSSLADEN'); ?></b> <?php echo marstek_t('TEXT.IMMER_AKTIV_LADELEISTUNG_NETZ_EXPO'); ?><br>
+&bull; <b><?php echo marstek_t('TEXT.SPOT_LADEN'); ?></b> <?php echo marstek_t('TEXT.SCHALTER_BEI_NEGATIVEM_PREIS'); ?><span class="sm-mono"><?php echo marstek_t('TEXT.NEG_1'); ?></span><?php echo marstek_t('TEXT.ODER'); ?>
+<span class="sm-mono">RANK &le; X</span> <?php echo marstek_t('TEXT.MIT_VOLLER_LEISTUNG_LADEN_NUR_WENN'); ?><br>
+&bull; <b><?php echo marstek_t('TEXT.ENTLADEN'); ?></b> <?php echo marstek_t('TEXT.SCHALTER_ENTLADELEISTUNG_NETZ_BEZU'); ?>
+<span class="sm-mono">RANKD &le; Y</span> <?php echo marstek_t('TEXT.TEUERSTEN_STUNDEN_SPERREN_SOC_UNTE'); ?><br>
+&bull; <b><?php echo marstek_t('TEXT.SCHUTZ'); ?></b><?php echo marstek_t('TEXT.LADEN_STOPPT_BEI_SOC_97_ENTLADEN_B'); ?>
+<span class="sm-mono">OK=0</span> <?php echo marstek_t('TEXT.LNGER_ALS_15_MINUTEN'); ?><br>
+&bull; <b><?php echo marstek_t('TEXT.MEHRERE_SPEICHER_2'); ?></b><?php echo marstek_t('TEXT.ENTWEDER_JE_GERT_EINE_EIGENE_KLEIN'); ?>
+</div>
+
+<div class="sm-step"><b><?php echo marstek_t('TEXT.SCHRITT_5_OPTIONAL_VIRTUELLER_HTTP'); ?></b> <?php echo marstek_t('TEXT.ABFRAGE_ALLE_300_S'); ?><br>
+<?php echo marstek_t('TEXT.VORAUSSETZUNG_IN_DEN_EINSTELLUNGEN'); ?> <b><?php echo marstek_t('TEXT.KWH_ZHLER_MODBUS_EIN'); ?></b>
+<?php echo marstek_t('TEXT.VENUS_E_GEN_3_0_AB_FIRMWARE_144_PE'); ?>
+<b><?php echo marstek_t('TEXT.AMTLICHEN_ZHLERSTNDE_DES_GERTS'); ?></b> <?php echo marstek_t('TEXT.STATT_SELBST_HOCHGERECHNETER_WERTE'); ?>
+<table class="sm-tbl">
+<tr><th>Eigenschaft</th><th>Wert</th></tr>
+<tr><td>URL</td><td><span class="sm-mono">http://<?= $mv_host ?>/plugins/<?= e($mv_plugindir) ?><?php echo marstek_t('TEXT.MARSTEK_PHP_ENERGY'); ?></span></td></tr>
 <tr><td>Abfragezyklus</td><td>300 Sekunden</td></tr>
 </table>
-<table class="mv-tbl">
+<table class="sm-tbl">
 <tr><th>Befehlserkennung</th><th>Bedeutung</th></tr>
-<tr><td><span class="mv-mono">\iRANK=\i\v</span></td><td>Rang der aktuellen Stunde unter den n&auml;chsten 24 h (1 = g&uuml;nstigste)</td></tr>
-<tr><td><span class="mv-mono">\iRANKD=\i\v</span></td><td>Rang absteigend (1 = teuerste Stunde)</td></tr>
-<tr><td><span class="mv-mono">\iNEG=\i\v</span></td><td>1 = aktueller Spotpreis ist negativ</td></tr>
-<tr><td><span class="mv-mono">\iCURP=\i\v</span></td><td>aktueller Spotpreis in EUR/kWh (inkl. USt-Faktor)</td></tr>
-<tr><td><span class="mv-mono">\iOK=\i\v</span></td><td>1 = Ranking-Daten g&uuml;ltig</td></tr>
+<tr><td><span class="sm-mono"><?php echo marstek_t('TEXT.ICHGD_I_V'); ?></span></td><td><?php echo marstek_t('TEXT.HEUTE_GELADEN_KWH'); ?></td></tr>
+<tr><td><span class="sm-mono"><?php echo marstek_t('TEXT.IDISD_I_V'); ?></span></td><td><?php echo marstek_t('TEXT.HEUTE_ABGEGEBEN_KWH'); ?></td></tr>
+<tr><td><span class="sm-mono"><?php echo marstek_t('TEXT.ICHGM_I_V'); ?></span></td><td><?php echo marstek_t('TEXT.DIESEN_MONAT_GELADEN_KWH'); ?></td></tr>
+<tr><td><span class="sm-mono"><?php echo marstek_t('TEXT.IDISM_I_V'); ?></span></td><td><?php echo marstek_t('TEXT.DIESEN_MONAT_ABGEGEBEN_KWH'); ?></td></tr>
+<tr><td><span class="sm-mono"><?php echo marstek_t('TEXT.ICHGT_I_V'); ?></span> / <span class="sm-mono"><?php echo marstek_t('TEXT.IDIST_I_V'); ?></span></td><td><?php echo marstek_t('TEXT.GESAMT_GELADEN_ABGEGEBEN_KWH_SEIT_'); ?></td></tr>
+<tr><td><span class="sm-mono"><?php echo marstek_t('TEXT.ICYC_I_V'); ?></span></td><td><?php echo marstek_t('TEXT.LADEZYKLEN_DES_GERTS'); ?></td></tr>
+<tr><td><span class="sm-mono"><?php echo marstek_t('TEXT.IEFF_I_V'); ?></span></td><td><?php echo marstek_t('TEXT.WIRKUNGSGRAD_GESAMT_IN_ABGEGEBEN_G'); ?></td></tr>
+<tr><td><span class="sm-mono">\iOK=\i\v</span></td><td><?php echo marstek_t('TEXT.1_MODBUS_DATEN_GLTIG'); ?></td></tr>
 </table>
-Damit baut man z. B.: <i>&bdquo;Lade in den X g&uuml;nstigsten Stunden&ldquo;</i> = Auswahltasten-Baustein (X) und Vergleich
-<span class="mv-mono">RANK &le; X</span>; <i>&bdquo;Entlade in den Y teuersten Stunden&ldquo;</i> = Vergleich <span class="mv-mono">RANKD &le; Y</span>.
+<b><?php echo marstek_t('TEXT.WARUM_NICHT_GLEICH_ALLES_BER_MODBU'); ?></b> <?php echo marstek_t('TEXT.BEWUSSTE_ENTSCHEIDUNG_GESTEUERT_WI'); ?> <b><?php echo marstek_t('TEXT.WATCHDOG'); ?></b> <?php echo marstek_t('TEXT.HAT_SPEICHER_STOPPT_VON_SELBST_WEN'); ?>
 </div>
 
-<div class="mv-step"><b>Schritt 3: Virtueller Ausgang &bdquo;Sollwert senden&ldquo;</b>
-<table class="mv-tbl">
-<tr><th>Eigenschaft</th><th>Wert</th></tr>
-<tr><td>Adresse (Virtueller Ausgang)</td><td><span class="mv-mono">http://<?= $mv_host ?></span></td></tr>
-<tr><td>Befehl bei EIN (analog)</td><td><span class="mv-mono">/plugins/<?= e($mv_plugindir) ?>/marstek.php?p=&lt;v&gt;&amp;t=240</span></td></tr>
+<div class="sm-step"><b><?php echo marstek_t('TEXT.SCHRITT_6_KOMPLETTE_BAUSTEIN_LISTE'); ?></b><br>
+<?php echo marstek_t('TEXT.SO_IST_DIE_LOGIK_IM_REFERENZPROJEK'); ?>
+<b><?php echo marstek_t('TEXT.NETZLEISTUNG_IN_WATT'); ?></b> mit <b><?php echo marstek_t('TEXT.BEZUG'); ?></b> und <b><?php echo marstek_t('TEXT.EINSPEISUNG'); ?></b><?php echo marstek_t('TEXT.ALLE_BAUSTEINE_STEHEN_IN_LOXONE_CO'); ?>
+<br><br><b><?php echo marstek_t('TEXT.6A_BEDIENELEMENTE'); ?></b> <?php echo marstek_t('TEXT.VISUALISIERUNG_FREIGEBEN_ALLE_REMA'); ?>
+<table class="sm-tbl">
+<tr><th><?php echo marstek_t('TEXT.BAUSTEIN'); ?></th><th><?php echo marstek_t('TEXT.NAME'); ?></th><th><?php echo marstek_t('TEXT.EINSTELLUNG_ZWECK'); ?></th></tr>
+<tr><td><?php echo marstek_t('TEXT.TASTER_EIN_AUS'); ?></td><td><?php echo marstek_t('TEXT.SPEICHER_NETZLADEN_ERLAUBT'); ?></td><td><?php echo marstek_t('TEXT.STANDARD_AUS_HAUPTSCHALTER_FRS_LAD'); ?></td></tr>
+<tr><td>Taster EIN/AUS</td><td><?php echo marstek_t('TEXT.SPEICHER_SPOTPREIS_LADEN_AKTIV'); ?></td><td><?php echo marstek_t('TEXT.STANDARD_AUS_LADEN_BEI_NEGATIVPREI'); ?></td></tr>
+<tr><td>Taster EIN/AUS</td><td><?php echo marstek_t('TEXT.SPEICHER_ENTLADUNG_INS_HAUSNETZ_ER'); ?></td><td><?php echo marstek_t('TEXT.STANDARD_AUS'); ?></td></tr>
+<tr><td>Taster EIN/AUS</td><td><?php echo marstek_t('TEXT.SPEICHER_ENTLADUNG_NUR_IN_TEUERSTE'); ?></td><td><?php echo marstek_t('TEXT.AUS_BEI_JEDEM_NETZBEZUG_ENTLADEN'); ?></td></tr>
+<tr><td><?php echo marstek_t('TEXT.VIRTUELLER_EINGANG_ZAHL_024'); ?></td><td><?php echo marstek_t('TEXT.ANZAHL_GNSTIGSTE_STUNDEN_LADEN'); ?></td><td><?php echo marstek_t('TEXT.X_FR_LADE_IN_DEN_X_GNSTIGSTEN_STUN'); ?></td></tr>
+<tr><td>Virtueller Eingang (Zahl 0&ndash;24)</td><td><?php echo marstek_t('TEXT.ANZAHL_TEUERSTE_STUNDEN_ENTLADEN'); ?></td><td><?php echo marstek_t('TEXT.Y_FR_ENTLADE_IN_DEN_Y_TEUERSTEN_ST'); ?></td></tr>
+<tr><td><?php echo marstek_t('TEXT.VIRTUELLER_EINGANG_ZAHL_0100'); ?></td><td><?php echo marstek_t('TEXT.MINDEST_SOC_RESERVE'); ?></td><td><?php echo marstek_t('TEXT.NOTSTROMRESERVE_Z_B_12_IM_WINTER_H'); ?></td></tr>
 </table>
-<span class="mv-mono">&lt;v&gt;</span> = gew&uuml;nschte Leistung in Watt (<b>+ = laden</b>, &minus; = entladen, 0 = Leerlauf).
-<span class="mv-mono">t=240</span> = Watchdog: ohne neuen Befehl stoppt der Speicher nach 240 s von selbst.
-F&uuml;r Ger&auml;t 2 einen eigenen Befehl mit <span class="mv-mono">...&amp;t=240&amp;dev=2</span> anlegen.
-Den Sollwert alle 60 s neu senden &mdash; Trick aus der Praxis: Der virtuelle Ausgang sendet nur bei WERT&Auml;NDERUNG;
-deshalb einen &bdquo;Dither&ldquo;-Takt (Impulsgeber 60/60 s, Ausgang 0/1) per Formel <span class="mv-mono">I1+I2</span>
-auf den Sollwert addieren &mdash; das 1-Watt-Zappeln erzwingt die Neusendung und ist v&ouml;llig unsch&auml;dlich.
-</div>
-
-<div class="mv-step"><b>Schritt 4: Empfohlene Loxone-Logik</b> (so ist es im Referenzprojekt gebaut)<br><br>
-&bull; <b>PV-&Uuml;berschussladen</b> (immer aktiv): Ladeleistung = Netz-Export &minus; 100 W Reserve, erst ab 150 W Export,
-begrenzt auf die maximale Ladeleistung. Wallbox und W&auml;rmepumpe haben automatisch Vorrang, weil der Speicher nur
-nimmt, was NACH ihnen noch exportiert wird.<br>
-&bull; <b>Spot-Laden</b> (Schalter): bei negativem Preis (<span class="mv-mono">NEG=1</span>) oder
-<span class="mv-mono">RANK &le; X</span> mit voller Leistung laden &mdash; nur wenn Netzladen erlaubt ist.<br>
-&bull; <b>Entladen</b> (Schalter): Entladeleistung = Netz-Bezug &minus; 50 W; optional nur in den
-<span class="mv-mono">RANKD &le; Y</span> teuersten Stunden. Sperren: SOC unter Reserve, negativer Preis
-(nie ins fallende Messer entladen), Wallbox l&auml;dt (sonst l&auml;dt der Speicher verlustreich das Auto).<br>
-&bull; <b>Schutz</b>: Laden stoppt bei SOC 97 %, Entladen bei SOC 12 %; St&ouml;rungs-Push wenn
-<span class="mv-mono">OK=0</span> l&auml;nger als 15 Minuten.<br>
-&bull; <b>Mehrere Speicher</b>: entweder je Ger&auml;t eine eigene kleine Logik (empfohlen, wenn die Ger&auml;te
-verschieden gro&szlig; sind, z. B. Venus E + Venus E Mini) oder eine gemeinsame Logik, die den Gesamt-Sollwert
-im Verh&auml;ltnis der maximalen Leistungen auf die Ger&auml;te aufteilt.
-</div>
-
-<div class="mv-step"><b>Schritt 5 (optional): Virtueller HTTP-Eingang &bdquo;Speicher-Energie&ldquo;</b> (Abfrage alle 300 s)<br>
-Voraussetzung: In den Einstellungen ist beim Ger&auml;t <b>&bdquo;kWh-Z&auml;hler (Modbus)&ldquo; = ein</b>
-(Venus E Gen 3.0 ab Firmware 144, per LAN-Kabel angeschlossen). Damit bekommt Loxone die
-<b>amtlichen Z&auml;hlerst&auml;nde des Ger&auml;ts</b> statt selbst hochgerechneter Werte &mdash; ideal f&uuml;r
-Tages-/Monatsberichte und die Ersparnis-Rechnung.
-<table class="mv-tbl">
-<tr><th>Eigenschaft</th><th>Wert</th></tr>
-<tr><td>URL</td><td><span class="mv-mono">http://<?= $mv_host ?>/plugins/<?= e($mv_plugindir) ?>/marstek.php?energy</span></td></tr>
-<tr><td>Abfragezyklus</td><td>300 Sekunden</td></tr>
+<b><?php echo marstek_t('TEXT.6B_PV_UUML_BERSCHUSSLADEN'); ?></b> <?php echo marstek_t('TEXT.IMMER_AKTIV'); ?>
+<table class="sm-tbl">
+<tr><th>Baustein</th><th>Name</th><th><?php echo marstek_t('TEXT.FORMEL_EINSTELLUNG'); ?></th><th><?php echo marstek_t('TEXT.EINGNGE'); ?></th></tr>
+<tr><td><?php echo marstek_t('TEXT.FORMEL_F1'); ?></td><td><?php echo marstek_t('TEXT.EXPORT_LEISTUNG_W'); ?></td><td><span class="sm-mono"><?php echo marstek_t('TEXT.MAX_0_I1'); ?></span></td><td><?php echo marstek_t('TEXT.I1_NETZLEISTUNG_ZHLER'); ?></td></tr>
+<tr><td><?php echo marstek_t('TEXT.FORMEL_F2'); ?></td><td><?php echo marstek_t('TEXT.BEZUG_LEISTUNG_W'); ?></td><td><span class="sm-mono"><?php echo marstek_t('TEXT.MAX_0_I1_2'); ?></span></td><td>I1 &larr; Netzleistung Z&auml;hler</td></tr>
+<tr><td><?php echo marstek_t('TEXT.SCHWELLWERTSCHALTER_S1'); ?></td><td><?php echo marstek_t('TEXT.EXPORT_BER_150_W'); ?></td><td><?php echo marstek_t('TEXT.EIN_150_AUS_120'); ?></td><td><?php echo marstek_t('TEXT.F1'); ?></td></tr>
+<tr><td><?php echo marstek_t('TEXT.FORMEL_F3'); ?></td><td><?php echo marstek_t('TEXT.PV_LADELEISTUNG_W'); ?></td><td><span class="sm-mono"><?php echo marstek_t('TEXT.MIN_I1_100_2500_I2'); ?></span> <?php echo marstek_t('TEXT.100_W_RESERVE_2500_MAX_LADEN'); ?></td><td><?php echo marstek_t('TEXT.I1_F1_I2_S1'); ?></td></tr>
 </table>
-<table class="mv-tbl">
-<tr><th>Befehlserkennung</th><th>Bedeutung</th></tr>
-<tr><td><span class="mv-mono">\iCHGD=\i\v</span></td><td>heute geladen (kWh)</td></tr>
-<tr><td><span class="mv-mono">\iDISD=\i\v</span></td><td>heute abgegeben (kWh)</td></tr>
-<tr><td><span class="mv-mono">\iCHGM=\i\v</span></td><td>diesen Monat geladen (kWh)</td></tr>
-<tr><td><span class="mv-mono">\iDISM=\i\v</span></td><td>diesen Monat abgegeben (kWh)</td></tr>
-<tr><td><span class="mv-mono">\iCHGT=\i\v</span> / <span class="mv-mono">\iDIST=\i\v</span></td><td>gesamt geladen / abgegeben (kWh, seit Werk)</td></tr>
-<tr><td><span class="mv-mono">\iCYC=\i\v</span></td><td>Ladezyklen des Ger&auml;ts</td></tr>
-<tr><td><span class="mv-mono">\iEFF=\i\v</span></td><td>Wirkungsgrad gesamt in % (abgegeben/geladen)</td></tr>
-<tr><td><span class="mv-mono">\iOK=\i\v</span></td><td>1 = Modbus-Daten g&uuml;ltig</td></tr>
-</table>
-<b>Warum nicht gleich alles &uuml;ber Modbus?</b> Bewusste Entscheidung: Gesteuert wird &uuml;ber die UDP-API,
-weil nur deren Passiv-Modus einen <b>Watchdog</b> hat (Speicher stoppt von selbst, wenn Loxone ausf&auml;llt).
-Der Modbus-Steuermodus (&bdquo;Force Charge/Discharge&ldquo;) liefe ungebremst weiter und blockiert zudem die App.
-Modbus wird deshalb hier NUR LESEND f&uuml;r die Z&auml;hler genutzt &mdash; die beste Kombination aus beiden Welten.
-</div>
-
-<div class="mv-step"><b>Schritt 6: Komplette Baustein-Liste zum 1:1-Nachbauen</b><br>
-So ist die Logik im Referenzprojekt verdrahtet. Annahme: Der eigene Stromz&auml;hler liefert die
-<b>Netzleistung in Watt</b> mit <b>+ = Bezug</b> und <b>&minus; = Einspeisung</b>. Alle Bausteine stehen in
-Loxone Config unter den angegebenen Kategorien; &bdquo;&larr;&ldquo; = Eingang kommt von.
-<br><br><b>6a) Bedienelemente</b> (Visualisierung freigeben, alle remanent)
-<table class="mv-tbl">
-<tr><th>Baustein</th><th>Name</th><th>Einstellung / Zweck</th></tr>
-<tr><td>Taster EIN/AUS</td><td>Speicher: Netzladen erlaubt</td><td>Standard AUS &mdash; Hauptschalter f&uuml;rs Laden aus dem Netz</td></tr>
-<tr><td>Taster EIN/AUS</td><td>Speicher: Spotpreis-Laden aktiv</td><td>Standard AUS &mdash; Laden bei Negativpreis / g&uuml;nstigen Stunden</td></tr>
-<tr><td>Taster EIN/AUS</td><td>Speicher: Entladung ins Hausnetz erlaubt</td><td>Standard AUS</td></tr>
-<tr><td>Taster EIN/AUS</td><td>Speicher: Entladung nur in teuersten Stunden</td><td>AUS = bei jedem Netzbezug entladen</td></tr>
-<tr><td>Virtueller Eingang (Zahl 0&ndash;24)</td><td>Anzahl g&uuml;nstigste Stunden (Laden)</td><td>X f&uuml;r &bdquo;Lade in den X g&uuml;nstigsten Stunden&ldquo;; 0 = aus</td></tr>
-<tr><td>Virtueller Eingang (Zahl 0&ndash;24)</td><td>Anzahl teuerste Stunden (Entladen)</td><td>Y f&uuml;r &bdquo;Entlade in den Y teuersten Stunden&ldquo;; 0 = aus</td></tr>
-<tr><td>Virtueller Eingang (Zahl 0&ndash;100)</td><td>Mindest-SOC Reserve (%)</td><td>Notstromreserve, z. B. 12; im Winter h&ouml;her stellen</td></tr>
-</table>
-<b>6b) PV-&Uuml;berschussladen</b> (immer aktiv)
-<table class="mv-tbl">
-<tr><th>Baustein</th><th>Name</th><th>Formel / Einstellung</th><th>Eing&auml;nge</th></tr>
-<tr><td>Formel F1</td><td>Export-Leistung (W)</td><td><span class="mv-mono">MAX(0;-I1)</span></td><td>I1 &larr; Netzleistung Z&auml;hler</td></tr>
-<tr><td>Formel F2</td><td>Bezug-Leistung (W)</td><td><span class="mv-mono">MAX(0;I1)</span></td><td>I1 &larr; Netzleistung Z&auml;hler</td></tr>
-<tr><td>Schwellwertschalter S1</td><td>Export &uuml;ber 150 W</td><td>Ein 150 / Aus 120</td><td>&larr; F1</td></tr>
-<tr><td>Formel F3</td><td>PV-Ladeleistung (W)</td><td><span class="mv-mono">MIN(I1-100;2500)*I2</span> (100 W Reserve; 2500 = max. Laden)</td><td>I1 &larr; F1, I2 &larr; S1</td></tr>
-</table>
-<b>6c) Spot-Laden</b> (Netz-/Negativpreis-Laden)
-<table class="mv-tbl">
+<b><?php echo marstek_t('TEXT.6C_SPOT_LADEN'); ?></b> <?php echo marstek_t('TEXT.NETZ_NEGATIVPREIS_LADEN'); ?>
+<table class="sm-tbl">
 <tr><th>Baustein</th><th>Name</th><th>Einstellung</th><th>Eing&auml;nge</th></tr>
-<tr><td>Vergleicher V1</td><td>Rang &le; Ladestunden</td><td>Q=1 wenn I1 &ge; I2</td><td>I1 &larr; VE &bdquo;Anzahl g&uuml;nstigste Stunden&ldquo;, I2 &larr; RANK (Schritt 2)</td></tr>
-<tr><td>Schwellwertschalter S2</td><td>Ladestunden eingestellt</td><td>Ein 0,5</td><td>&larr; VE &bdquo;Anzahl g&uuml;nstigste Stunden&ldquo;</td></tr>
-<tr><td>UND U1</td><td>Spot-Ladefenster</td><td></td><td>V1 &amp; S2</td></tr>
-<tr><td>UND U2</td><td>Ranking g&uuml;ltig</td><td></td><td>U1 &amp; OK (Schritt 2)</td></tr>
-<tr><td>ODER O1</td><td>Spotladung n&ouml;tig</td><td></td><td>NEG (Schritt 2) | U2</td></tr>
-<tr><td>UND U3</td><td>Spotpreis-Laden aktiv</td><td></td><td>O1 &amp; Taster &bdquo;Spotpreis-Laden aktiv&ldquo;</td></tr>
-<tr><td>UND U4</td><td>Netzladen erlaubt</td><td></td><td>U3 &amp; Taster &bdquo;Netzladen erlaubt&ldquo;</td></tr>
-<tr><td>Formel F4</td><td>Spot-Ladeleistung (W)</td><td><span class="mv-mono">I1*2500</span></td><td>I1 &larr; U4</td></tr>
-<tr><td>Formel F5</td><td>Ladewunsch (W)</td><td><span class="mv-mono">MAX(I1;I2)</span></td><td>I1 &larr; F3, I2 &larr; F4</td></tr>
+<tr><td><?php echo marstek_t('TEXT.VERGLEICHER_V1'); ?></td><td><?php echo marstek_t('TEXT.RANG_LADESTUNDEN'); ?></td><td><?php echo marstek_t('TEXT.Q_1_WENN_I1_I2'); ?></td><td><?php echo marstek_t('TEXT.I1_VE_ANZAHL_GNSTIGSTE_STUNDEN_I2_'); ?></td></tr>
+<tr><td><?php echo marstek_t('TEXT.SCHWELLWERTSCHALTER_S2'); ?></td><td><?php echo marstek_t('TEXT.LADESTUNDEN_EINGESTELLT'); ?></td><td><?php echo marstek_t('TEXT.EIN_0_5'); ?></td><td><?php echo marstek_t('TEXT.VE_ANZAHL_GNSTIGSTE_STUNDEN'); ?></td></tr>
+<tr><td><?php echo marstek_t('TEXT.UND_U1'); ?></td><td><?php echo marstek_t('TEXT.SPOT_LADEFENSTER'); ?></td><td></td><td><?php echo marstek_t('TEXT.V1_S2'); ?></td></tr>
+<tr><td><?php echo marstek_t('TEXT.UND_U2'); ?></td><td><?php echo marstek_t('TEXT.RANKING_GLTIG'); ?></td><td></td><td><?php echo marstek_t('TEXT.U1_OK_SCHRITT_2'); ?></td></tr>
+<tr><td><?php echo marstek_t('TEXT.ODER_O1'); ?></td><td><?php echo marstek_t('TEXT.SPOTLADUNG_NTIG'); ?></td><td></td><td><?php echo marstek_t('TEXT.NEG_SCHRITT_2_U2'); ?></td></tr>
+<tr><td><?php echo marstek_t('TEXT.UND_U3'); ?></td><td><?php echo marstek_t('TEXT.SPOTPREIS_LADEN_AKTIV'); ?></td><td></td><td><?php echo marstek_t('TEXT.O1_TASTER_SPOTPREIS_LADEN_AKTIV'); ?></td></tr>
+<tr><td><?php echo marstek_t('TEXT.UND_U4'); ?></td><td><?php echo marstek_t('TEXT.NETZLADEN_ERLAUBT'); ?></td><td></td><td><?php echo marstek_t('TEXT.U3_TASTER_NETZLADEN_ERLAUBT'); ?></td></tr>
+<tr><td><?php echo marstek_t('TEXT.FORMEL_F4'); ?></td><td><?php echo marstek_t('TEXT.SPOT_LADELEISTUNG_W'); ?></td><td><span class="sm-mono">I1*2500</span></td><td><?php echo marstek_t('TEXT.I1_U4'); ?></td></tr>
+<tr><td><?php echo marstek_t('TEXT.FORMEL_F5'); ?></td><td><?php echo marstek_t('TEXT.LADEWUNSCH_W'); ?></td><td><span class="sm-mono"><?php echo marstek_t('TEXT.MAX_I1_I2'); ?></span></td><td><?php echo marstek_t('TEXT.I1_F3_I2_F4'); ?></td></tr>
 </table>
-<b>6d) Entladen</b> (mit allen Sperren)
-<table class="mv-tbl">
+<b><?php echo marstek_t('TEXT.6D_ENTLADEN'); ?></b> <?php echo marstek_t('TEXT.MIT_ALLEN_SPERREN'); ?>
+<table class="sm-tbl">
 <tr><th>Baustein</th><th>Name</th><th>Einstellung</th><th>Eing&auml;nge</th></tr>
-<tr><td>Schwellwertschalter S3</td><td>SOC &uuml;ber 12 %</td><td>Ein 12 / Aus 11</td><td>&larr; SOC (Schritt 1)</td></tr>
-<tr><td>Vergleicher V2</td><td>SOC &uuml;ber Reserve</td><td>Q=1 wenn I1 &ge; I2</td><td>I1 &larr; SOC, I2 &larr; VE &bdquo;Mindest-SOC Reserve&ldquo;</td></tr>
-<tr><td>UND U5</td><td>SOC &uuml;ber 12 % und Reserve</td><td></td><td>S3 &amp; V2</td></tr>
-<tr><td>Schwellwertschalter S4</td><td>Bezug &uuml;ber 100 W</td><td>Ein 100 / Aus 80</td><td>&larr; F2</td></tr>
-<tr><td>Vergleicher V3</td><td>Rang &le; Entladestunden</td><td>Q=1 wenn I1 &ge; I2</td><td>I1 &larr; VE &bdquo;Anzahl teuerste Stunden&ldquo;, I2 &larr; RANKD</td></tr>
-<tr><td>Schwellwertschalter S5</td><td>Entladestunden eingestellt</td><td>Ein 0,5</td><td>&larr; VE &bdquo;Anzahl teuerste Stunden&ldquo;</td></tr>
-<tr><td>UND U6 / UND U7</td><td>Spot-Entladefenster / Ranking g&uuml;ltig</td><td></td><td>U6: V3 &amp; S5; U7: U6 &amp; OK</td></tr>
-<tr><td>NICHT N1</td><td>Nur-teuerste-Modus aus</td><td></td><td>&larr; Taster &bdquo;nur in teuersten Stunden&ldquo;</td></tr>
-<tr><td>ODER O2</td><td>Entladefenster erf&uuml;llt</td><td></td><td>U7 | N1</td></tr>
-<tr><td>UND U8</td><td>Entladung erlaubt</td><td></td><td>O2 &amp; Taster &bdquo;Entladung erlaubt&ldquo;</td></tr>
-<tr><td>NICHT N2 + UND U9</td><td>kein Negativpreis</td><td>nie ins fallende Messer entladen</td><td>U9: U8 &amp; NICHT(NEG)</td></tr>
-<tr><td>Schwellwertschalter S6 + NICHT N3 + UND U10</td><td>Wallbox l&auml;dt nicht</td><td>S6: Wallbox-Leistung &uuml;ber 0,5 kW</td><td>U10: U9 &amp; N3</td></tr>
-<tr><td>Formel F6</td><td>Entladewunsch (W)</td><td><span class="mv-mono">MIN(I1-50;2500)*I2*I3*I4</span></td><td>I1 &larr; F2, I2 &larr; U10, I3 &larr; S4, I4 &larr; U5</td></tr>
+<tr><td><?php echo marstek_t('TEXT.SCHWELLWERTSCHALTER_S3'); ?></td><td><?php echo marstek_t('TEXT.SOC_BER_12'); ?></td><td><?php echo marstek_t('TEXT.EIN_12_AUS_11'); ?></td><td><?php echo marstek_t('TEXT.SOC_SCHRITT_1'); ?></td></tr>
+<tr><td><?php echo marstek_t('TEXT.VERGLEICHER_V2'); ?></td><td><?php echo marstek_t('TEXT.SOC_BER_RESERVE'); ?></td><td>Q=1 wenn I1 &ge; I2</td><td><?php echo marstek_t('TEXT.I1_SOC_I2_VE_MINDEST_SOC_RESERVE'); ?></td></tr>
+<tr><td><?php echo marstek_t('TEXT.UND_U5'); ?></td><td><?php echo marstek_t('TEXT.SOC_BER_12_UND_RESERVE'); ?></td><td></td><td><?php echo marstek_t('TEXT.S3_V2'); ?></td></tr>
+<tr><td><?php echo marstek_t('TEXT.SCHWELLWERTSCHALTER_S4'); ?></td><td><?php echo marstek_t('TEXT.BEZUG_BER_100_W'); ?></td><td><?php echo marstek_t('TEXT.EIN_100_AUS_80'); ?></td><td><?php echo marstek_t('TEXT.F2'); ?></td></tr>
+<tr><td><?php echo marstek_t('TEXT.VERGLEICHER_V3'); ?></td><td><?php echo marstek_t('TEXT.RANG_ENTLADESTUNDEN'); ?></td><td>Q=1 wenn I1 &ge; I2</td><td><?php echo marstek_t('TEXT.I1_VE_ANZAHL_TEUERSTE_STUNDEN_I2_R'); ?></td></tr>
+<tr><td><?php echo marstek_t('TEXT.SCHWELLWERTSCHALTER_S5'); ?></td><td><?php echo marstek_t('TEXT.ENTLADESTUNDEN_EINGESTELLT'); ?></td><td>Ein 0,5</td><td><?php echo marstek_t('TEXT.VE_ANZAHL_TEUERSTE_STUNDEN'); ?></td></tr>
+<tr><td><?php echo marstek_t('TEXT.UND_U6_UND_U7'); ?></td><td><?php echo marstek_t('TEXT.SPOT_ENTLADEFENSTER_RANKING_GLTIG'); ?></td><td></td><td><?php echo marstek_t('TEXT.U6_V3_S5_U7_U6_OK'); ?></td></tr>
+<tr><td><?php echo marstek_t('TEXT.NICHT_N1'); ?></td><td><?php echo marstek_t('TEXT.NUR_TEUERSTE_MODUS_AUS'); ?></td><td></td><td><?php echo marstek_t('TEXT.TASTER_NUR_IN_TEUERSTEN_STUNDEN'); ?></td></tr>
+<tr><td><?php echo marstek_t('TEXT.ODER_O2'); ?></td><td><?php echo marstek_t('TEXT.ENTLADEFENSTER_ERFLLT'); ?></td><td></td><td>U7 | N1</td></tr>
+<tr><td><?php echo marstek_t('TEXT.UND_U8'); ?></td><td><?php echo marstek_t('TEXT.ENTLADUNG_ERLAUBT'); ?></td><td></td><td><?php echo marstek_t('TEXT.O2_TASTER_ENTLADUNG_ERLAUBT'); ?></td></tr>
+<tr><td><?php echo marstek_t('TEXT.NICHT_N2_UND_U9'); ?></td><td><?php echo marstek_t('TEXT.KEIN_NEGATIVPREIS'); ?></td><td><?php echo marstek_t('TEXT.NIE_INS_FALLENDE_MESSER_ENTLADEN'); ?></td><td><?php echo marstek_t('TEXT.U9_U8_NICHT_NEG'); ?></td></tr>
+<tr><td><?php echo marstek_t('TEXT.SCHWELLWERTSCHALTER_S6_NICHT_N3_UN'); ?></td><td><?php echo marstek_t('TEXT.WALLBOX_LDT_NICHT'); ?></td><td><?php echo marstek_t('TEXT.S6_WALLBOX_LEISTUNG_BER_0_5_KW'); ?></td><td><?php echo marstek_t('TEXT.U10_U9_N3'); ?></td></tr>
+<tr><td><?php echo marstek_t('TEXT.FORMEL_F6'); ?></td><td><?php echo marstek_t('TEXT.ENTLADEWUNSCH_W'); ?></td><td><span class="sm-mono"><?php echo marstek_t('TEXT.MIN_I1_50_2500_I2_I3_I4'); ?></span></td><td><?php echo marstek_t('TEXT.I1_F2_I2_U10_I3_S4_I4_U5'); ?></td></tr>
 </table>
-<b>6e) Sollwert bilden und senden</b>
-<table class="mv-tbl">
+<b><?php echo marstek_t('TEXT.6E_SOLLWERT_BILDEN_UND_SENDEN'); ?></b>
+<table class="sm-tbl">
 <tr><th>Baustein</th><th>Name</th><th>Einstellung</th><th>Eing&auml;nge</th></tr>
-<tr><td>Schwellwertschalter S7</td><td>SOC &uuml;ber 97 %</td><td>Ein 97 / Aus 96 (Ladestopp voll)</td><td>&larr; SOC</td></tr>
-<tr><td>Formel F7</td><td>Speicher-Sollleistung (W)</td><td><span class="mv-mono">I1*(1-I3)-I2</span></td><td>I1 &larr; F5, I2 &larr; F6, I3 &larr; S7</td></tr>
-<tr><td>Impulsgeber T1</td><td>Sende-Takt 60 s</td><td>Impuls/Pause 60/60 s</td><td></td></tr>
-<tr><td>Analogspeicher M1</td><td>Sample Sollleistung</td><td>speichert bei Trigger</td><td>Eingang &larr; F7, Trigger &larr; T1</td></tr>
-<tr><td>Impulsgeber T2</td><td>Dither-Takt</td><td>60/60 s (erzwingt Neusendung)</td><td></td></tr>
-<tr><td>Formel F8</td><td>Sollwert plus Dither</td><td><span class="mv-mono">I1+I2</span></td><td>I1 &larr; M1, I2 &larr; T2 &rarr; Ausgang an den Virtuellen Ausgang (Schritt 3)</td></tr>
+<tr><td><?php echo marstek_t('TEXT.SCHWELLWERTSCHALTER_S7'); ?></td><td><?php echo marstek_t('TEXT.SOC_BER_97'); ?></td><td><?php echo marstek_t('TEXT.EIN_97_AUS_96_LADESTOPP_VOLL'); ?></td><td><?php echo marstek_t('TEXT.SOC_2'); ?></td></tr>
+<tr><td><?php echo marstek_t('TEXT.FORMEL_F7'); ?></td><td><?php echo marstek_t('TEXT.SPEICHER_SOLLLEISTUNG_W'); ?></td><td><span class="sm-mono">I1*(1-I3)-I2</span></td><td><?php echo marstek_t('TEXT.I1_F5_I2_F6_I3_S7'); ?></td></tr>
+<tr><td><?php echo marstek_t('TEXT.IMPULSGEBER_T1'); ?></td><td><?php echo marstek_t('TEXT.SENDE_TAKT_60_S'); ?></td><td><?php echo marstek_t('TEXT.IMPULS_PAUSE_60_60_S'); ?></td><td></td></tr>
+<tr><td><?php echo marstek_t('TEXT.ANALOGSPEICHER_M1'); ?></td><td><?php echo marstek_t('TEXT.SAMPLE_SOLLLEISTUNG'); ?></td><td><?php echo marstek_t('TEXT.SPEICHERT_BEI_TRIGGER'); ?></td><td><?php echo marstek_t('TEXT.EINGANG_F7_TRIGGER_T1'); ?></td></tr>
+<tr><td><?php echo marstek_t('TEXT.IMPULSGEBER_T2'); ?></td><td><?php echo marstek_t('TEXT.DITHER_TAKT'); ?></td><td><?php echo marstek_t('TEXT.60_60_S_ERZWINGT_NEUSENDUNG'); ?></td><td></td></tr>
+<tr><td><?php echo marstek_t('TEXT.FORMEL_F8'); ?></td><td><?php echo marstek_t('TEXT.SOLLWERT_PLUS_DITHER'); ?></td><td><span class="sm-mono">I1+I2</span></td><td><?php echo marstek_t('TEXT.I1_M1_I2_T2_AUSGANG_AN_DEN_VIRTUEL'); ?></td></tr>
 </table>
-<b>6f) St&ouml;rungs-&Uuml;berwachung</b>
-<table class="mv-tbl">
+<b><?php echo marstek_t('TEXT.6F_STRUNGS_UUML_BERWACHUNG'); ?></b>
+<table class="sm-tbl">
 <tr><th>Baustein</th><th>Name</th><th>Einstellung</th><th>Eing&auml;nge</th></tr>
-<tr><td>NICHT N4</td><td>Speicher nicht erreichbar</td><td></td><td>&larr; OK (Schritt 1)</td></tr>
-<tr><td>Einschaltverz&ouml;gerung E1</td><td>15 Minuten St&ouml;rung</td><td>900 s</td><td>&larr; N4 &rarr; Benachrichtigungs-Baustein (Push)</td></tr>
+<tr><td><?php echo marstek_t('TEXT.NICHT_N4'); ?></td><td><?php echo marstek_t('TEXT.SPEICHER_NICHT_ERREICHBAR'); ?></td><td></td><td><?php echo marstek_t('TEXT.OK_SCHRITT_1'); ?></td></tr>
+<tr><td><?php echo marstek_t('TEXT.EINSCHALTVERZGERUNG_E1'); ?></td><td><?php echo marstek_t('TEXT.15_MINUTEN_STRUNG'); ?></td><td>900 s</td><td><?php echo marstek_t('TEXT.N4_BENACHRICHTIGUNGS_BAUSTEIN_PUSH'); ?></td></tr>
 </table>
-<b>6g) Optional: Berichte aus den Ger&auml;tez&auml;hlern</b> (Schritt 5 n&ouml;tig) &mdash;
-Monatsbilanz: Analogspeicher &bdquo;Stand Monatsanfang&ldquo; f&uuml;r CHGT und DIST (Trigger: Impuls am
-Monatsersten), Formeln <span class="mv-mono">CHGT-Schnappschuss</span> bzw. <span class="mv-mono">DIST-Schnappschuss</span>,
-Statusbaustein-Push mit geladen/entladen/Zyklen/Wirkungsgrad. Wochenbericht analog mit Trigger Montagmorgen.
+<b><?php echo marstek_t('TEXT.6G_OPTIONAL_BERICHTE_AUS_DEN_GERTE'); ?></b> <?php echo marstek_t('TEXT.SCHRITT_5_NTIG_MONATSBILANZ_ANALOG'); ?> <span class="sm-mono"><?php echo marstek_t('TEXT.CHGT_SCHNAPPSCHUSS'); ?></span> <?php echo marstek_t('TEXT.BZW'); ?> <span class="sm-mono"><?php echo marstek_t('TEXT.DIST_SCHNAPPSCHUSS'); ?></span><?php echo marstek_t('TEXT.STATUSBAUSTEIN_PUSH_MIT_GELADEN_EN'); ?>
 </div>
 </div>
 
 <!-- ================= Reiter: Test ================= -->
-<div class="mv-pane" id="tab-test">
+<div class="sm-pane" id="tab-test">
 <h2>Test</h2>
-<div class="mv-legende">
-<span><i class="mv-punkt mv-b-lesen"></i> Ansehen &mdash; fragt nur ab, ver&auml;ndert nichts</span>
-<span><i class="mv-punkt mv-b-technik"></i> Technische Auskunft &mdash; f&uuml;r die Fehlersuche</span>
-<span><i class="mv-punkt mv-b-aktion"></i> L&ouml;st etwas aus &mdash; sendet oder ver&auml;ndert</span>
+<div class="sm-legende">
+<span><i class="sm-punkt sm-b-lesen"></i> <?php echo marstek_t('LEGENDE.LESEN'); ?></span>
+<span><i class="sm-punkt sm-b-technik"></i> <?php echo marstek_t('LEGENDE.TECHNIK'); ?></span>
+<span><i class="sm-punkt sm-b-aktion"></i> <?php echo marstek_t('LEGENDE.AKTION'); ?></span>
 </div>
 
-<h3 class="mv-h3">Technische Auskunft</h3>
-<div class="mv-knopfreihe">
-<a class="mv-btn mv-b-technik"  href="/plugins/<?= e($mv_plugindir) ?>/marstek.php?status&amp;debug=1<?= $q ?>" target="_blank">Status abrufen (Debug)</a>
-<a class="mv-btn mv-b-technik"  href="/plugins/<?= e($mv_plugindir) ?>/marstek.php?energy&amp;debug=1<?= $q ?>" target="_blank">kWh-Z&auml;hler (Modbus, Debug)</a>
-<a class="mv-btn mv-b-technik"  href="/plugins/<?= e($mv_plugindir) ?>/marstek.php?diag=1<?= $q ?>" target="_blank">Diagnose (Selbsttest)</a>
-<a class="mv-btn mv-b-technik"  href="/plugins/<?= e($mv_plugindir) ?>/marstek.php?ranks&amp;debug=1" target="_blank">Spot-Ranking (Debug)</a>
+<h3 class="sm-h3"><?php echo marstek_t('TEXT.TECHNISCHE_AUSKUNFT'); ?></h3>
+<div class="sm-knopfreihe">
+<a class="sm-btn sm-b-technik"  href="/plugins/<?= e($mv_plugindir) ?><?php echo marstek_t('TEXT.MARSTEK_PHP_STATUSDEBUG_1'); ?><?= $q ?>" target="_blank"><?php echo marstek_t('TEXT.STATUS_ABRUFEN_DEBUG'); ?></a>
+<a class="sm-btn sm-b-technik"  href="/plugins/<?= e($mv_plugindir) ?><?php echo marstek_t('TEXT.MARSTEK_PHP_ENERGYDEBUG_1'); ?><?= $q ?>" target="_blank"><?php echo marstek_t('TEXT.KWH_ZHLER_MODBUS_DEBUG'); ?></a>
+<a class="sm-btn sm-b-technik"  href="/plugins/<?= e($mv_plugindir) ?><?php echo marstek_t('TEXT.MARSTEK_PHP_DIAG_1'); ?><?= $q ?>" target="_blank"><?php echo marstek_t('TEXT.DIAGNOSE_SELBSTTEST'); ?></a>
+<a class="sm-btn sm-b-technik"  href="/plugins/<?= e($mv_plugindir) ?>/marstek.php?ranks&amp;debug=1" target="_blank"><?php echo marstek_t('TEXT.SPOT_RANKING_DEBUG'); ?></a>
 </div>
 
-<h3 class="mv-h3">L&ouml;st etwas aus</h3>
-<div class="mv-knopfreihe">
-<a class="mv-btn mv-b-aktion"  href="/plugins/<?= e($mv_plugindir) ?>/marstek.php?p=0&amp;t=60<?= $q ?>" target="_blank">Leerlauf senden (p=0)</a>
-<a class="mv-btn mv-b-aktion"  href="/plugins/<?= e($mv_plugindir) ?>/marstek.php?p=-800&amp;t=120<?= $q ?>" target="_blank">Entladen pr&uuml;fen (p=-800)</a>
-<a class="mv-btn mv-b-aktion"  href="/plugins/<?= e($mv_plugindir) ?>/marstek.php?p=800&amp;t=120<?= $q ?>" target="_blank">Laden pr&uuml;fen (p=+800)</a>
-<a class="mv-btn mv-b-aktion"  href="/plugins/<?= e($mv_plugindir) ?>/marstek.php?mode=auto<?= $q ?>" target="_blank">Modus Auto (Handbetrieb)</a>
+<h3 class="sm-h3"><?php echo marstek_t('TEXT.LST_ETWAS_AUS'); ?></h3>
+<div class="sm-knopfreihe">
+<a class="sm-btn sm-b-aktion"  href="/plugins/<?= e($mv_plugindir) ?><?php echo marstek_t('TEXT.MARSTEK_PHP_P_0T_60'); ?><?= $q ?>&amp;token=<?= e($mv_cfg['aktionstoken']) ?>" target="_blank"><?php echo marstek_t('TEXT.LEERLAUF_SENDEN_P_0'); ?></a>
+<a class="sm-btn sm-b-aktion"  href="/plugins/<?= e($mv_plugindir) ?><?php echo marstek_t('TEXT.MARSTEK_PHP_P_800T_120'); ?><?= $q ?>&amp;token=<?= e($mv_cfg['aktionstoken']) ?>" target="_blank"><?php echo marstek_t('TEXT.ENTLADEN_PRFEN_P_800'); ?></a>
+<a class="sm-btn sm-b-aktion"  href="/plugins/<?= e($mv_plugindir) ?><?php echo marstek_t('TEXT.MARSTEK_PHP_P_800T_120_2'); ?><?= $q ?>&amp;token=<?= e($mv_cfg['aktionstoken']) ?>" target="_blank"><?php echo marstek_t('TEXT.LADEN_PRFEN_P_800'); ?></a>
+<a class="sm-btn sm-b-aktion"  href="/plugins/<?= e($mv_plugindir) ?><?php echo marstek_t('TEXT.MARSTEK_PHP_MODE_AUTO'); ?><?= $q ?>&amp;token=<?= e($mv_cfg['aktionstoken']) ?>" target="_blank"><?php echo marstek_t('TEXT.MODUS_AUTO_HANDBETRIEB'); ?></a>
 </div>
 
 <?php $testdevs = $mv_devices ? $mv_devices : array(1 => array('name' => 'Ger&auml;t 1'));
 foreach ($testdevs as $n => $d) { $q = $n > 1 ? '&amp;dev=' . $n : ''; ?>
-<p><b><?= e($d['name']) ?></b><?= $n > 1 ? ' <span class="mv-small">(Aufrufe mit &amp;dev=' . $n . ')</span>' : '' ?><br>
+<p><b><?= e($d['name']) ?></b><?= $n > 1 ? ' <span class="sm-small">(Aufrufe mit &amp;dev=' . $n . ')</span>' : '' ?><br>
 
 <?php if (!empty($d['modbus'])) { ?><?php } ?>
 
 </p>
 <?php } ?>
 
-<div class="mv-small">
-&bull; <b>Status abrufen</b> zeigt die Rohantworten des Ger&auml;ts (ES.GetStatus / Bat.GetStatus / Marstek.GetDevice
-mit Modell + Firmware) sowie Antwortzeit und die Loxone-Zeile.<br>
-&bull; <b>Spot-Ranking</b> listet alle Stundenpreise der n&auml;chsten 24 h inkl. Rang der aktuellen Stunde.<br>
-&bull; <b>Leerlauf senden</b> setzt den Passiv-Sollwert auf 0 W f&uuml;r 60 s &mdash; ungef&auml;hrlicher Verbindungstest.<br>
-&bull; <b>Entladen pr&uuml;fen</b> / <b>Laden pr&uuml;fen</b> geben von Hand 800 W f&uuml;r 120 s vor. Damit l&auml;sst sich trennen,
-ob der Speicher selbst nicht abgibt oder ob aus Loxone einfach kein negativer Sollwert kommt: Reagiert das Ger&auml;t hier,
-liegt es an der Ansteuerung. Nach 120 s stoppt der Watchdog von selbst.<br>
-&bull; <b>Modus Auto</b> gibt die Regie an den Speicher zur&uuml;ck (z. B. wenn Loxone l&auml;ngere Zeit ausf&auml;llt).
+<div class="sm-small">
+&bull; <b><?php echo marstek_t('TEXT.STATUS_ABRUFEN'); ?></b> <?php echo marstek_t('TEXT.ZEIGT_DIE_ROHANTWORTEN_DES_GERTS_E'); ?><br>
+&bull; <b><?php echo marstek_t('TEXT.SPOT_RANKING'); ?></b> <?php echo marstek_t('TEXT.LISTET_ALLE_STUNDENPREISE_DER_NCHS'); ?><br>
+&bull; <b><?php echo marstek_t('TEXT.LEERLAUF_SENDEN'); ?></b> <?php echo marstek_t('TEXT.SETZT_DEN_PASSIV_SOLLWERT_AUF_0_W_'); ?><br>
+&bull; <b><?php echo marstek_t('TEXT.ENTLADEN_PRFEN'); ?></b> / <b><?php echo marstek_t('TEXT.LADEN_PRFEN'); ?></b> <?php echo marstek_t('TEXT.GEBEN_VON_HAND_800_W_FR_120_S_VOR_'); ?><br>
+&bull; <b><?php echo marstek_t('TEXT.MODUS_AUTO'); ?></b> <?php echo marstek_t('TEXT.GIBT_DIE_REGIE_AN_DEN_SPEICHER_ZUR'); ?>
 </div>
 </div>
 
-<!-- ================= Reiter: Logdateien ================= -->
-<div class="mv-pane" id="tab-log">
+<!-- ================= Reiter: <?php echo marstek_t('TEXT.LOGDATEI'); ?>en ================= -->
+<div class="sm-pane" id="tab-log">
 <h2>Logdatei</h2>
-<div class="mv-small" style="margin-bottom:8px;">Protokolliert werden Status-/Sollwert-&Auml;nderungen (nur bei Strukturwechsel, kein Zahlenspam), Modus-Wechsel, Auto-Fallback und Fehler. Neueste Eintr&auml;ge oben (max. 300 angezeigt).<br>Datei: <span class="mv-mono"><?= e($mv_log_file) ?></span></div>
+<div class="sm-small" style="margin-bottom:8px;"><?php echo marstek_t('TEXT.PROTOKOLLIERT_WERDEN_STATUS_SOLLWE'); ?><br><?php echo marstek_t('TEXT.DATEI'); ?> <span class="sm-mono"><?= e($mv_log_file) ?></span></div>
 <?php if ($mv_log_lines) { ?>
-<div class="mv-log"><?= e(implode("\n", $mv_log_lines)) ?></div>
+<div class="sm-log"><?= e(implode("\n", $mv_log_lines)) ?></div>
 <?php } else { ?>
-<div class="mv-alert mv-info">Noch keine Log-Eintr&auml;ge vorhanden.</div>
+<div class="sm-alert sm-info"><?php echo marstek_t('TEXT.NOCH_KEINE_LOG_EINTRGE_VORHANDEN'); ?></div>
 <?php } ?>
-<form method="post" style="margin-top:10px;">
+<form action="index.php" method="post" style="margin-top:10px;">
     <input data-role="none" type="hidden" name="clearlog" value="1">
     <input data-role="none" type="hidden" name="activetab" value="tab-log">
-    <button data-role="none" class="mv-btn" type="submit" style="background:#c62828;">Log leeren</button>
+    <button data-role="none" class="sm-btn" type="submit" style="background:#c62828;"><?php echo marstek_t('TEXT.LOG_LEEREN'); ?></button>
 </form>
 </div>
 
 </div>
 <script>
 (function () {
-    var tabs = document.querySelectorAll('.mv-tab');
+    var tabs = document.querySelectorAll('.sm-tab');
     function activate(id) {
-        tabs.forEach(function (t) { t.classList.toggle('mv-active', t.dataset.pane === id); });
-        document.querySelectorAll('.mv-pane').forEach(function (p) { p.classList.toggle('mv-active', p.id === id); });
+        tabs.forEach(function (t) { t.classList.toggle('sm-active', t.dataset.pane === id); });
+        document.querySelectorAll('.sm-pane').forEach(function (p) { p.classList.toggle('sm-active', p.id === id); });
     }
     tabs.forEach(function (t) { t.addEventListener('click', function () { activate(t.dataset.pane); }); });
     activate(<?= json_encode($mv_active_tab) ?>);

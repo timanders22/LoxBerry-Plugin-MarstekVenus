@@ -64,6 +64,7 @@ function marstek_config() {
         'mqtt_enabled' => 0,
         'mqtt_topic' => 'marstek',
         'fallback_min' => 30,         // Standard 30 min; 0 = Auto-Fallback aus
+        'aktionstoken' => '',         // schuetzt ?p= und ?mode= (unangemeldeter Endpunkt)
     );
     // Migration: alte Ein-Geraete-Konfiguration (ip/port/pmax_* auf oberster Ebene)
     if (empty($cfg['devices']) && !empty($cfg['ip'])) {
@@ -106,6 +107,22 @@ function marstek_dev($n) {
     $devs = marstek_devices();
     $n = max(1, (int) $n);
     return isset($devs[$n]) ? $devs[$n] : null;
+}
+
+/**
+ * Zufallstoken fuer die schaltenden Aufrufe (?p=, ?mode=).
+ *
+ * Der Endpunkt liegt im unangemeldeten Bereich, damit Loxone ihn ohne
+ * Zugangsdaten erreicht. Ohne Token koennte jedes Geraet im Netz den
+ * Speicher fernsteuern.
+ */
+function marstek_token_erzeugen($laenge = 24) {
+    $zeichen = 'abcdefghijkmnpqrstuvwxyz23456789';
+    $t = '';
+    for ($i = 0; $i < $laenge; $i++) {
+        $t .= $zeichen[random_int(0, strlen($zeichen) - 1)];
+    }
+    return $t;
 }
 
 function marstek_tmpdir() {
@@ -681,4 +698,69 @@ function marstek_mqtt_publish(array $st, $dev = 1) {
         @socket_sendto($s, $msg, strlen($msg), 0, '127.0.0.1', $udpport);
     }
     socket_close($s);
+}
+
+/* ==================================================================
+ * Sprache (Pflicht: Deutsch und Englisch)
+ *
+ * Englisch ist die Rueckfallebene, nicht Deutsch: wer eine dritte Sprache
+ * eingestellt hat, versteht eher Englisch. Deshalb muss language_en.ini
+ * immer vollstaendig sein.
+ * ================================================================== */
+
+function marstek_sprache()
+{
+    $sprache = 'de';
+    if (class_exists('LBSystem', false) && method_exists('LBSystem', 'lblanguage')) {
+        $sprache = LBSystem::lblanguage();
+    } elseif (getenv('LBLANG')) {
+        $sprache = getenv('LBLANG');
+    }
+    $sprache = strtolower(substr((string) $sprache, 0, 2));
+    return in_array($sprache, array('de', 'en'), true) ? $sprache : 'en';
+}
+
+/**
+ * Text zu einem Schluessel "ABSCHNITT.SCHLUESSEL".
+ *
+ * Ist der Schluessel unbekannt, wird er selbst zurueckgegeben - so faellt
+ * beim Durchsehen sofort auf, was noch fehlt, statt dass die Seite leer
+ * bleibt.
+ */
+function marstek_t($schluessel)
+{
+    static $texte = null;
+    if ($texte === null) {
+        // Installiert liegen die Dateien unter
+        // <home>/templates/plugins/<ordner>/lang/ - der Ordnername ergibt
+        // sich aus dem Ablageort dieser Datei.
+        $home = getenv('LBHOMEDIR');
+        if (!$home || !is_dir($home)) {
+            foreach (array('/opt/loxberry', '/home/loxberry/loxberry') as $k) {
+                if (is_dir($k)) { $home = $k; break; }
+            }
+        }
+        $ordner = basename(dirname(__FILE__));
+        $pfad = $home . '/templates/plugins/' . $ordner . '/lang';
+        if (!is_dir($pfad)) {
+            // Nicht installiert (Entwicklung): neben dem Plugin nachsehen.
+            $pfad = dirname(dirname(dirname(__FILE__))) . '/templates/lang';
+        }
+        $texte = @parse_ini_file($pfad . '/language_' . marstek_sprache() . '.ini',
+                                 true, INI_SCANNER_RAW);
+        if (!is_array($texte)) { $texte = array(); }
+        $rueck = @parse_ini_file($pfad . '/language_en.ini', true, INI_SCANNER_RAW);
+        if (is_array($rueck)) { $texte = array_replace_recursive($rueck, $texte); }
+        // parse_ini_file mit INI_SCANNER_RAW liefert die Werte samt der
+        // Anfuehrungszeichen zurueck, in die sie in der Datei stehen muessen.
+        // Die gehoeren nicht in die Ausgabe.
+        foreach ($texte as $ab => $paare) {
+            if (!is_array($paare)) { continue; }
+            foreach ($paare as $s => $w) {
+                $texte[$ab][$s] = trim((string) $w, '"');
+            }
+        }
+    }
+    list($a, $s) = array_pad(explode('.', $schluessel, 2), 2, '');
+    return isset($texte[$a][$s]) ? $texte[$a][$s] : $schluessel;
 }
