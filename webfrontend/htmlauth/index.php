@@ -73,7 +73,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['token_neu'])) {
         @mkdir($mv_config_dir, 0775, true);
     }
     $mv_json_tok = json_encode($mv_cfg_tok, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
-    if (@file_put_contents($mv_config_file, $mv_json_tok) !== false) {
+    // json_encode liefert bei ungueltigem UTF-8 false, und file_put_contents
+    // schriebe dann eine Datei mit NULL Bytes - und meldete das als Erfolg.
+    if ($mv_json_tok !== false && @file_put_contents($mv_config_file, $mv_json_tok) !== false) {
         @copy($mv_config_file, $mv_backup_file);
         $mv_token_meldung = 'Neues Token erzeugt. <b>Die Adressen in Loxone m&uuml;ssen '
                           . 'angepasst werden</b> &ndash; die alten funktionieren nicht mehr.';
@@ -122,7 +124,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save']) && !isset($_P
             @mkdir($mv_config_dir, 0775, true);
         }
         $json = json_encode($mv_cfg, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
-        if (@file_put_contents($mv_config_file, $json) !== false) {
+        // json_encode liefert bei ungueltigem UTF-8 false, und file_put_contents
+        // schriebe dann eine Datei mit NULL Bytes - und meldete das als Erfolg.
+        if ($json !== false && @file_put_contents($mv_config_file, $json) !== false) {
             $mv_saved = true;
             @copy($mv_config_file, $mv_backup_file); // Sicherung ausserhalb des Plugin-Ordners
         } else {
@@ -147,7 +151,9 @@ if (empty($mv_cfg['aktionstoken'])) {
         @mkdir($mv_config_dir, 0775, true);
     }
     $mv_json_init = json_encode($mv_cfg, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
-    if (@file_put_contents($mv_config_file, $mv_json_init) !== false) {
+    // json_encode liefert bei ungueltigem UTF-8 false, und file_put_contents
+    // schriebe dann eine Datei mit NULL Bytes - und meldete das als Erfolg.
+    if ($mv_json_init !== false && @file_put_contents($mv_config_file, $mv_json_init) !== false) {
         @copy($mv_config_file, $mv_backup_file);
     }
 }
