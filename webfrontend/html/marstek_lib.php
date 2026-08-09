@@ -133,6 +133,51 @@ function marstek_tmpdir() {
     return $p['tmp'];
 }
 
+/**
+ * Datei atomar schreiben.
+ *
+ * Bis 1.0.3 wurde ueberall unmittelbar geschrieben:
+ *     file_put_contents($cache, json_encode($out));
+ * Zwischen dem Anlegen und dem Fertigschreiben liegt aber ein Zeitfenster, in
+ * dem die Datei leer oder halb gefuellt ist. Genau dann kann ein anderer
+ * Prozess lesen - und dieses Plugin hat drei, die sich staendig begegnen: der
+ * Minutencron, der Miniserver-Endpunkt und die Oberflaeche. Der Leser bekommt
+ * dann eine halbe JSON-Datei, json_decode() liefert null, und der Wert faellt
+ * fuer diesen Durchgang aus.
+ *
+ * rename() ist auf demselben Dateisystem atomar: der Leser sieht entweder die
+ * alte oder die neue Datei, nie etwas dazwischen.
+ *
+ * Der Zwischenname enthaelt PID und Zufall, sonst faellt sich der Cron mit dem
+ * Endpunkt selbst ins Gehege, wenn beide gleichzeitig schreiben.
+ *
+ * Zurueckgegeben wird true/false - und zwar richtig: json_encode() liefert bei
+ * ungueltigem UTF-8 false, und file_put_contents($p, false) schreibt 0 Bytes
+ * und meldet 0, nicht false. Deshalb wird der Inhalt vorher geprueft.
+ */
+function marstek_write_atomic($datei, $inhalt) {
+    if ($inhalt === false || $inhalt === null) {
+        return false;
+    }
+    $inhalt = (string) $inhalt;
+    $tmp = $datei . '.' . getmypid() . '.' . mt_rand(1000, 9999) . '.tmp';
+    if (@file_put_contents($tmp, $inhalt) !== strlen($inhalt)) {
+        @unlink($tmp);
+        return false;
+    }
+    @chmod($tmp, 0644);          // Rechte VOR dem Umbenennen setzen
+    if (!@rename($tmp, $datei)) {
+        @unlink($tmp);
+        return false;
+    }
+    return true;
+}
+
+/** JSON atomar schreiben. Gibt false zurueck, wenn schon das Kodieren scheitert. */
+function marstek_write_json($datei, $daten) {
+    return marstek_write_atomic($datei, json_encode($daten));
+}
+
 function marstek_datadir() {
     $p = marstek_paths();
     if (!is_dir($p['data'])) {
@@ -248,7 +293,7 @@ function marstek_devinfo($dev = 1, $refresh = false) {
     if (is_array($r) && !isset($r['_error'])) {
         if (isset($r['device'])) { $out['model'] = (string) $r['device']; }
         if (isset($r['ver'])) { $out['fw'] = (int) $r['ver']; }
-        file_put_contents($cache, json_encode($out));
+        marstek_write_json($cache, $out);
     } elseif (is_file($cache)) {
         $c = json_decode((string) file_get_contents($cache), true);
         if (is_array($c)) {
@@ -310,7 +355,7 @@ function marstek_status($dev = 1, $force = false) {
                  'temp' => round((float) $temp, 1), 'gridp' => round((float) $gridp),
                  'fw' => (int) $info['fw'], 'model' => (string) $info['model'],
                  'ms' => $ok ? $ms : 0, 'ts' => time());
-    file_put_contents($cache, json_encode($out));
+    marstek_write_json($cache, $out);
     marstek_log_if_changed('status_dev' . $dev, "OK={$out['ok']} SOC={$out['soc']} BATP={$out['batp']} FW={$out['fw']} MS={$out['ms']}");
     if ($ok) {
         marstek_history_add($dev, $out['soc'], $out['batp']);
@@ -517,11 +562,11 @@ function marstek_energy($dev = 1, $force = false) {
             if (is_array($c) && !empty($c['chgt'])) {
                 $c['ok'] = 0;
                 $c['ts'] = time();
-                file_put_contents($cache, json_encode($c));
+                marstek_write_json($cache, $c);
                 return $c;
             }
         }
-        file_put_contents($cache, json_encode($off));
+        marstek_write_json($cache, $off);
         return $off;
     }
     $out = array(
@@ -536,7 +581,7 @@ function marstek_energy($dev = 1, $force = false) {
         'ts' => time(),
     );
     $out['eff'] = $out['chgt'] > 0 ? round($out['dist'] / $out['chgt'] * 100, 1) : 0;
-    file_put_contents($cache, json_encode($out));
+    marstek_write_json($cache, $out);
     marstek_log_if_changed('energy_dev' . (int) $dev, "OK CHGD={$out['chgd']} DISD={$out['disd']} CYC={$out['cyc']}");
     return $out;
 }
@@ -609,6 +654,60 @@ function marstek_diag($dev = 1) {
 
 /* ---------------- Spot-Ranking (aWATTar) ---------------- */
 
+/**
+ * Spotpreise bei aWATTar holen und in den Zwischenspeicher legen.
+ *
+ * NUR AUS DEM CRON AUFRUFEN - niemals aus marstek.php.
+ *
+ * Bis 1.0.3 stand dieser Abruf mitten in marstek_ranks(), und die wird vom
+ * Miniserver-Endpunkt ?ranks aufgerufen. Ist aWATTar langsam oder haengt
+ * (Verbindung wird angenommen, aber nicht beantwortet), blockierte der
+ * Endpunkt bis zum Zeitablauf - und zwar ZWEIMAL, weil die Schleife heute und
+ * morgen abfragt. Nachgemessen gegen einen Server, der annimmt und schweigt:
+ *
+ *     marstek.php?ranks blockiert 20,0 Sekunden
+ *
+ * Loxone fragt den virtuellen Eingang im Minutentakt ab. Zwanzig Sekunden
+ * Blockade je Abruf belegen einen HTTP-Eingangsstrang des Miniservers, und
+ * davon hat er wenige. Ein Endpunkt, den eine fremde Webseite lahmlegen kann,
+ * gehoert nicht an den Miniserver.
+ *
+ * Seither: der Cron holt, der Endpunkt liest nur noch die Datei. Faellt
+ * aWATTar aus, bleibt der letzte Stand stehen und ?ranks antwortet weiter in
+ * Millisekunden - mit aelteren, aber brauchbaren Zahlen.
+ */
+function marstek_spot_fetch() {
+    $cfg = marstek_config();
+    $tld = $cfg['awattar'] === 'at' ? 'at' : 'de';
+    $geholt = 0;
+    foreach (array(strtotime('today 00:00'), strtotime('tomorrow 00:00')) as $startTs) {
+        $cache = marstek_tmpdir() . '/spot_' . date('Ymd', $startTs) . '.cache';
+        if (is_file($cache) && time() - filemtime($cache) < 900) {
+            continue;
+        }
+        $start = $startTs * 1000;
+        $end = $start + 24 * 3600 * 1000;
+        $url = "https://api.awattar.$tld/v1/marketdata?start=$start&end=$end";
+        $ctx = stream_context_create(array('http' => array(
+            'timeout' => 10, 'user_agent' => 'LoxBerry Marstek')));
+        $neu = @file_get_contents($url, false, $ctx);
+        if ($neu !== false && strpos($neu, 'marketprice') !== false) {
+            marstek_write_atomic($cache, $neu);
+            $geholt++;
+        }
+        // Kein else: eine vorhandene aeltere Datei bleibt unangetastet
+        // stehen. Sie ist besser als gar nichts.
+    }
+    return $geholt;
+}
+
+/**
+ * Rang der aktuellen Stunde im 24-Stunden-Fenster.
+ *
+ * Liest ausschliesslich den Zwischenspeicher - siehe marstek_spot_fetch().
+ * Fehlt er noch (frische Installation, Cron lief noch nie), kommt
+ * ok=0 zurueck; Loxone sieht dann RANK=99 und schaltet nicht.
+ */
 function marstek_ranks($debug = false) {
     $cfg = marstek_config();
     $tld = $cfg['awattar'] === 'at' ? 'at' : 'de';
@@ -616,23 +715,13 @@ function marstek_ranks($debug = false) {
     if ($vat <= 0) { $vat = 1.0; }
     $rows = array();
     foreach (array(strtotime('today 00:00'), strtotime('tomorrow 00:00')) as $startTs) {
-        $start = $startTs * 1000; $end = $start + 24 * 3600 * 1000;
-        $url = "https://api.awattar.$tld/v1/marketdata?start=$start&end=$end";
+        // NUR LESEN. Der Abruf bei aWATTar geschieht ausschliesslich im Cron -
+        // siehe marstek_spot_fetch() und den Kommentar dort.
         $cache = marstek_tmpdir() . '/spot_' . date('Ymd', $startTs) . '.cache';
-        $js = false;
-        if (is_file($cache) && time() - filemtime($cache) < 900) {
-            $js = file_get_contents($cache);
-        } else {
-            $ctx = stream_context_create(array('http' => array('timeout' => 10, 'user_agent' => 'LoxBerry Marstek')));
-            $neu = @file_get_contents($url, false, $ctx);
-            if ($neu !== false && strpos($neu, 'marketprice') !== false) {
-                file_put_contents($cache, $neu);
-                $js = $neu;
-            } elseif (is_file($cache)) {
-                $js = file_get_contents($cache);
-            }
+        if (!is_file($cache)) {
+            continue;
         }
-        $d = @json_decode((string) $js, true);
+        $d = @json_decode((string) @file_get_contents($cache), true);
         if (isset($d['data'])) {
             $rows = array_merge($rows, $d['data']);
         }

@@ -69,6 +69,57 @@ Auto-Fallback, aWATTar-Markt + USt-Faktor, MQTT), **Einbindung in Loxone**
 empfohlener Logik), **Test** (je Gerät Status/Leerlauf/Auto, Spot-Ranking)
 und **Logdateien**. Über den Reitern: Statuszeile und SOC-Tagesgrafik je Gerät.
 
+## Was 1.0.4 behebt
+
+Fünf Befunde, jeder vor der Korrektur nachgemessen — nicht geschätzt.
+
+**1. Der Miniserver-Endpunkt hing an aWATTar.**
+`marstek.php?ranks` holte die Spotpreise selbst, wenn der Zwischenspeicher alt
+war. War aWATTar nicht erreichbar, wartete der Aufruf auf die Zeitgrenze —
+gemessen **20,0 Sekunden**, in denen der Miniserver auf eine Antwort wartete,
+die ein Webserver-Prozess blockierte. Loxone lief in seine eigene Zeitgrenze und
+sah einen Fehler, obwohl gültige Preise im Zwischenspeicher lagen.
+*Jetzt*: Das Holen macht ausschließlich der Cron (`marstek_spot_fetch()`), der
+Endpunkt liest die Datei nur noch. Antwortzeit auch bei totem aWATTar: unter
+einer Zehntelsekunde, mit den zuletzt geholten Preisen.
+
+**2. Der Cron stapelte sich.**
+Er läuft jede Minute. Mit vier nicht erreichbaren Geräten dauerte ein Durchgang
+**104 Sekunden** — jeder Durchgang startete also, bevor der vorige fertig war.
+Nach einer Viertelstunde lagen ein Dutzend übereinander, jeder mit offenen
+Sockets.
+*Jetzt*: `flock(LOCK_EX | LOCK_NB)` auf `cron.lock`. Läuft schon einer, endet
+der neue sofort. Protokolliert wird das höchstens stündlich, sonst liefe das
+Log voll.
+
+**3. Die Zwischenspeicher wurden nicht atomar geschrieben.**
+`file_put_contents()` schreibt nicht in einem Zug; wer währenddessen liest,
+bekommt eine halbe Datei. Ein Testlauf mit gleichzeitigem Lesen und Schreiben
+ergab **240 557 unvollständige Lesevorgänge**. Nach der Umstellung auf
+Zwischendatei + `rename()`: **0**.
+Mit erledigt: `json_encode()` gibt bei ungültigem UTF-8 `false` zurück, und
+`file_put_contents($p, false)` schreibt klaglos eine leere Datei.
+`marstek_write_json()` fängt das ab, bevor der gute Zwischenspeicher durch
+einen leeren ersetzt wird.
+
+**4. Zwei fest verdrahtete `/tmp`-Pfade.**
+In `index.php` stand `/tmp/marstekvenus/...` zweimal wörtlich, statt
+`marstek_tmpdir()` zu nutzen. Auf einem LoxBerry stimmt das zufällig — auf
+jedem System mit abweichendem Zwischenspeicherort nicht.
+
+**5. `$q` wurde benutzt, bevor es gesetzt war** (eigener Fund).
+Im Reiter „Test" hängen die Verweise ein `&dev=N` an, das aus `$q` kommt.
+`$q` wurde aber erst in der Geräteschleife *darunter* gesetzt. Unter PHP 7.4
+ist eine undefinierte Variable eine Notice, die verschluckt wird — die
+Verweise stimmten zufällig. Unter PHP 8 ist es eine Warning, und die landet
+sechsmal sichtbar mitten im HTML. Aufgefallen ist es erst beim Rendern gegen
+**beide** Fassungen; `php -l` findet so etwas nicht. Beide Fassungen liefern
+jetzt zeichengleiche Ausgabe ohne eine einzige Meldung.
+
+Dazu Hausstandard: Reiter als echte Verweise mit serverseitigem `sm-active`
+(funktioniert ohne JavaScript), `uninstall`, `prerelease.cfg`, fünf tote
+Sprachschlüssel entfernt — 383 Schlüssel, deutsch und englisch deckungsgleich.
+
 ## Datenschutz
 
 Es sind **keine persönlichen Daten** im Plugin enthalten — IP-Adressen und alle

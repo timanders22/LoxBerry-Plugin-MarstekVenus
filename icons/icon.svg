@@ -1,6 +1,73 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
-  <rect width="512" height="512" rx="96" fill="#6dac20"/>
-  <rect x="116" y="156" width="248" height="220" rx="28" fill="none" stroke="#ffffff" stroke-width="26"/>
-  <rect x="364" y="216" width="44" height="100" rx="14" fill="#ffffff"/>
-  <path d="M262 176 L188 286 h52 l-24 84 96 -124 h-56 z" fill="#ffffff"/>
+<?xml version="1.0" encoding="UTF-8"?>
+<svg width="512" height="512" viewBox="0 0 512 512" version="1.1" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <radialGradient id="bg-grad" cx="50%" cy="50%" r="50%" fx="35%" fy="35%">
+      <stop offset="0%" stop-color="#7dc424" />
+      <stop offset="65%" stop-color="#6dac20" />
+      <stop offset="100%" stop-color="#568819" />
+    </radialGradient>
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="120%">
+      <feDropShadow dx="0" dy="4" stdDeviation="4" flood-color="#000000" flood-opacity="0.25"/>
+    </filter>
+  </defs>
+
+  <!-- Outer Badge Ring -->
+  <circle cx="256" cy="256" r="246" fill="url(#bg-grad)" />
+  <circle cx="256" cy="256" r="232" fill="none" stroke="#ffffff" stroke-opacity="0.35" stroke-width="3" />
+
+  <g filter="url(#shadow)" fill="#ffffff">
+    <!-- Marstek Venus Battery Storage Main Unit Body -->
+    <rect x="186" y="75" width="140" height="215" rx="16" fill="#ffffff" />
+
+    <!-- Top LED Status Strip -->
+    <rect x="202" y="90" width="108" height="10" rx="4" fill="#6dac20" />
+    <circle cx="214" cy="95" r="2" fill="#ffffff" />
+    <circle cx="224" cy="95" r="2" fill="#ffffff" />
+    <circle cx="234" cy="95" r="2" fill="#ffffff" />
+
+    <!-- Upper Display Screen / Energy Monitor Cutout -->
+    <rect x="202" y="108" width="108" height="60" rx="8" fill="#6dac20" />
+    <!-- Lightning Bolt / Energy Pulse inside Screen -->
+    <polygon points="262,113 240,140 253,140 244,161 272,132 256,132" fill="#ffffff" />
+
+    <!-- Lower Modular Battery Storage Units -->
+    <!-- Battery Module 1 -->
+    <rect x="202" y="176" width="108" height="48" rx="6" fill="#6dac20" />
+    <!-- Charge Level Indicator Bars -->
+    <rect x="212" y="186" width="20" height="28" rx="3" fill="#ffffff" />
+    <rect x="236" y="186" width="20" height="28" rx="3" fill="#ffffff" />
+    <rect x="260" y="186" width="20" height="28" rx="3" fill="#ffffff" />
+    <rect x="284" y="186" width="20" height="28" rx="3" fill="#ffffff" opacity="0.4" />
+
+    <!-- Battery Module 2 -->
+    <rect x="202" y="232" width="108" height="46" rx="6" fill="#6dac20" />
+    <rect x="212" y="242" width="20" height="26" rx="3" fill="#ffffff" />
+    <rect x="236" y="242" width="20" height="26" rx="3" fill="#ffffff" />
+    <rect x="260" y="242" width="20" height="26" rx="3" fill="#ffffff" />
+    <rect x="284" y="242" width="20" height="26" rx="3" fill="#ffffff" />
+
+    <!-- Flanking Left Symbol: Photovoltaic Solar Panel -->
+    <g transform="translate(126, 165)">
+      <circle cx="0" cy="0" r="22" fill="#ffffff" />
+      <polygon points="-12,8 -6,-10 6,-10 12,8" fill="#6dac20" />
+      <line x1="0" y1="-10" x2="0" y2="8" stroke="#ffffff" stroke-width="2" />
+      <line x1="-9" y1="-1" x2="9" y2="-1" stroke="#ffffff" stroke-width="2" />
+    </g>
+
+    <!-- Flanking Right Symbol: Power Plug / Mains Grid Connection -->
+    <g transform="translate(386, 165)">
+      <circle cx="0" cy="0" r="22" fill="#ffffff" />
+      <rect x="-11" y="-8" width="22" height="15" rx="3" fill="#6dac20" />
+      <rect x="-7" y="-16" width="4" height="8" rx="1" fill="#6dac20" />
+      <rect x="3" y="-16" width="4" height="8" rx="1" fill="#6dac20" />
+      <line x1="0" y1="7" x2="0" y2="15" stroke="#6dac20" stroke-width="3" stroke-linecap="round" />
+    </g>
+
+    <!-- Dashed Line -->
+    <path d="M 150 345 L 362 345" stroke="#ffffff" stroke-width="4" stroke-dasharray="6 8" opacity="0.8" />
+  </g>
+
+  <!-- Typography -->
+  <text x="256" y="388" text-anchor="middle" fill="#ffffff" font-family="Arial, sans-serif" font-weight="900" font-size="29" letter-spacing="0.5">Marstek Venus</text>
+  <text x="256" y="424" text-anchor="middle" fill="#ffffff" font-family="Arial, sans-serif" font-weight="bold" font-size="20" letter-spacing="3">LOXBERRY</text>
 </svg>

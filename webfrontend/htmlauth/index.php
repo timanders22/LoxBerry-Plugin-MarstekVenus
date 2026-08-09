@@ -54,7 +54,13 @@ if ((!is_file($mv_config_file) || trim((string) @file_get_contents($mv_config_fi
 
 $mv_saved = false;
 $mv_save_error = '';
-$mv_active_tab = preg_match('/^tab-(settings|loxone|test|log)$/', (string) (isset($_POST['activetab']) ? $_POST['activetab'] : '')) ? $_POST['activetab'] : 'tab-settings';
+// Der Reiter kommt aus einem abgesendeten Formular (activetab) oder aus der
+// Adresse (?tab=...). Letzteres brauchen die Reiter, seit sie echte Verweise
+// sind - siehe die Reiterleiste weiter unten.
+$mv_wunsch = isset($_POST['activetab']) ? (string) $_POST['activetab']
+    : (isset($_GET['tab']) ? 'tab-' . (string) $_GET['tab'] : '');
+$mv_active_tab = preg_match('/^tab-(settings|loxone|test|log)$/', $mv_wunsch)
+    ? $mv_wunsch : 'tab-settings';
 
 // ---------- Log leeren ----------
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['clearlog'])) {
@@ -161,7 +167,9 @@ if (empty($mv_cfg['aktionstoken'])) {
 // Letzter Status je Geraet (Cache von marstek.php - KEIN Live-Aufruf, damit die Seite schnell laedt)
 $mv_statuses = array();
 foreach ($mv_devices as $n => $d) {
-    $st = @json_decode((string) @file_get_contents('/tmp/marstekvenus/status_dev' . $n . '.json'), true);
+    // marstek_tmpdir() statt eines harten '/tmp/...': der Ablageort steht in
+    // marstek_paths() und soll auch nur dort stehen.
+    $st = @json_decode((string) @file_get_contents(marstek_tmpdir() . '/status_dev' . $n . '.json'), true);
     if (is_array($st) && isset($st['soc'])) {
         $mv_statuses[$n] = $st;
     }
@@ -234,7 +242,8 @@ $mv_host = e(isset($_SERVER['HTTP_HOST']) ? $_SERVER['HTTP_HOST'] : '<loxberry-i
 .sm-mono { font-family: ui-monospace, monospace; background: #f5f5f5; padding: 2px 6px; border-radius: 4px; }
 .sm-small { font-size: 0.82em; color: #666; margin-top: 3px; }
 .sm-tabs { display: flex; gap: 4px; margin: 14px 0 0; border-bottom: 2px solid #6dac20; flex-wrap: wrap; }
-.sm-tab { background: #eee; border: 1px solid #ccc; border-bottom: 0; border-radius: 8px 8px 0 0; padding: 9px 18px; cursor: pointer; font-size: 0.95em; color: #444 !important; text-shadow: none !important; }
+.sm-tab { background: #eee; border: 1px solid #ccc; border-bottom: 0; border-radius: 8px 8px 0 0; padding: 9px 18px; cursor: pointer; font-size: 0.95em; color: #444 !important; text-shadow: none !important;
+  text-decoration: none; display: inline-block; }
 .sm-tab.sm-active { background: #6dac20; color: #fff !important; border-color: #6dac20; font-weight: 600; }
 .sm-pane { display: none; padding-top: 4px; }
 .sm-pane.sm-active { display: block; }
@@ -274,7 +283,7 @@ $mv_host = e(isset($_SERVER['HTTP_HOST']) ? $_SERVER['HTTP_HOST'] : '<loxberry-i
 <div class="sm-alert sm-info"><b><?= e($mv_devices[$n]['name']) ?></b> (<?= e(date('d.m.Y H:i:s', isset($st['ts']) ? (int) $st['ts'] : time())) ?><?php echo marstek_t('TEXT.LADEZUSTAND'); ?> <?= e($st['soc']) ?> <?php echo marstek_t('TEXT.BATTERIELEISTUNG'); ?> <?= e($st['batp']) ?> <?php echo marstek_t('TEXT.W_LDT_TEMPERATUR'); ?> <?= e($st['temp']) ?> <?php echo marstek_t('TEXT.C_VERBINDUNG'); ?> <?= !empty($st['ok']) ? 'OK' : '<b>GEST&Ouml;RT</b>' ?>
 <?php if (!empty($st['ok'])) { ?> &middot; <?= e(isset($st['model']) && $st['model'] !== '' ? $st['model'] : 'Venus') ?><?php echo marstek_t('TEXT.FIRMWARE'); ?> <?= (int) (isset($st['fw']) ? $st['fw'] : 0) ?> <?php echo marstek_t('TEXT.ANTWORTZEIT'); ?> <?= (int) (isset($st['ms']) ? $st['ms'] : 0) ?> ms<?php } ?>
 <?php if (!empty($mv_devices[$n]['modbus'])) {
-    $en = @json_decode((string) @file_get_contents('/tmp/marstekvenus/energy_dev' . $n . '.json'), true);
+    $en = @json_decode((string) @file_get_contents(marstek_tmpdir() . '/energy_dev' . $n . '.json'), true);
     if (is_array($en) && !empty($en['ok'])) { ?>
 <br><?php echo marstek_t('TEXT.ENERGIE_HEUTE'); ?> <b><?= e($en['chgd']) ?> kWh</b> <?php echo marstek_t('TEXT.GELADEN'); ?> <b><?= e($en['disd']) ?> kWh</b> <?php echo marstek_t('TEXT.ABGEGEBEN_MONAT'); ?> <?= e($en['chgm']) ?> / <?= e($en['dism']) ?> <?php echo marstek_t('TEXT.KWH_ZYKLEN'); ?> <?= (int) $en['cyc'] ?> <?php echo marstek_t('TEXT.WIRKUNGSGRAD_GESAMT'); ?> <?= e($en['eff']) ?> %
 <?php } } ?>
@@ -284,15 +293,31 @@ $mv_host = e(isset($_SERVER['HTTP_HOST']) ? $_SERVER['HTTP_HOST'] : '<loxberry-i
 </div>
 <?php } ?>
 
+<?php
+/*
+ * Die Reiter sind echte Verweise, keine <div>. Vorher stand hier
+ * <div class="sm-tab" data-pane="..."> - und weil alle Flaechen bis zum Lauf
+ * des JavaScripts auf display:none stehen, war die Seite ohne JavaScript
+ * vollstaendig leer. Jetzt setzt der Server die Klasse sm-active an Reiter
+ * UND Flaeche; das JavaScript spart nur noch den Seitenaufbau.
+ */
+$mv_reiter = array(
+    'tab-settings' => marstek_t('REITER.EINSTELLUNGEN'),
+    'tab-loxone'   => marstek_t('REITER.LOXONE'),
+    'tab-test'     => marstek_t('REITER.TEST'),
+    'tab-log'      => marstek_t('REITER.LOG'),
+);
+?>
 <div class="sm-tabs">
-    <div class="sm-tab" data-pane="tab-settings"><?php echo marstek_t('REITER.EINSTELLUNGEN'); ?></div>
-    <div class="sm-tab" data-pane="tab-loxone"><?php echo marstek_t('REITER.LOXONE'); ?></div>
-    <div class="sm-tab" data-pane="tab-test"><?php echo marstek_t('REITER.TEST'); ?></div>
-    <div class="sm-tab" data-pane="tab-log"><?php echo marstek_t('REITER.LOG'); ?></div>
+<?php foreach ($mv_reiter as $mv_id => $mv_bez) { ?>
+    <a class="sm-tab<?php echo $mv_active_tab === $mv_id ? ' sm-active' : ''; ?>"
+       data-pane="<?php echo e($mv_id); ?>"
+       href="index.php?tab=<?php echo e(substr($mv_id, 4)); ?>"><?php echo $mv_bez; ?></a>
+<?php } ?>
 </div>
 
 <!-- ================= Reiter: <?php echo marstek_t('TEXT.EINSTELLUNG'); ?>en ================= -->
-<div class="sm-pane" id="tab-settings">
+<div class="sm-pane<?php echo $mv_active_tab === 'tab-settings' ? ' sm-active' : ''; ?>" id="tab-settings">
 <form action="index.php" method="post" autocomplete="off">
 <input data-role="none" type="hidden" name="save" value="1">
 <input data-role="none" type="hidden" name="activetab" value="tab-settings">
@@ -368,7 +393,7 @@ $mv_host = e(isset($_SERVER['HTTP_HOST']) ? $_SERVER['HTTP_HOST'] : '<loxberry-i
 </div>
 
 <!-- ================= Reiter: Einbindung in Loxone ================= -->
-<div class="sm-pane" id="tab-loxone">
+<div class="sm-pane<?php echo $mv_active_tab === 'tab-loxone' ? ' sm-active' : ''; ?>" id="tab-loxone">
 <h2><?php echo marstek_t('TEXT.EINBINDUNG_IN_LOXONE_SCHRITT_FR_SC'); ?></h2>
 <p><?php echo marstek_t('TEXT.LOXONE_IST_DER_ENERGIEMANAGER_DER_'); ?> <b><?php echo marstek_t('TEXT.AUTO_FALLBACK'); ?></b> <?php echo marstek_t('TEXT.DANACH_ZURCK_IN_DEN_AUTO_MODUS'); ?></p>
 
@@ -547,7 +572,7 @@ $mv_host = e(isset($_SERVER['HTTP_HOST']) ? $_SERVER['HTTP_HOST'] : '<loxberry-i
 </div>
 
 <!-- ================= Reiter: Test ================= -->
-<div class="sm-pane" id="tab-test">
+<div class="sm-pane<?php echo $mv_active_tab === 'tab-test' ? ' sm-active' : ''; ?>" id="tab-test">
 <h2>Test</h2>
 <div class="sm-legende">
 <span><i class="sm-punkt sm-b-lesen"></i> <?php echo marstek_t('LEGENDE.LESEN'); ?></span>
@@ -555,6 +580,22 @@ $mv_host = e(isset($_SERVER['HTTP_HOST']) ? $_SERVER['HTTP_HOST'] : '<loxberry-i
 <span><i class="sm-punkt sm-b-aktion"></i> <?php echo marstek_t('LEGENDE.AKTION'); ?></span>
 </div>
 
+<?php
+/*
+ * $q haengt an die Adressen ein "&dev=N" an, wenn es um ein Geraet ab Nummer
+ * 2 geht. Die Knopfreihen hier oben gelten dem ERSTEN Geraet, also bleibt es
+ * leer.
+ *
+ * Bis 1.0.3 fehlte diese Zeile: $q wurde erst weiter unten in der
+ * foreach-Schleife ueber die Geraete gesetzt - also NACH seiner Verwendung.
+ * Unter PHP 7.4 ist eine undefinierte Variable eine Notice, die das
+ * error_reporting der Oberflaeche verschluckt, und <?= $q ?> gibt nichts aus;
+ * die Verweise stimmten also zufaellig. Unter PHP 8 ist es eine Warning - und
+ * die landet mitten im HTML, sechsmal, im Reiter Test. Beim Rendern gegen beide
+ * Fassungen ist es aufgefallen.
+ */
+$q = '';
+?>
 <h3 class="sm-h3"><?php echo marstek_t('TEXT.TECHNISCHE_AUSKUNFT'); ?></h3>
 <div class="sm-knopfreihe">
 <a class="sm-btn sm-b-technik"  href="/plugins/<?= e($mv_plugindir) ?><?php echo marstek_t('TEXT.MARSTEK_PHP_STATUSDEBUG_1'); ?><?= $q ?>" target="_blank"><?php echo marstek_t('TEXT.STATUS_ABRUFEN_DEBUG'); ?></a>
@@ -590,7 +631,7 @@ foreach ($testdevs as $n => $d) { $q = $n > 1 ? '&amp;dev=' . $n : ''; ?>
 </div>
 
 <!-- ================= Reiter: <?php echo marstek_t('TEXT.LOGDATEI'); ?>en ================= -->
-<div class="sm-pane" id="tab-log">
+<div class="sm-pane<?php echo $mv_active_tab === 'tab-log' ? ' sm-active' : ''; ?>" id="tab-log">
 <h2>Logdatei</h2>
 <div class="sm-small" style="margin-bottom:8px;"><?php echo marstek_t('TEXT.PROTOKOLLIERT_WERDEN_STATUS_SOLLWE'); ?><br><?php echo marstek_t('TEXT.DATEI'); ?> <span class="sm-mono"><?= e($mv_log_file) ?></span></div>
 <?php if ($mv_log_lines) { ?>
