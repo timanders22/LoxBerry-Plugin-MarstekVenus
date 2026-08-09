@@ -38,7 +38,32 @@
  * abgeschossen wird.
  */
 
-require_once __DIR__ . '/marstek_lib.php';
+/*
+ * WARUM DIESE DATEI IN bin/ LIEGT UND NICHT MEHR IN webfrontend/html/
+ *
+ * Aufgerufen wird sie ausschliesslich vom Minutencron, und zwar ueber die
+ * PHP-Kommandozeile - nicht ueber HTTP. Im HTML-Verzeichnis war sie darueber
+ * hinaus fuer jeden im Heimnetz abrufbar, und ein Aufruf stoesst einen
+ * vollstaendigen Durchgang an: Abruf bei aWATTar, Statusabfrage aller
+ * Geraete, MQTT-Meldung - und ueber den Auto-Fallback kann ein Speicher in
+ * den Auto-Modus wechseln. Die Sperre weiter unten begrenzt zwar das
+ * Stapeln, verhindert den Aufruf aber nicht.
+ *
+ * marstek_lib.php bleibt im HTML-Verzeichnis: dort liegt auch marstek.php,
+ * der Endpunkt fuer den Miniserver. LoxBerry ersetzt die Marke bei der
+ * Installation durch den Plugin-HTML-Pfad; laeuft dieses Skript aus dem
+ * ausgepackten Archiv heraus, steht sie noch unveraendert da, und der Pfad
+ * wird relativ zu dieser Datei gebildet.
+ */
+$mv_htmldir = 'REPLACELBPHTMLDIR';
+if (strpos($mv_htmldir, 'REPLACE') === 0 || !is_file($mv_htmldir . '/marstek_lib.php')) {
+    $mv_htmldir = dirname(__DIR__) . '/webfrontend/html';
+}
+if (!is_file($mv_htmldir . '/marstek_lib.php')) {
+    fwrite(STDERR, "marstek_lib.php nicht gefunden (gesucht in $mv_htmldir)\n");
+    exit(1);
+}
+require_once $mv_htmldir . '/marstek_lib.php';
 
 $sperre = marstek_tmpdir() . '/cron.lock';
 $fp = @fopen($sperre, 'c');

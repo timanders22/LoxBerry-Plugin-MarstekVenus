@@ -35,7 +35,12 @@ PDIR=$3
 BASE="${5:-$LBHOMEDIR}"
 [ -n "$BASE" ] && [ -d "$BASE" ] || BASE="/opt/loxberry"
 
-SKRIPT="$BASE/webfrontend/html/plugins/$PDIR/cron.php"
+# Seit 1.0.5 liegt cron.php unter bin/, nicht mehr unter webfrontend/html/.
+# Beide Orte werden geprueft: nach einem Update aus einer aelteren Fassung
+# kann noch ein Durchgang vom alten Pfad laufen, und der soll ebenso beendet
+# werden. Verglichen wird argumentweise gegen den vollen Pfad.
+SKRIPT="$BASE/bin/plugins/$PDIR/cron.php"
+SKRIPT_ALT="$BASE/webfrontend/html/plugins/$PDIR/cron.php"
 TMP="/tmp/marstekvenus"
 BK="$BASE/config/plugins/$PDIR.backup.json"
 
@@ -43,7 +48,7 @@ GEFUNDEN=0
 for D in /proc/[0-9]*; do
     P=$(basename "$D")
     [ -r "$D/cmdline" ] || continue
-    if tr '\0' '\n' < "$D/cmdline" 2>/dev/null | grep -qxF "$SKRIPT"; then
+    if tr '\0' '\n' < "$D/cmdline" 2>/dev/null | grep -qxF -e "$SKRIPT" -e "$SKRIPT_ALT"; then
         kill "$P" 2>/dev/null
         for i in 1 2 3 4 5; do
             kill -0 "$P" 2>/dev/null || break

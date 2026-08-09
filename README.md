@@ -69,6 +69,35 @@ Auto-Fallback, aWATTar-Markt + USt-Faktor, MQTT), **Einbindung in Loxone**
 empfohlener Logik), **Test** (je Gerät Status/Leerlauf/Auto, Spot-Ranking)
 und **Logdateien**. Über den Reitern: Statuszeile und SOC-Tagesgrafik je Gerät.
 
+## Was 1.0.5 behebt
+
+**`cron.php` liegt jetzt unter `bin/` statt unter `webfrontend/html/`.**
+
+Aufgerufen wird die Datei ausschließlich vom Minutencron, und zwar über die
+PHP-Kommandozeile — nie über HTTP. Im HTML-Verzeichnis war sie zusätzlich für
+jeden im Heimnetz abrufbar, und ein Aufruf stößt einen vollständigen Durchgang
+an: Abruf bei aWATTar, Statusabfrage aller Geräte, MQTT-Meldung — und über den
+Auto-Fallback kann ein Speicher in den Auto-Modus wechseln. Die Sperre aus 1.0.4
+begrenzt zwar das Stapeln, verhindert den Aufruf aber nicht.
+
+- `cron/cron.01min` ruft die Datei jetzt über `REPLACELBPBINDIR` auf.
+- `marstek_lib.php` bleibt im HTML-Verzeichnis, weil dort auch `marstek.php`
+  liegt — der Endpunkt für den Miniserver. `cron.php` findet die Bibliothek über
+  `REPLACELBPHTMLDIR`, mit Rückfall auf den Pfad relativ zur eigenen Datei für
+  den Lauf aus dem ausgepackten Archiv. Bleibt beides erfolglos, bricht das
+  Skript mit einer Meldung ab, statt still nichts zu tun.
+- **`uninstall/uninstall` musste mit.** Es sucht einen laufenden Durchgang
+  argumentweise über den vollen Pfad — der zeigte noch auf das HTML-Verzeichnis
+  und hätte nach dem Umzug nie mehr getroffen. Jetzt werden beide Orte geprüft:
+  nach einem Update aus einer älteren Fassung kann noch ein Durchgang vom alten
+  Pfad laufen.
+- `postupgrade.sh` entfernt eine aus 1.0.4 stehengebliebene `cron.php` aus dem
+  HTML-Verzeichnis — sonst hinge der Zweck des Umzugs davon ab, dass das Update
+  das alte Verzeichnis restlos ersetzt.
+
+**An den Loxone-Adressen ändert sich nichts.** `marstek.php` bleibt, wo es ist,
+mit denselben Parametern; das Token schützt weiterhin `?p=` und `?mode=`.
+
 ## Was 1.0.4 behebt
 
 Fünf Befunde, jeder vor der Korrektur nachgemessen — nicht geschätzt.

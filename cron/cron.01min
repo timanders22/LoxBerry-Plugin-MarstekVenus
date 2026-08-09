@@ -1,4 +1,9 @@
 #!/bin/sh
 # Marstek Venus E - minutlicher Cron (SOC-Verlauf, kWh-Zaehler, Auto-Fallback)
-# REPLACELBPHTMLDIR wird bei der Installation durch den Plugin-HTML-Pfad ersetzt.
-php "REPLACELBPHTMLDIR/cron.php" >/dev/null 2>&1
+#
+# cron.php liegt seit 1.0.5 unter bin/ statt unter webfrontend/html/. Es wird
+# nur von hier aufgerufen, ueber die PHP-Kommandozeile; im HTML-Verzeichnis
+# war es zusaetzlich fuer jeden im Heimnetz per HTTP abrufbar.
+#
+# REPLACELBPBINDIR wird bei der Installation durch den bin-Pfad des Plugins ersetzt.
+php "REPLACELBPBINDIR/cron.php" >/dev/null 2>&1

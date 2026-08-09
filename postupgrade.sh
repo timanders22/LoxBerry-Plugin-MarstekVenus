@@ -18,4 +18,20 @@ if [ -f "$ARGV1/marstek.log.backup" ]; then
     mkdir -p "$BASE/log/plugins/$PFOLDER"
     cp -p "$ARGV1/marstek.log.backup" "$BASE/log/plugins/$PFOLDER/marstek.log"
 fi
+
+# Altlast aus 1.0.4 und frueher: cron.php lag im HTML-Verzeichnis und war damit
+# fuer jeden im Heimnetz per HTTP abrufbar - ein Aufruf stiess einen ganzen
+# Durchgang an (aWATTar, Statusabfrage, MQTT, Auto-Fallback). Seit 1.0.5 liegt
+# die Datei unter bin/ und wird nur noch vom Cron ueber die Kommandozeile
+# aufgerufen.
+#
+# Diese Zeilen stehen hier, weil sie nichts kosten und der Zweck des Umzugs
+# sonst davon abhinge, dass das Update das alte HTML-Verzeichnis restlos
+# ersetzt.
+ALT="$BASE/webfrontend/html/plugins/$PFOLDER/cron.php"
+if [ -f "$ALT" ]; then
+    rm -f "$ALT"
+    echo "<OK> Alte, ueber HTTP erreichbare cron.php entfernt."
+fi
+
 exit 0
