@@ -486,7 +486,7 @@ $mv_reiter = array(
 <div class="sm-knopfreihe sm-b-aktion">
   <form method="post" action="index.php">
     <input data-role="none" type="hidden" name="activetab" value="tab-loxone">
-    <button data-role="none" type="submit" name="token_neu" value="1"><?php echo stek_t('TEXT.K_TOKEN_NEU'); ?></button>
+    <button data-role="none" type="submit" name="token_neu" value="1"><?php echo marstek_t('TEXT.K_TOKEN_NEU'); ?></button>
   </form>
 </div>
 <div class="sm-legende">
