@@ -221,7 +221,7 @@ function mv_soc_svg($points) {
 // und wuerde gleichnamige Plugin-Variablen ueberschreiben - daher hier ueberall mv_-Praefix.
 $mv_use_frame = class_exists('LBWeb', false);
 if ($mv_use_frame) {
-    LBWeb::lbheader('Marstek Venus E', 'https://wiki.loxberry.de/', '');
+    LBWeb::lbheader('Marstek Venus E', 'https://wiki.loxberry.de/', 'help.html');
 }
 $mv_host = e(isset($_SERVER['HTTP_HOST']) ? $_SERVER['HTTP_HOST'] : '<loxberry-ip>');
 ?>
@@ -457,7 +457,7 @@ $mv_reiter = array(
 <div class="sm-knopfreihe sm-b-aktion">
   <form method="post" action="index.php">
     <input data-role="none" type="hidden" name="activetab" value="tab-loxone">
-    <button data-role="none" type="submit" name="token_neu" value="1">Neues Token erzeugen</button>
+    <button data-role="none" type="submit" name="token_neu" value="1"><?php echo stek_t('TEXT.K_TOKEN_NEU'); ?></button>
   </form>
 </div>
 <div class="sm-legende">
@@ -575,9 +575,8 @@ $mv_reiter = array(
 <div class="sm-pane<?php echo $mv_active_tab === 'tab-test' ? ' sm-active' : ''; ?>" id="tab-test">
 <h2>Test</h2>
 <div class="sm-legende">
-<span><i class="sm-punkt sm-b-lesen"></i> <?php echo marstek_t('LEGENDE.LESEN'); ?></span>
-<span><i class="sm-punkt sm-b-technik"></i> <?php echo marstek_t('LEGENDE.TECHNIK'); ?></span>
-<span><i class="sm-punkt sm-b-aktion"></i> <?php echo marstek_t('LEGENDE.AKTION'); ?></span>
+<span><i class="sm-punkt sm-b-technik"></i><?php echo marstek_t('LEGENDE.TECHNIK'); ?></span>
+<span><i class="sm-punkt sm-b-aktion"></i>Aktion &ndash; &auml;ndert bestehende Loxone-Adressen</span>
 </div>
 
 <?php
