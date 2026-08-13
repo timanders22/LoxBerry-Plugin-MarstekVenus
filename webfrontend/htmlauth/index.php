@@ -59,7 +59,7 @@ $mv_save_error = '';
 // sind - siehe die Reiterleiste weiter unten.
 $mv_wunsch = isset($_POST['activetab']) ? (string) $_POST['activetab']
     : (isset($_GET['tab']) ? 'tab-' . (string) $_GET['tab'] : '');
-$mv_active_tab = preg_match('/^tab-(settings|loxone|test|log)$/', $mv_wunsch)
+$mv_active_tab = preg_match('/^tab-(settings|mqtt|loxone|test|log)$/', $mv_wunsch)
     ? $mv_wunsch : 'tab-settings';
 
 
@@ -105,6 +105,23 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['token_neu'])) {
     $mv_active_tab = 'tab-loxone';
 }
 
+// ---------- MQTT speichern (eigener Reiter seit 1.0.11, Hausstandard) ----------
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['mqtt_save'])) {
+    $mv_cfg_mq = function_exists('marstek_config') ? marstek_config() : array();
+    if (!is_array($mv_cfg_mq)) { $mv_cfg_mq = array(); }
+    $mv_cfg_mq['mqtt_enabled'] = isset($_POST['mqtt_enabled']) ? 1 : 0;
+    $mv_cfg_mq['mqtt_topic'] = preg_replace('#[^\w/\-]#', '', (string) (isset($_POST['mqtt_topic']) ? $_POST['mqtt_topic'] : 'marstek')) ?: 'marstek';
+    if (!is_dir($mv_config_dir)) { @mkdir($mv_config_dir, 0775, true); }
+    $mv_json_mq = json_encode($mv_cfg_mq, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    if ($mv_json_mq !== false && @file_put_contents($mv_config_file, $mv_json_mq) !== false) {
+        $mv_saved = true;
+        @copy($mv_config_file, $mv_backup_file);
+    } else {
+        $mv_save_error = 'Konfiguration konnte nicht gespeichert werden: ' . $mv_config_file;
+    }
+    $mv_active_tab = 'tab-mqtt';
+}
+
 // ---------- Speichern ----------
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save']) && !isset($_POST['clearlog'])) {
     $mv_cfg = array();
@@ -138,8 +155,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save']) && !isset($_P
     $mv_cfg['awattar'] = (isset($_POST['awattar']) && $_POST['awattar'] === 'at') ? 'at' : 'de';
     $vat = str_replace(',', '.', (string) (isset($_POST['vat']) ? $_POST['vat'] : '1.19'));
     $mv_cfg['vat'] = (is_numeric($vat) && $vat > 0.5 && $vat < 2) ? (float) $vat : 1.19;
-    $mv_cfg['mqtt_enabled'] = isset($_POST['mqtt_enabled']) ? 1 : 0;
-    $mv_cfg['mqtt_topic'] = preg_replace('#[^\w/\-]#', '', (string) (isset($_POST['mqtt_topic']) ? $_POST['mqtt_topic'] : 'marstek')) ?: 'marstek';
+    // Aus dem Bestand uebernehmen, was dieses Formular nicht mitschickt.
+    // BIS 1.0.10 FEHLTE DAS FUER aktionstoken: jedes Speichern der
+    // Einstellungen warf das Token still weg, der naechste Seitenaufruf
+    // erzeugte ein NEUES - und alle Loxone-Adressen liefen auf 403.
+    // MQTT wohnt seit 1.0.11 im eigenen Reiter (Hausstandard).
+    $mv_alt = function_exists('marstek_config') ? marstek_config() : array();
+    if (!is_array($mv_alt)) { $mv_alt = array(); }
+    $mv_cfg['aktionstoken'] = isset($mv_alt['aktionstoken']) ? (string) $mv_alt['aktionstoken'] : '';
+    $mv_cfg['mqtt_enabled'] = isset($mv_alt['mqtt_enabled']) ? (int) $mv_alt['mqtt_enabled'] : 0;
+    $mv_cfg['mqtt_topic'] = isset($mv_alt['mqtt_topic']) && $mv_alt['mqtt_topic'] !== '' ? $mv_alt['mqtt_topic'] : 'marstek';
     $mv_cfg['fallback_min'] = max(0, min(1440, (int) (isset($_POST['fallback_min']) ? $_POST['fallback_min'] : 0)));
     if ($mv_save_error === '') {
         if (!is_dir($mv_config_dir)) {
@@ -286,6 +311,8 @@ $mv_host = e(isset($_SERVER['HTTP_HOST']) ? $_SERVER['HTTP_HOST'] : '<loxberry-i
 .sm-info { background: #e3f2fd; border: 1px solid #90caf9; font-size: 0.9em; }
 .sm-mono { font-family: ui-monospace, monospace; background: #f5f5f5; padding: 2px 6px; border-radius: 4px; }
 .sm-small { font-size: 0.82em; color: #666; margin-top: 3px; }
+.sm-hinweis { border: 1px solid #cfe3b0; background: #f2f8ea; border-radius: 6px;
+    padding: 10px 12px; margin: 12px 0; font-size: 0.9em; }
 .sm-tabs { display: flex; gap: 4px; margin: 14px 0 0; border-bottom: 2px solid #6dac20; flex-wrap: wrap; }
 .sm-tab { background: #eee; border: 1px solid #ccc; border-bottom: 0; border-radius: 8px 8px 0 0; padding: 9px 18px; cursor: pointer; font-size: 0.95em; color: #444 !important; text-shadow: none !important;
   text-decoration: none; display: inline-block; }
@@ -317,6 +344,11 @@ $mv_host = e(isset($_SERVER['HTTP_HOST']) ? $_SERVER['HTTP_HOST'] : '<loxberry-i
 .sm-punkt.sm-b-lesen   { background: #6dac20; }
 .sm-punkt.sm-b-technik { background: #546e7a; }
 .sm-punkt.sm-b-aktion  { background: #e0620d; }
+
+/* Nachgetragene Definitionen (CSS-Luecken-Durchgang 13.08.2026):
+   benutzt, aber nie definiert - wortgleich aus der Hausstandard-Vorlage
+   bzw. der Referenzimplementierung uebernommen. */
+.sm-warn { background: #fdf3e3; border: 1px solid #e0620d; }
 </style>
 <div class="sm-wrap">
 
@@ -348,6 +380,7 @@ $mv_host = e(isset($_SERVER['HTTP_HOST']) ? $_SERVER['HTTP_HOST'] : '<loxberry-i
  */
 $mv_reiter = array(
     'tab-settings' => marstek_t('REITER.EINSTELLUNGEN'),
+    'tab-mqtt'     => marstek_t('REITER.MQTT'),
     'tab-loxone'   => marstek_t('REITER.LOXONE'),
     'tab-test'     => marstek_t('REITER.TEST'),
     'tab-log'      => marstek_t('REITER.LOG'),
@@ -418,6 +451,15 @@ $mv_reiter = array(
     </div>
 </div>
 
+<button data-role="none" class="sm-btn" type="submit"><?php echo marstek_t('TEXT.SPEICHERN'); ?></button>
+</form>
+</div>
+
+<!-- ================= Reiter: MQTT (eigener Reiter seit 1.0.11, Hausstandard) ================= -->
+<div class="sm-pane<?php echo $mv_active_tab === 'tab-mqtt' ? ' sm-active' : ''; ?>" id="tab-mqtt">
+<form action="index.php" method="post">
+<input data-role="none" type="hidden" name="mqtt_save" value="1">
+<input data-role="none" type="hidden" name="activetab" value="tab-mqtt">
 <h2><?php echo marstek_t('TEXT.MQTT_OPTIONAL'); ?></h2>
 <?php if (function_exists('marstek_mqtt_gateway_autostart') && marstek_mqtt_gateway_autostart() === false) { ?><div class="sm-alert sm-warn"><b>MQTT:</b> <?php echo marstek_t('TEXT.W_AUTOSTART'); ?></div><?php } ?>
 <label style="display:inline-flex;align-items:center;gap:6px;">
