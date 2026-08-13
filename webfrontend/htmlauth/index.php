@@ -62,6 +62,22 @@ $mv_wunsch = isset($_POST['activetab']) ? (string) $_POST['activetab']
 $mv_active_tab = preg_match('/^tab-(settings|loxone|test|log)$/', $mv_wunsch)
     ? $mv_wunsch : 'tab-settings';
 
+
+// ---------- Loxone-Vorlage herunterladen (Hausstandard) ----------
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['vorlage_vo']) && function_exists('marstek_vo_vorlage')) {
+    list($mv_vname, $mv_vinhalt) = marstek_vo_vorlage();
+    header('Content-Type: application/x-download');
+    header('Content-Disposition: attachment; filename="' . $mv_vname . '"');
+    echo $mv_vinhalt;
+    exit;
+}
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['vorlage']) && function_exists('marstek_vorlage')) {
+    list($mv_vname, $mv_vinhalt) = marstek_vorlage((string) $_POST['vorlage'], isset($_POST['vorlage_dev']) ? (int) $_POST['vorlage_dev'] : 1);
+    header('Content-Type: application/x-download');
+    header('Content-Disposition: attachment; filename="' . $mv_vname . '"');
+    echo $mv_vinhalt;
+    exit;
+}
 // ---------- Log leeren ----------
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['clearlog'])) {
     @mkdir(dirname($mv_log_file), 0775, true);
@@ -403,6 +419,7 @@ $mv_reiter = array(
 </div>
 
 <h2><?php echo marstek_t('TEXT.MQTT_OPTIONAL'); ?></h2>
+<?php if (function_exists('marstek_mqtt_gateway_autostart') && marstek_mqtt_gateway_autostart() === false) { ?><div class="sm-alert sm-warn"><b>MQTT:</b> <?php echo marstek_t('TEXT.W_AUTOSTART'); ?></div><?php } ?>
 <label style="display:inline-flex;align-items:center;gap:6px;">
     <input data-role="none" type="checkbox" name="mqtt_enabled" <?= !empty($mv_cfg['mqtt_enabled']) ? 'checked' : '' ?><?php echo marstek_t('TEXT.STATUS_ZUSTZLICH_PER_MQTT_VERFFENT'); ?>
 </label>
@@ -527,6 +544,22 @@ $mv_reiter = array(
 </table>
 <b><?php echo marstek_t('TEXT.WARUM_NICHT_GLEICH_ALLES_BER_MODBU'); ?></b> <?php echo marstek_t('TEXT.BEWUSSTE_ENTSCHEIDUNG_GESTEUERT_WI'); ?> <b><?php echo marstek_t('TEXT.WATCHDOG'); ?></b> <?php echo marstek_t('TEXT.HAT_SPEICHER_STOPPT_VON_SELBST_WEN'); ?>
 </div>
+
+<h2><?php echo marstek_t('TEXT.H_VORLAGE'); ?></h2>
+<div class="sm-hinweis"><?php echo marstek_t('TEXT.H_VORLAGE_TEXT'); ?></div>
+<?php foreach (array('status' => 'Status', 'energy' => 'Energie', 'ranks' => 'Preisraenge') as $mv_vs => $mv_vn) { ?>
+<form action="index.php" method="post" style="margin-bottom:8px; display:inline-block; margin-right:8px;">
+  <input data-role="none" type="hidden" name="activetab" value="tab-loxone">
+  <input data-role="none" type="hidden" name="vorlage" value="<?= $mv_vs ?>">
+  <button data-role="none" class="sm-btn" type="submit" style="background:#546e7a;"><?php echo marstek_t('TEXT.K_VORLAGE'); ?> (<?= $mv_vn ?>)</button>
+</form>
+<form action="index.php" method="post" style="margin-bottom:14px;">
+  <input data-role="none" type="hidden" name="activetab" value="tab-loxone">
+  <input data-role="none" type="hidden" name="vorlage_vo" value="1">
+  <button data-role="none" class="sm-btn" type="submit" style="background:#546e7a;"><?php echo marstek_t('TEXT.K_VORLAGE_VO'); ?></button>
+</form>
+<?php } ?>
+<div style="margin-bottom:14px;"></div>
 
 <div class="sm-step"><b><?php echo marstek_t('TEXT.SCHRITT_6_KOMPLETTE_BAUSTEIN_LISTE'); ?></b><br>
 <?php echo marstek_t('TEXT.SO_IST_DIE_LOGIK_IM_REFERENZPROJEK'); ?>

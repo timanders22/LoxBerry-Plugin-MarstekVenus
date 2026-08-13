@@ -897,3 +897,141 @@ function marstek_t($schluessel)
     list($a, $s) = array_pad(explode('.', $schluessel, 2), 2, '');
     return isset($texte[$a][$s]) ? $texte[$a][$s] : $schluessel;
 }
+
+/* ---------------- Loxone-Vorlage (Hausstandard "Alles auf einmal anlegen") ---------------- */
+/** satz => array(name => array(analog, min, max, einheit, kommentar)) */
+function marstek_felder($satz) {
+    if ($satz === 'energy') {
+        return array(
+            'OK'   => array(0, 0, 1, '', '1 = Werte gueltig'),
+            'CHGT' => array(1, 0, 1000000, 'kWh', 'geladen gesamt'),
+            'DIST' => array(1, 0, 1000000, 'kWh', 'entladen gesamt'),
+            'CHGD' => array(1, 0, 1000, 'kWh', 'geladen heute'),
+            'DISD' => array(1, 0, 1000, 'kWh', 'entladen heute'),
+            'CHGM' => array(1, 0, 100000, 'kWh', 'geladen diesen Monat'),
+            'DISM' => array(1, 0, 100000, 'kWh', 'entladen diesen Monat'),
+            'CYC'  => array(1, 0, 100000, '', 'Vollzyklen'),
+            'EFF'  => array(1, 0, 100, '%', 'Wirkungsgrad'),
+        );
+    }
+    if ($satz === 'ranks') {
+        return array(
+            'OK'    => array(0, 0, 1, '', '1 = Preisdaten gueltig'),
+            'N'     => array(1, 0, 48, '', 'Anzahl bewerteter Stunden'),
+            'RANK'  => array(1, 0, 48, '', 'Rang der aktuellen Stunde (1 = guenstigste)'),
+            'RANKD' => array(1, 0, 48, '', 'Rang bezogen auf den Tag'),
+            'CURP'  => array(1, -1, 10, 'EUR/kWh', 'aktueller Boersenpreis'),
+            'NEG'   => array(0, 0, 1, '', '1 = negativer Boersenpreis'),
+        );
+    }
+    return array(
+        'OK'    => array(0, 0, 1, '', '1 = Speicher erreichbar'),
+        'SOC'   => array(1, 0, 100, '%', 'Ladezustand'),
+        'BATP'  => array(1, -10000, 10000, 'W', 'Batterieleistung (+ laedt / - entlaedt)'),
+        'TEMP'  => array(1, -20, 80, 'GradC', 'Temperatur'),
+        'GRIDP' => array(1, -20000, 20000, 'W', 'Netzleistung am Speicher'),
+        'FW'    => array(1, 0, 100000, '', 'Firmwarestand'),
+        'MS'    => array(1, 0, 10, '', 'Betriebsmodus des Geraets'),
+    );
+}
+/** Gepruefter PHP-Nachbau des LoxoneTemplateBuilder - Attributreihenfolge,
+ *  CRLF und der Tabulator vor den Kindelementen entsprechen dem Original.
+ *  Uebernommen aus LoxBerry-Plugin-APC-UPS, nur das Kuerzel getauscht. */
+function marstek_xml_virtual_in_http($kopf, $cmds) {
+    $crlf = "\r\n";
+    $o = '<?xml version="1.0" encoding="utf-8"?>' . $crlf;
+    $o .= '<VirtualInHttp HintText="" ';
+    $o .= 'Title="' . marstek_x($kopf['title']) . '" ';
+    $o .= 'Comment="' . marstek_x(isset($kopf['comment']) ? $kopf['comment'] : '') . '" ';
+    $o .= 'Address="' . marstek_x(isset($kopf['address']) ? $kopf['address'] : '') . '" ';
+    $o .= 'PollingTime="' . marstek_x(isset($kopf['polling']) ? $kopf['polling'] : '60') . '"';
+    $o .= '>' . $crlf;
+    $o .= "\t" . '<Info templateType="2" minVersion="17010727"/>' . $crlf; // wie Original-Export aus Loxone Config 17.1
+    foreach ($cmds as $c) {
+        $o .= "\t" . '<VirtualInHttpCmd ';
+        $o .= 'Title="' . marstek_x($c['title']) . '" ';
+        $o .= 'Comment="' . marstek_x($c['comment']) . '" ';
+        $o .= 'Check="' . marstek_x($c['check']) . '" ';
+        $o .= 'Signed="' . ($c['min'] < 0 ? 'true' : 'false') . '" ';
+        $o .= 'Analog="' . ($c['analog'] ? 'true' : 'false') . '" ';
+        $o .= 'SourceValLow="0" DestValLow="0" SourceValHigh="1" DestValHigh="1" DefVal="0" ';
+        $o .= 'MinVal="' . (int) $c['min'] . '" ';
+        $o .= 'MaxVal="' . (int) $c['max'] . '" ';
+        $o .= 'Unit="' . marstek_x(isset($c['unit']) ? $c['unit'] : '<v>') . '" ';
+        $o .= 'HintText=""';
+        $o .= '/>' . $crlf;
+    }
+    $o .= '</VirtualInHttp>' . $crlf;
+    return $o;
+}
+
+function marstek_x($s) {
+    return htmlspecialchars((string) $s, ENT_QUOTES | ENT_XML1, 'UTF-8');
+}
+
+/** Hausstandard: Gateway-Autostart aus general.json (PLUGIN_HAUSREGELN Abschnitt 3). */
+function marstek_mqtt_gateway_autostart() {
+    $p = marstek_paths();
+    $home = isset($p['lbhome']) && $p['lbhome'] !== '' ? $p['lbhome'] : (getenv('LBHOMEDIR') ?: '/opt/loxberry');
+    $gj = $home . '/config/system/general.json';
+    if (!is_file($gj)) { return null; }
+    $d = json_decode((string) @file_get_contents($gj), true);
+    if (!is_array($d) || !isset($d['Mqtt'])) { return null; }
+    return !empty($d['Mqtt']['Gatewayautostart']);
+}
+
+/** Vorlage fuer den Import in Loxone Config. Rueckgabe: array(name, inhalt) */
+function marstek_vorlage($satz = 'status', $dev = 1) {
+    $satz = in_array($satz, array('status', 'energy', 'ranks'), true) ? $satz : 'status';
+    $host = isset($_SERVER['HTTP_HOST']) && $_SERVER['HTTP_HOST'] !== ''
+        ? preg_replace('/[^A-Za-z0-9\.\-:]/', '', (string) $_SERVER['HTTP_HOST'])
+        : (gethostname() ?: 'loxberry');
+    $ordner = getenv('LBPPLUGINDIR') ?: 'marstekvenus';
+    $dev = max(1, min(9, (int) $dev));
+    $cmds = array();
+    foreach (marstek_felder($satz) as $name => $f) {
+        list($analog, $min, $max, $einheit, $text) = $f;
+        $cmds[] = array(
+            'title' => 'MARSTEK_' . strtoupper($satz) . '_' . $name . ($dev > 1 ? '_' . $dev : ''),
+            'comment' => $text . ($einheit !== '' ? ' [' . $einheit . ']' : ''),
+            'check' => '\i' . $name . '=\i\v',
+            'unit' => ($einheit !== '' ? '<v.1> ' . $einheit : '<v.1>'),
+            'analog' => $analog, 'min' => $min, 'max' => $max,
+        );
+    }
+    $q = '?' . $satz . ($dev > 1 ? '&dev=' . $dev : '');
+    return array('VI_marstek_' . $satz . ($dev > 1 ? '_' . $dev : '') . '.xml', marstek_xml_virtual_in_http(array(
+        'title' => 'Marstek ' . ucfirst($satz) . ($dev > 1 ? ' ' . $dev : ''),
+        'address' => 'http://' . $host . '/plugins/' . $ordner . '/marstek.php' . $q,
+        'polling' => $satz === 'status' ? '60' : '300',
+        'comment' => 'Erzeugt vom LoxBerry-Plugin Marstek Venus E (' . date('d.m.Y') . '). '
+                   . 'Loxone Config legt beim Import neu an und ueberschreibt nichts - '
+                   . 'zweimal eingelesen ergibt doppelte Bausteine.',
+    ), $cmds));
+}
+
+/** Vorlage der Steuerbefehle (Virtueller Ausgang) - Format wie Original-Export aus Loxone Config 17.1. */
+function marstek_vo_vorlage() {
+    $host = isset($_SERVER['HTTP_HOST']) && $_SERVER['HTTP_HOST'] !== ''
+        ? preg_replace('/[^A-Za-z0-9\.\-:]/', '', (string) $_SERVER['HTTP_HOST'])
+        : (gethostname() ?: 'loxberry');
+    $ordner = getenv('LBPPLUGINDIR') ?: 'marstekvenus';
+    $cfg = marstek_config();
+    $tok = isset($cfg['aktionstoken']) ? (string) $cfg['aktionstoken'] : '';
+    $crlf = "\r\n";
+    $o = '<?xml version="1.0" encoding="utf-8"?>' . $crlf;
+    $o .= '<VirtualOut HintText="" Title="Marstek Speicher steuern (LoxBerry-Plugin)" Comment="Steuerbefehle ueber das Plugin ' . marstek_x($ordner) . ' - enthaelt das Aktionstoken." Address="http://' . marstek_x($host) . '" CmdInit="" CloseAfterSend="true" CmdSep="">' . $crlf;
+    $o .= "\t" . '<Info templateType="3" minVersion="17010727"/>' . $crlf;
+    foreach (array(
+        array('Sollwert setzen (W, + laedt / - entlaedt)', '/marstek.php?p=<v>&t=240', true),
+        array('Handbetrieb: Modus Auto', '/marstek.php?mode=auto', false),
+        array('Handbetrieb: Modus AI', '/marstek.php?mode=ai', false),
+    ) as $c) {
+        $o .= "\t" . '<VirtualOutCmd Title="' . marstek_x($c[0]) . '" Comment="" CmdOnMethod="GET" CmdOffMethod="GET" ';
+        $o .= 'CmdOn="' . marstek_x('/plugins/' . $ordner . $c[1] . '&token=' . $tok) . '" ';
+        $o .= 'CmdOnHTTP="" CmdOnPost="" CmdOff="" CmdOffHTTP="" CmdOffPost="" CmdAnswer="" ';
+        $o .= 'Analog="' . (!empty($c[2]) ? 'true' : 'false') . '" Repeat="0" RepeatRate="0" HintText=""/>' . $crlf;
+    }
+    $o .= '</VirtualOut>' . $crlf;
+    return array('VQ_marstek_steuern.xml', $o);
+}
