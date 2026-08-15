@@ -19,6 +19,8 @@
  *                           kWh-Zaehler direkt vom Geraet via Modbus TCP (nur lesend;
  *                           muss beim Geraet aktiviert sein): gesamt/Tag/Monat geladen
  *                           + abgegeben, Zyklen, Wirkungsgrad gesamt in %
+ *   ?selftest=1&token=T  -> prueft NUR das Token und antwortet; ruehrt den
+ *                           Speicher nicht an (kein Schalten, keine Verbindung)
  *   ?debug=1             -> Rohdaten anzeigen
  */
 
@@ -26,6 +28,38 @@ require_once __DIR__ . '/marstek_lib.php';
 header('Content-Type: text/plain; charset=utf-8');
 $debug = isset($_GET['debug']);
 $dev = isset($_GET['dev']) ? max(1, min(9, (int) $_GET['dev'])) : 1;
+
+/* ---------- Selbsttest: Token pruefen, ohne etwas zu schalten ----------
+ *
+ * WOZU
+ * Ob das in Loxone eingetragene Token noch stimmt, liess sich bisher nur
+ * herausfinden, indem man wirklich schaltete - beim Speicher also den
+ * Betriebsmodus umstellte. Wer nur nachsehen wollte, musste am Geraet etwas
+ * veraendern. Das ist der falsche Preis fuer eine Auskunft.
+ *
+ * ?selftest=1&token=... antwortet daher genau wie die schaltenden Befehle,
+ * ruehrt den Speicher aber nicht an: keine Verbindung zum Geraet, kein
+ * Schreibzugriff, kein Protokolleintrag mit Wirkung.
+ *
+ * Antwort: SELFTEST;OK=1;TOKEN=OK bzw. HTTP 403 und SELFTEST;OK=0;ERR=TOKEN
+ */
+if (isset($_GET['selftest'])) {
+    $mv_cfg_st = marstek_config();
+    $mv_soll_st = isset($mv_cfg_st['aktionstoken']) ? (string) $mv_cfg_st['aktionstoken'] : '';
+    $mv_ist_st = isset($_GET['token']) ? (string) $_GET['token'] : '';
+    if ($mv_soll_st === '') {
+        http_response_code(403);
+        echo "SELFTEST;OK=0;ERR=KEIN_TOKEN_EINGERICHTET\n";
+        exit;
+    }
+    if (!hash_equals($mv_soll_st, $mv_ist_st)) {
+        http_response_code(403);
+        echo "SELFTEST;OK=0;ERR=TOKEN\n";
+        exit;
+    }
+    echo "SELFTEST;OK=1;TOKEN=OK;DEV=$dev\n";
+    exit;
+}
 
 /* ---------- Token-Pruefung fuer schaltende Befehle (p, mode) ---------- */
 if (isset($_GET['p']) || isset($_GET['mode'])) {

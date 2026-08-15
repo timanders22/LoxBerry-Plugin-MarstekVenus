@@ -13,6 +13,17 @@ den Auto-Modus des Geräts zurück.
 
 Kompatibel mit LoxBerry 3.x und **LoxBerry 4** (reines PHP, läuft mit PHP 7.4 und 8.x).
 
+## Neu in 1.0.13
+**Token pruefbar, ohne den Speicher anzufassen.** Ob das in Loxone eingetragene
+Merkwort noch stimmt, liess sich bisher nur herausfinden, indem man wirklich
+schaltete — also den Betriebsmodus des Speichers veraenderte. Wer nur nachsehen
+wollte, zahlte dafuer mit einem Eingriff ins Geraet.
+
+Neu: `?selftest=1&token=…` laeuft durch dieselbe Pruefung wie die schaltenden
+Aufrufe und antwortet `SELFTEST;OK=1;TOKEN=OK` beziehungsweise HTTP 403 mit
+`SELFTEST;OK=0;ERR=TOKEN`. Der Speicher wird dabei nicht angesprochen: keine
+Verbindung, kein Schreibzugriff.
+
 ## Funktionen
 
 - Status, Passiv-Sollwert (+ = laden, − = entladen) und Modus-Rückgabe über die
