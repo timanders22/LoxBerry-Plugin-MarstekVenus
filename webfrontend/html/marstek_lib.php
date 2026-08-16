@@ -559,7 +559,21 @@ function marstek_u32($regs, $i) {
 }
 
 /** Energiezaehler per Modbus TCP (Cache 300 s). Nur wenn beim Geraet aktiviert. */
+/**
+ * Die kWh-Zaehler ermitteln - und das Ergebnis per MQTT melden.
+ *
+ * Die Meldung sitzt bewusst in dieser Huelle und nicht in der Ermittlung:
+ * die hat fuenf Ruecksprungstellen (Modbus aus, Zwischenspeicher, keine
+ * Antwort mit und ohne alten Stand, frische Werte), und an vier davon haette
+ * man die Meldung vergessen koennen. Hier gibt es nur eine.
+ */
 function marstek_energy($dev = 1, $force = false) {
+    $e = marstek_energy_ermitteln($dev, $force);
+    marstek_mqtt_publish_energy($e, $dev);
+    return $e;
+}
+
+function marstek_energy_ermitteln($dev = 1, $force = false) {
     $d = marstek_dev($dev);
     $off = array('ok' => 0, 'chgt' => 0, 'dist' => 0, 'chgd' => 0, 'disd' => 0,
                  'chgm' => 0, 'dism' => 0, 'cyc' => 0, 'eff' => 0, 'ts' => time());
@@ -737,7 +751,21 @@ function marstek_spot_fetch() {
  * Fehlt er noch (frische Installation, Cron lief noch nie), kommt
  * ok=0 zurueck; Loxone sieht dann RANK=99 und schaltet nicht.
  */
+/**
+ * Rang der aktuellen Stunde - und das Ergebnis per MQTT melden.
+ *
+ * Wie bei den Energiezaehlern sitzt die Meldung in einer Huelle: die
+ * Ermittlung hat zwei Ruecksprungstellen, und eine davon ist der Fall
+ * "keine Preise da". Auch der gehoert gemeldet, sonst steht im Broker der
+ * Rang von gestern und sieht aus wie der von heute.
+ */
 function marstek_ranks($debug = false) {
+    $r = marstek_ranks_ermitteln($debug);
+    marstek_mqtt_publish_ranks($r);
+    return $r;
+}
+
+function marstek_ranks_ermitteln($debug = false) {
     $cfg = marstek_config();
     $tld = $cfg['awattar'] === 'at' ? 'at' : 'de';
     $vat = (float) $cfg['vat'];
@@ -797,6 +825,121 @@ function marstek_mqtt_wert_saeubern($v)
 {
     $wert = str_replace(array("\r\n", "\r", "\n", "\t"), ' ', (string) $v);
     return trim(preg_replace('/ {2,}/', ' ', $wert));
+}
+
+/**
+ * Themen unter einem Praefix senden - gemeinsamer Unterbau der drei
+ * Veroeffentlichungen (Status, Energiezaehler, Spotpreis-Raenge).
+ *
+ * Rueckgabe: true, wenn gesendet wurde.
+ */
+function marstek_mqtt_senden(array $werte, $prefix)
+{
+    $p = marstek_paths();
+    if ($p['lbhome'] === '') {
+        return false;
+    }
+    $gen = @json_decode((string) @file_get_contents($p['lbhome'] . '/config/system/general.json'), true);
+    $udpport = 0;
+    // is_array vor dem verschachtelten Zugriff: waere $gen['Mqtt'] eine
+    // Zeichenkette mit Inhalt, verrechnete PHP 'Udpinport' zu Position 0,
+    // isset waere WAHR, und der Port ergaebe sich aus dem ersten Buchstaben.
+    if (isset($gen['Mqtt']) && is_array($gen['Mqtt']) && isset($gen['Mqtt']['Udpinport'])) {
+        $udpport = (int) $gen['Mqtt']['Udpinport'];
+    }
+    if (!$udpport && isset($gen['mqtt']) && is_array($gen['mqtt']) && isset($gen['mqtt']['udpinport'])) {
+        $udpport = (int) $gen['mqtt']['udpinport'];
+    }
+    if ($udpport < 1 || $udpport > 65535) {
+        return false; // MQTT-Gateway nicht konfiguriert
+    }
+    $s = @socket_create(AF_INET, SOCK_DGRAM, SOL_UDP);
+    if (!$s) {
+        return false;
+    }
+    foreach ($werte as $k => $v) {
+        $msg = 'publish ' . $prefix . '/' . $k . ' ' . marstek_mqtt_wert_saeubern($v);
+        @socket_sendto($s, $msg, strlen($msg), 0, '127.0.0.1', $udpport);
+    }
+    socket_close($s);
+    return true;
+}
+
+/**
+ * Nur senden, wenn sich etwas geaendert hat - mindestens aber halbstuendlich
+ * als Lebenszeichen. Genau das Verhalten der uebrigen Linien des Hauses.
+ *
+ * Warum nicht wie beim Status jedes Mal: die Energiezaehler und die
+ * Spotpreis-Raenge aendern sich im Stundentakt, der Cron laeuft aber jede
+ * Minute. Ohne diese Bremse stuenden 15 Themen je Minute im Broker, die
+ * sechzigmal hintereinander denselben Wert tragen.
+ */
+function marstek_mqtt_senden_bei_aenderung(array $werte, $prefix, $merkername)
+{
+    $sig = json_encode($werte);
+    if ($sig === false) { $sig = 'unlesbar'; }
+    $sigf = marstek_tmpdir() . '/mqtt_sig_' . $merkername . '.txt';
+    $beat = marstek_tmpdir() . '/mqtt_beat_' . $merkername;
+    $alt = is_file($sigf) ? (string) @file_get_contents($sigf) : '';
+    if ($sig === $alt && is_file($beat) && time() - filemtime($beat) <= 1800) {
+        return false;
+    }
+    if (!marstek_mqtt_senden($werte, $prefix)) {
+        return false;
+    }
+    @file_put_contents($sigf, $sig);
+    @touch($beat);
+    return true;
+}
+
+/** Praefix aus der Konfiguration, bei Geraet 2..9 mit angehaengter Nummer. */
+function marstek_mqtt_prefix($dev = 1)
+{
+    $cfg = marstek_config();
+    $prefix = trim((string) $cfg['mqtt_topic']) !== '' ? trim((string) $cfg['mqtt_topic']) : 'marstek';
+    if ((int) $dev > 1) { // Geraet 1 behaelt die kurzen Topics (Abwaertskompatibilitaet)
+        $prefix .= '/' . (int) $dev;
+    }
+    return $prefix;
+}
+
+/**
+ * Die kWh-Zaehler per MQTT (seit 1.0.14).
+ *
+ * Ueber HTTP gab es sie unter ?energy seit jeher, ueber MQTT gar nicht. Wer
+ * auf MQTT umstellte - der Hausstandard -, verlor damit die gesamte
+ * Energiebilanz des Speichers: geladen und abgegeben, gesamt, Tag und Monat,
+ * Zyklen und Wirkungsgrad. Neun Werte, die nirgends sonst herkommen.
+ */
+function marstek_mqtt_publish_energy(array $e, $dev = 1) {
+    $cfg = marstek_config();
+    if (empty($cfg['mqtt_enabled'])) {
+        return;
+    }
+    $werte = array();
+    foreach (array('ok', 'chgt', 'dist', 'chgd', 'disd', 'chgm', 'dism', 'cyc', 'eff') as $k) {
+        $werte['energie_' . $k] = isset($e[$k]) ? $e[$k] : 0;
+    }
+    marstek_mqtt_senden_bei_aenderung($werte, marstek_mqtt_prefix($dev), 'energie_dev' . (int) $dev);
+}
+
+/**
+ * Die Spotpreis-Raenge per MQTT (seit 1.0.14).
+ *
+ * Ueber HTTP gab es sie unter ?ranks, ueber MQTT nicht. Sie haengen am
+ * Strompreis, nicht am Geraet, und stehen deshalb ohne Geraetenummer unter
+ * dem Grundpraefix - auch bei mehreren Speichern gibt es sie nur einmal.
+ */
+function marstek_mqtt_publish_ranks(array $r) {
+    $cfg = marstek_config();
+    if (empty($cfg['mqtt_enabled'])) {
+        return;
+    }
+    $werte = array();
+    foreach (array('ok', 'n', 'rank', 'rankd', 'curp', 'neg') as $k) {
+        $werte['rang_' . $k] = isset($r[$k]) ? $r[$k] : 0;
+    }
+    marstek_mqtt_senden_bei_aenderung($werte, marstek_mqtt_prefix(1), 'raenge');
 }
 
 function marstek_mqtt_publish(array $st, $dev = 1) {

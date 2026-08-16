@@ -88,10 +88,17 @@ if (!flock($fp, LOCK_EX | LOCK_NB)) {
 // Ab hier laeuft genau ein Durchgang.
 marstek_spot_fetch();
 
+// Raenge einmal je Durchgang bilden - das meldet sie zugleich per MQTT
+// (seit 1.0.14). Ohne diesen Aufruf kaemen sie nur dann in den Broker, wenn
+// Loxone zufaellig ?ranks abfragt; wer auf MQTT umstellt, tut genau das nicht
+// mehr. Der Abruf ist billig: er liest nur die Datei, die marstek_spot_fetch()
+// eben abgelegt hat, und geht selbst nicht ins Netz.
+marstek_ranks();
+
 foreach (marstek_devices() as $n => $d) {
     marstek_status($n); // nutzt den Status-Cache; pollt also nicht haeufiger als noetig
     if (!empty($d['modbus'])) {
-        marstek_energy($n); // kWh-Zaehler via Modbus TCP (Cache 300 s)
+        marstek_energy($n); // kWh-Zaehler via Modbus TCP (Cache 300 s), meldet auch per MQTT
     }
 }
 marstek_fallback_check();

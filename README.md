@@ -13,6 +13,37 @@ den Auto-Modus des Geräts zurück.
 
 Kompatibel mit LoxBerry 3.x und **LoxBerry 4** (reines PHP, läuft mit PHP 7.4 und 8.x).
 
+## Neu in 1.0.14
+
+**Energiezähler und Spotpreis-Ränge gibt es jetzt auch über MQTT.** Sie standen
+bisher nur in den HTTP-Antworten `?energy` und `?ranks` — über MQTT kamen sieben
+Werte, über HTTP zweiundzwanzig. Wer auf MQTT umstellte (der Hausstandard),
+verlor damit die gesamte Energiebilanz des Speichers und den Preisrang der
+Stunde; beides kommt nirgends sonst her.
+
+Neue Themen unter dem eingestellten Präfix:
+
+| Themen | Inhalt |
+|---|---|
+| `energie_ok`, `energie_chgt`, `energie_dist`, `energie_chgd`, `energie_disd`, `energie_chgm`, `energie_dism`, `energie_cyc`, `energie_eff` | kWh geladen und abgegeben — gesamt, Tag, Monat — dazu Zyklen und Wirkungsgrad |
+| `rang_ok`, `rang_n`, `rang_rank`, `rang_rankd`, `rang_curp`, `rang_neg` | Rang der aktuellen Stunde unter den nächsten 24 h, aktueller Preis, Negativpreis-Merker |
+
+Drei Entscheidungen dahinter:
+
+- **Die Meldung sitzt in einer Hülle um die Ermittlung**, nicht in ihr.
+  `marstek_energy()` hat fünf Rücksprungstellen — Modbus aus,
+  Zwischenspeicher, keine Antwort mit und ohne alten Stand, frische Werte —
+  und an vier davon hätte man die Meldung vergessen können. So gibt es nur eine.
+- **Gemeldet wird bei Änderung, mindestens halbstündlich.** Der Cron läuft
+  jede Minute, die Zähler und Ränge ändern sich im Stundentakt; ohne diese
+  Bremse stünden fünfzehn Themen je Minute im Broker, die sechzigmal
+  hintereinander denselben Wert tragen. Der Status meldet unverändert jedes Mal.
+- **Die Ränge stehen ohne Gerätenummer** unter dem Grundpräfix: sie hängen am
+  Strompreis, nicht am Speicher, und gibt es auch bei mehreren Geräten nur einmal.
+  Der Cron bildet sie jetzt selbst — sonst kämen sie nur in den Broker, wenn
+  Loxone zufällig `?ranks` abfragt, und genau das tut man nach der Umstellung
+  nicht mehr.
+
 ## Neu in 1.0.13
 **Token pruefbar, ohne den Speicher anzufassen.** Ob das in Loxone eingetragene
 Merkwort noch stimmt, liess sich bisher nur herausfinden, indem man wirklich
@@ -43,7 +74,7 @@ Verbindung, kein Schreibzugriff.
   Passiv-Modus einen Watchdog hat
 - Spot-Stunden-Ranking der nächsten 24 h (aWATTar DE/AT, USt-Faktor einstellbar):
   `RANK` (1 = günstigste Stunde), `RANKD` (1 = teuerste), `NEG`, `CURP`
-- Optionales MQTT-Publish über das LoxBerry MQTT Gateway
+- Optionales MQTT-Publish über das LoxBerry MQTT Gateway — Status, Energiezähler (`energie_*`) und Spotpreis-Ränge (`rang_*`)
 - Konfiguration und Log überleben Plugin-Updates und sogar eine Neuinstallation
   (Sicherungskopie außerhalb des Plugin-Ordners)
 
