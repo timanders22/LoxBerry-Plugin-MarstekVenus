@@ -1,0 +1,74 @@
+#!/usr/bin/env php
+<?php
+/**
+ * Marstek Venus E - Anschluss an den LoxBerry-Healthcheck
+ *
+ * Seit LoxBerry 2.2 ruft sbin/healthcheck.pl eine ausfuehrbare Datei
+ * bin/healthcheck des Plugins auf - einmal mit 'title', einmal mit 'check'.
+ * Der Installer legt bin/ rekursiv mit 755 an, diese Datei ist damit von
+ * selbst ausfuehrbar.
+ *
+ * Antwort: JSON mit desc, status, result. Der Status folgt der Skala von
+ * LoxBerry:  3 = Fehler (rot), 4 = Warnung (gelb), 5 = in Ordnung (gruen),
+ * 6 = Hinweis (blau). Leer oder 0 = unbekannt (grau).
+ *
+ * WARUM DAS HIER STEHT
+ * Ein Speicher, der nicht mehr antwortet, und ein Minutentakt, der nicht mehr
+ * laeuft, standen bis 1.0.16 nirgends - nicht im Protokoll (die
+ * Signaturbildung blendete alle Zahlen aus und konnte den Wechsel gar nicht
+ * sehen), nicht auf der Startseite, nirgends. Wer die Plugin-Seite nicht
+ * oeffnet, hat es nicht erfahren.
+ *
+ * NEBENEFFEKT OHNE ZUSATZARBEIT: healthcheck.pl veroeffentlicht das Ergebnis
+ * zusaetzlich retained nach MQTT unter <rechnername>/healthcheck/<titel>.
+ * Das ist der einzige retained Weg, den dieses Plugin hat - das UDP-Tor des
+ * MQTT-Gateways kennt kein Retain-Flag.
+ *
+ * Der Healthcheck laeuft cron.daily und cron.reboot sowie auf Knopfdruck. Er
+ * ist keine Sekundenueberwachung - dafuer ist der Minutentakt da.
+ */
+
+error_reporting(E_ALL & ~E_DEPRECATED & ~E_NOTICE);
+ini_set('display_errors', '0');
+
+$mv_was = isset($argv[1]) ? strtolower((string) $argv[1]) : 'check';
+
+if ($mv_was === 'title') {
+    echo "Marstek Venus E\n";
+    exit(0);
+}
+
+// Installiert liegen bin/ und webfrontend/html/ in getrennten Baeumen. Die
+// Bibliothek wird deshalb ueber eine Kandidatenliste gesucht und nicht ueber
+// eine gerechnete Zahl ".." - das ist der Fehler, an dem andere Linien
+// gescheitert sind.
+$mv_lib = '';
+foreach (array(
+    dirname(dirname(dirname(__DIR__))) . '/webfrontend/html/plugins/' . basename(__DIR__) . '/marstek_lib.php',
+    dirname(dirname(__DIR__)) . '/webfrontend/html/plugins/' . basename(__DIR__) . '/marstek_lib.php',
+    dirname(__DIR__) . '/webfrontend/html/marstek_lib.php',
+) as $k) {
+    if (is_file($k)) { $mv_lib = $k; break; }
+}
+
+if ($mv_lib === '') {
+    // Fail closed, und mit Begruendung. Ein grauer Punkt ohne Text laesst den
+    // Anwender suchen, was er falsch gemacht hat.
+    echo json_encode(array(
+        'desc'   => 'Marstek Venus E',
+        'status' => 3,
+        'result' => 'Die Bibliothek marstek_lib.php wurde nicht gefunden - das Plugin ist unvollstaendig installiert.',
+    )) . "\n";
+    exit(0);
+}
+require_once $mv_lib;
+
+$b = marstek_befund();
+
+echo json_encode(array(
+    'desc'    => 'Marstek Venus E',
+    'status'  => (int) $b['schwere'],
+    'result'  => (string) $b['text'],
+    'logfile' => marstek_paths()['log'],
+), JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE) . "\n";
+exit(0);

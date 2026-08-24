@@ -2,14 +2,21 @@
 /**
  * Marstek Venus E - minutlicher Cron-Lauf (wird von cron/cron.01min aufgerufen)
  *
- * 1. Holt die Spotpreise bei aWATTar in den Zwischenspeicher. Das geschieht
+ * 1. Vervollstaendigt die Konfiguration, falls nach einem Update Schluessel
+ *    fehlen. Einmalig, nicht bei jedem Lauf.
+ * 2. Holt die Spotpreise bei aWATTar in den Zwischenspeicher. Das geschieht
  *    NUR hier - der Miniserver-Endpunkt marstek.php liest die Datei bloss
  *    noch. Siehe marstek_spot_fetch() in der Bibliothek.
- * 2. Fragt den Status aller konfigurierten Geraete ab (Cache-schonend) ->
+ * 3. Fragt den Status aller konfigurierten Geraete ab (Cache-schonend) ->
  *    fuellt den SOC-Tagesverlauf auch dann, wenn Loxone ein Geraet nicht pollt,
  *    und haelt MQTT aktuell.
- * 3. Auto-Fallback: kam laenger als die eingestellte Zeit kein Passiv-Sollwert
+ * 4. Schreibt die Tagesbilanz fort (in marstek_energy enthalten).
+ * 5. Auto-Fallback: kam laenger als die eingestellte Zeit kein Passiv-Sollwert
  *    mehr (z. B. Loxone ausgefallen), geht das Geraet zurueck in den Auto-Modus.
+ * 6. Setzt den Herzschlag. Das ist die einzige Stelle, an der er entsteht:
+ *    alles, was ZWEI Momentaufnahmen braucht, ist aus einem Seitenaufruf
+ *    grundsaetzlich nicht erreichbar. Der Endpunkt liest ihn, der Takt
+ *    schreibt ihn.
  *
  * ===================================================================
  * WARUM DIE SPERRE
@@ -19,13 +26,15 @@
  * Geraete aber nicht erreichbar - Sicherung gefallen, WLAN weg, Speicher im
  * Standby -, laeuft jede Abfrage in ihre Zeitgrenze:
  *
- *   marstek_rpc(): 2 Versuche x 2 Ziele (Unicast und Broadcast) x 3 s = 12 s,
+ *   marstek_rpc(): 2 Versuche x 2 Wege (Unicast und Rundruf) x 3 s = 12 s,
  *   und das mehrfach je Geraet (ES.GetStatus, Bat.GetStatus, ...), dazu
  *   Modbus TCP mit 2 Versuchen x 3 s.
  *
  * Nachgemessen mit vier nicht erreichbaren Geraeten:
  *
  *     ein Durchgang von cron.php: 104 Sekunden
+ *
+ * und mit einem einzigen nicht erreichbaren Geraet immer noch 38 Sekunden.
  *
  * Der Cron startet aber jede Minute neu. Ohne Sperre laegen nach einer
  * Viertelstunde ein Dutzend Durchgaenge uebereinander, jeder mit offenen
@@ -70,6 +79,7 @@ $fp = @fopen($sperre, 'c');
 if ($fp === false) {
     // Ohne Sperre lieber gar nicht laufen, als sich zu stapeln.
     marstek_log('Cron: Sperrdatei ' . $sperre . ' nicht anlegbar - Durchgang uebersprungen.');
+    fwrite(STDERR, "Sperrdatei $sperre nicht anlegbar\n");
     exit(1);
 }
 if (!flock($fp, LOCK_EX | LOCK_NB)) {
@@ -86,6 +96,18 @@ if (!flock($fp, LOCK_EX | LOCK_NB)) {
 }
 
 // Ab hier laeuft genau ein Durchgang.
+//
+// Dieser Merker sagt der Bibliothek, dass sie den SOC-Verlauf fortschreiben
+// darf. Der Miniserver-Endpunkt setzt ihn nicht: der Endpunkt liest, der Takt
+// schreibt. Sonst laegen rund 360 Schreibvorgaenge je Tag und Geraet auf der
+// Speicherkarte, ausgeloest von einem Aufruf, der nur lesen sollte.
+$GLOBALS['marstek_ist_takt'] = true;
+
+// Fehlende Schluessel EINMAL nachtragen. Das ist der Zustand jeder
+// bestehenden Anlage nach einem Update - und der einzige Fall, den eine
+// Neuinstallation nie durchlaeuft.
+marstek_cfg_vervollstaendigen();
+
 marstek_spot_fetch();
 
 // Raenge einmal je Durchgang bilden - das meldet sie zugleich per MQTT
@@ -98,10 +120,17 @@ marstek_ranks();
 foreach (marstek_devices() as $n => $d) {
     marstek_status($n); // nutzt den Status-Cache; pollt also nicht haeufiger als noetig
     if (!empty($d['modbus'])) {
-        marstek_energy($n); // kWh-Zaehler via Modbus TCP (Cache 300 s), meldet auch per MQTT
+        marstek_energy($n); // kWh-Zaehler via Modbus TCP (Cache 300 s), schreibt die
+                            // Tagesbilanz fort und meldet per MQTT
     }
 }
 marstek_fallback_check();
+
+// Der Herzschlag steht am ENDE: er sagt "ein Durchgang ist vollstaendig
+// durchgelaufen", nicht "einer hat angefangen". Ein Durchgang, der in der
+// Mitte abbricht, soll den Takt nicht als gesund ausweisen.
+$mv_z = marstek_herzschlag();
+marstek_mqtt_publish_takt($mv_z);
 
 flock($fp, LOCK_UN);
 fclose($fp);

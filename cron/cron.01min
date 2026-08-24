@@ -1,9 +1,21 @@
 #!/bin/sh
-# Marstek Venus E - minutlicher Cron (SOC-Verlauf, kWh-Zaehler, Auto-Fallback)
+# Marstek Venus E - minutlicher Cron (SOC-Verlauf, kWh-Zaehler, Auto-Fallback,
+# Tagesbilanz, Herzschlag)
 #
 # cron.php liegt seit 1.0.5 unter bin/ statt unter webfrontend/html/. Es wird
 # nur von hier aufgerufen, ueber die PHP-Kommandozeile; im HTML-Verzeichnis
 # war es zusaetzlich fuer jeden im Heimnetz per HTTP abrufbar.
 #
-# REPLACELBPBINDIR wird bei der Installation durch den bin-Pfad des Plugins ersetzt.
-php "REPLACELBPBINDIR/cron.php" >/dev/null 2>&1
+# GEAENDERT 24.08.2026: die FEHLERausgabe landet nicht mehr im Nichts.
+# Bis 1.0.16 stand hier ">/dev/null 2>&1". cron.php schreibt aber fuer genau
+# den Fall, dass es die Bibliothek nicht findet, eine sorgfaeltig formulierte
+# Meldung auf die Fehlerausgabe - und niemand konnte sie je lesen. Dieselbe
+# Fehlerklasse hat beim Abfahrts-Assistenten acht Fassungen lang dafuer
+# gesorgt, dass der Dienst kein einziges Mal lief.
+#
+# Die regulaere Ausgabe bleibt still, sonst schreibt der Cron jede Minute
+# eine Zeile in den Systemlogger.
+#
+# REPLACELBPBINDIR wird bei der Installation durch den bin-Pfad des Plugins
+# ersetzt, REPLACELBPLOGDIR durch das Protokollverzeichnis.
+php "REPLACELBPBINDIR/cron.php" >/dev/null 2>>"REPLACELBPLOGDIR/cron.err"

@@ -10,19 +10,24 @@
 # ===================================================================
 #
 # LoxBerry raeumt die Plugin-Ordner weg und entfernt den Cron-Eintrag.
-# Drei Dinge bleiben sonst liegen:
+# Vier Dinge bleiben sonst liegen:
 #
 #   1. config/plugins/<ordner>.backup.json
 #      Die Sicherung der Konfiguration liegt bewusst NEBEN dem
 #      Konfigordner, damit sie Update und Neuinstallation uebersteht
 #      (marstek_paths()['backup']). Beim Deinstallieren ist genau das
 #      falsch - darin stehen die Geraete-Adressen und das Aktionstoken.
-#   2. /tmp/marstekvenus
-#      Zwischenspeicher: Geraetestatus, Spotpreise, SOC-Verlauf,
-#      Sperrdatei des Cron. /tmp ist auf dem LoxBerry eine Ramdisk, der
-#      Ordner verschwindet also spaetestens beim naechsten Neustart -
-#      bis dahin stuende er aber weiter da.
-#   3. Ein noch laufender Cron-Durchgang. Sind die Speicher nicht
+#   2. data/plugins/<ordner>.verlauf
+#      SOC-Verlauf, Tagesbilanz, Herzschlag und das Formularmerkmal.
+#      Liegt seit 1.1.0 NEBEN dem Ordner, weil der Installer bei jedem
+#      Update data/plugins/<ordner>/ vollstaendig abraeumt - genau
+#      deshalb ueberlebt der Nachbar, und genau deshalb muss er hier weg.
+#   3. /tmp/marstekvenus
+#      Zwischenspeicher: Geraetestatus, Spotpreise, Sperrdatei des Cron.
+#      /tmp ist auf dem LoxBerry eine Ramdisk, der Ordner verschwindet
+#      also spaetestens beim naechsten Neustart - bis dahin stuende er
+#      aber weiter da.
+#   4. Ein noch laufender Cron-Durchgang. Sind die Speicher nicht
 #      erreichbar, dauert ein Durchgang bis zu anderthalb Minuten; er
 #      wuerde ins Leere weiterlaufen.
 #
@@ -49,6 +54,7 @@ SKRIPT="$BASE/bin/plugins/$PDIR/cron.php"
 SKRIPT_ALT="$BASE/webfrontend/html/plugins/$PDIR/cron.php"
 TMP="/tmp/marstekvenus"
 BK="$BASE/config/plugins/$PDIR.backup.json"
+VERLAUF="$BASE/data/plugins/$PDIR.verlauf"
 
 GEFUNDEN=0
 for D in /proc/[0-9]*; do
@@ -74,16 +80,22 @@ else
     echo "<INFO> Keine Sicherung ausserhalb des Plugin-Ordners vorhanden."
 fi
 
+if [ -d "$VERLAUF" ]; then
+    rm -rf "$VERLAUF" && echo "<OK> Verlauf, Tagesbilanz und Herzschlag entfernt: $PDIR.verlauf"
+fi
+
 if [ -d "$TMP" ]; then
     rm -rf "$TMP" && echo "<OK> Zwischenspeicher $TMP entfernt."
 fi
 
 echo "<WARNING> Im MQTT-Broker koennen Werte stehen bleiben."
 echo "<INFO> Das Plugin veroeffentlicht unter dem eingestellten Themenpraefix"
-echo "<INFO> (Vorgabe: marstek/...). Zum Aufraeumen: LoxBerry -> System ->"
-echo "<INFO> MQTT Gateway."
+echo "<INFO> (Vorgabe: marstek/...) die Themen soc, batp, temp, gridp, ok, fw,"
+echo "<INFO> ms, alter, zaehler, soll, sollalter, fbrest, ts, energie_* und"
+echo "<INFO> rang_* sowie takt_zaehler und takt_ts. Zum Aufraeumen:"
+echo "<INFO> LoxBerry -> System -> MQTT Gateway."
 
-# ---------- Den Nachbarn der Sicherung wegraeumen ----------
+# ---------- Den Nachbarn der Update-Sicherung wegraeumen ----------
 # data/plugins/<ordner>.upgrade_sicherung liegt AUSSERHALB des Ordners, den
 # LoxBerry beim Deinstallieren loescht - genau deshalb uebersteht er ein
 # Update. Wer ihn hier nicht abraeumt, laesst Zugangsdaten liegen.

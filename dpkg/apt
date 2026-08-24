@@ -1,0 +1,26 @@
+# Diese Pakete installiert LoxBerry mit "apt-get -y install" - und zwar als
+# root, waehrend der Plugin-Installation.
+#
+# WARUM DAS HIER STEHT UND NICHT IN postinstall.sh:
+# postinstall.sh laeuft als Benutzer loxberry. Ein "apt-get install" dort
+# scheitert mangels Rechten - immer, still, und mit einem Hinweistext, den man
+# leicht ueberliest. Diese Liste ist der vorgesehene Weg.
+#
+# php-sockets wird fuer GENAU EINE Sache gebraucht: den UDP-Rundruf an
+# x.y.z.255. Ein Rundruf verlangt unter Linux SO_BROADCAST, und die
+# Datenstrom-Schnittstelle von PHP kann diese Option nicht setzen.
+#
+# Gebraucht wird der Rundruf fuer zwei Dinge:
+#   1. die Firmware-Eigenheit mancher Venus-Geraete (FW 148 antwortet nur auf
+#      Rundruf, nicht auf Unicast),
+#   2. die Geraetesuche im Reiter Test.
+#
+# Das Plugin BRICHT OHNE DIESE ERWEITERUNG NICHT AB. Bis 1.0.16 waere das
+# anders gewesen: dort lief der gesamte UDP-Verkehr ueber socket_create(),
+# und deren Fehlen ist kein abfangbarer Fehler, sondern ein fataler - ein @
+# davor hilft gegen "Call to undefined function" nicht. Gemessen: der
+# Miniserver-Endpunkt antwortete dann mit HTTP 500 ohne Text, Rueckgabewert
+# 255. Seit 1.1.0 traegt der Regelweg stream_socket_*, das ist
+# Kernbestandteil von PHP; ohne php-sockets fallen nur Rundruf und
+# Geraetesuche aus, und der Reiter Test sagt das ausdruecklich.
+php-sockets
