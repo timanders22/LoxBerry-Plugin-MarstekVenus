@@ -171,6 +171,10 @@ if ($mv_post && isset($_POST['konfig_import'])) {
     // Abgewiesen wird, was nicht passt - nie zurechtgebogen.
     if (!isset($_FILES['konfigdatei']) || !is_uploaded_file($_FILES['konfigdatei']['tmp_name'])) {
         $mv_save_error = marstek_t('MELD.IMPORT_KEINE_DATEI');
+    } elseif ((int) $_FILES['konfigdatei']['size'] > 262144) {
+        /* Eine Sicherung dieses Plugins ist wenige Kilobyte gross.
+         * Alles darueber wird gar nicht erst gelesen. */
+        $mv_save_error = marstek_t('MELD.IMPORT_ZU_GROSS');
     } else {
         $roh = (string) @file_get_contents($_FILES['konfigdatei']['tmp_name']);
         $neu = json_decode($roh, true);
@@ -178,6 +182,15 @@ if ($mv_post && isset($_POST['konfig_import'])) {
             $mv_save_error = marstek_t('MELD.IMPORT_KEIN_JSON');
         } elseif (!array_key_exists('devices', $neu)) {
             $mv_save_error = marstek_t('MELD.IMPORT_FREMD');
+        } elseif (array_diff(array_keys($neu), array_keys(marstek_vorgaben()))) {
+            /* Ein Schluessel, den marstek_vorgaben() nicht kennt, stammt aus einer
+             * anderen Fassung oder einem anderen Plugin. Bisher wurde er ueber
+             * "$neu + vorgaben" mit uebernommen: er stand danach in der
+             * Konfiguration, tat dort nichts und war an nichts zu erkennen.
+             * Uebernommen wird jetzt entweder alles oder nichts. */
+            $mv_save_error = sprintf(marstek_t('MELD.IMPORT_UNBEKANNT'),
+                e(implode(', ', array_slice(array_diff(array_keys($neu),
+                            array_keys(marstek_vorgaben())), 0, 8))));
         } else {
             $vollstaendig = $neu + marstek_vorgaben();
             if (marstek_cfg_schreiben($vollstaendig)) {
@@ -481,6 +494,7 @@ $mv_gw = marstek_mqtt_gateway_info();
 $mv_gwf = ($mv_gw === null) ? 0 : (int) $mv_gw['fassung'];
 $mv_verlauf_dev = isset($_GET['vdev']) ? max(1, (int) $_GET['vdev']) : 0;
 $mv_verlauf_tag = isset($_GET['vtag']) && is_string($_GET['vtag']) ? preg_replace('/\D/', '', $_GET['vtag']) : '';
+
 ?>
 <style>
 /* Hausstandard - Klassennamen sind fest sm-, in jedem Plugin. */
@@ -764,6 +778,7 @@ $mv_verlauf_tag = isset($_GET['vtag']) && is_string($_GET['vtag']) ? preg_replac
     <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="konfig_import" value="1"><?= e(marstek_t('EINST.K_IMPORT')) ?></button>
   </div>
 </form>
+
 </div>
 
 <!-- ================= Reiter: MQTT ================= -->
