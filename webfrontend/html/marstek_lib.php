@@ -73,7 +73,7 @@ function marstek_paths() {
             // im Namen ist kein Zufall: der Nachbar liegt im selben
             // Verzeichnis, wird aber von einem rm -rf <ordner>/ nicht
             // getroffen. uninstall/uninstall raeumt ihn selbst weg.
-            'data' => $lbhomedir . '/data/plugins/' . $plugindir . '.verlauf',
+            'datadir' => $lbhomedir . '/data/plugins/' . $plugindir . '.verlauf',
             'data_alt' => $lbhomedir . '/data/plugins/' . $plugindir,
             'tmp' => '/tmp/marstekvenus',
             'lbhome' => $lbhomedir,
@@ -83,7 +83,7 @@ function marstek_paths() {
         'config' => dirname(dirname(__DIR__)) . '/config/marstek.json',
         'backup' => dirname(dirname(__DIR__)) . '/config/marstek.backup.json',
         'log' => sys_get_temp_dir() . '/marstekvenus/marstek.log',
-        'data' => sys_get_temp_dir() . '/marstekvenus/data',
+        'datadir' => sys_get_temp_dir() . '/marstekvenus/data',
         'data_alt' => '',
         'tmp' => sys_get_temp_dir() . '/marstekvenus',
         'lbhome' => '',
@@ -367,18 +367,18 @@ function marstek_write_json($datei, $daten) {
 
 function marstek_datadir() {
     $p = marstek_paths();
-    if (!is_dir($p['data'])) {
-        @mkdir($p['data'], 0775, true);
+    if (!is_dir($p['datadir'])) {
+        @mkdir($p['datadir'], 0775, true);
         // Einmalige Umsiedlung: bis 1.0.16 lag der Verlauf IM Ordner, den der
         // Installer bei jedem Update abraeumt. Wer von dort aktualisiert, hat
         // die Dateien noch - solange das Update noch nicht gelaufen ist.
         if (!empty($p['data_alt']) && is_dir($p['data_alt'])) {
             foreach (glob($p['data_alt'] . '/*.csv') ?: array() as $f) {
-                @rename($f, $p['data'] . '/' . basename($f));
+                @rename($f, $p['datadir'] . '/' . basename($f));
             }
         }
     }
-    return $p['data'];
+    return $p['datadir'];
 }
 
 /* ---------------- Logging ---------------- */
