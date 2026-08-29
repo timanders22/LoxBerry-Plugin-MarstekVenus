@@ -394,6 +394,7 @@ function marstek_logfile() {
 
 function marstek_log($msg) {
     $f = marstek_logfile();
+    clearstatcache(true, $f);
     if (is_file($f) && filesize($f) > 512000) { // Rotation: letzte 200 Zeilen behalten
         $tail = array_slice(file($f, FILE_IGNORE_NEW_LINES) ?: array(), -200);
         @file_put_contents($f, implode("\n", $tail) . "\n");
@@ -499,6 +500,7 @@ function marstek_mitschnitt($richtung, $ziel, $roh) {
     $f = marstek_tmpdir() . '/mitschnitt.log';
     // Der Mitschnitt liegt unter /tmp: er ist eine Momentaufnahme fuer die
     // Fehlersuche und soll einen Neustart NICHT ueberleben.
+    clearstatcache(true, $f);
     if (is_file($f) && filesize($f) > 262144) {
         return;   // gekappt statt gewachsen - eine Ramdisk ist klein
     }
