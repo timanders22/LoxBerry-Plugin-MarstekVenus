@@ -822,6 +822,7 @@ if ($mv_gwf >= 2) { ?>
 <?php } else { ?>
 <div class="sm-warnung"><?= marstek_t('MQTT.ABO_V1') ?></div>
 <div class="sm-hinweis"><?= marstek_t('MQTT.ABO_V2') ?></div>
+<div class="sm-hilfe"><?= marstek_t('MQTT.ABO_UNBEKANNT') ?></div>
 <?php } ?>
 <p><?= e(marstek_t('MQTT.ABO_EINTRAG')) ?> <span class="sm-mono"><?= e($mv_cfg['mqtt_topic']) ?>/#</span></p>
 
@@ -854,7 +855,8 @@ if ($mv_gwf >= 2) { ?>
 <div class="sm-warnung"><?= marstek_t('MQTT.ABO_V1') ?></div>
 <?php } else { ?>
 <div class="sm-warnung"><?= marstek_t('MQTT.ABO_V1') ?></div>
-<div class="sm-hilfe"><?= marstek_t('MQTT.ABO_V2') ?></div>
+<div class="sm-hinweis"><?= marstek_t('MQTT.ABO_V2') ?></div>
+<div class="sm-hilfe"><?= marstek_t('MQTT.ABO_UNBEKANNT') ?></div>
 <?php } ?>
 </div>
 
