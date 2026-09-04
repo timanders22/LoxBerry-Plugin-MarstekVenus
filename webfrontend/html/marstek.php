@@ -35,7 +35,13 @@
  *                           fremde Webseite lahmlegen kann, gehoert nicht an den
  *                           Miniserver - dieselbe Erwaegung, aus der cron.php
  *                           2026 aus dem HTML-Verzeichnis umgezogen ist.
- *   ?debug=1             -> Rohdaten anzeigen
+ *   ?debug=1             -> Rohdaten anzeigen. SEIT 1.1.5 TOKENPFLICHTIG, aus
+ *                           derselben Erwaegung wie ?diag: der Schalter umgeht
+ *                           den Zwischenspeicher und erzwingt einen frischen
+ *                           Abruf. Gemessen an 1.1.4 gegen ein stummes Geraet,
+ *                           drei Aufrufe hintereinander: 31 s, 30 s, 30 s -
+ *                           jedes Mal, waehrend ?status warm 0 s brauchte.
+ *                           ?diag kostete zum Vergleich 18 s.
  *
  * ABWEISEN STATT ZURECHTBIEGEN (seit 1.1.0): p und mode werden geprueft,
  * bevor irgendetwas an das Geraet geht. Bis 1.0.16 wurde "?p=abc" zu 0 W und
@@ -45,6 +51,15 @@
 
 require_once __DIR__ . '/marstek_lib.php';
 header('Content-Type: text/plain; charset=utf-8');
+
+/* Dieser Baum ist der UNANGEMELDETE. Er legt nichts an - weder die
+ * Konfiguration noch die Zweitschrift, und er heilt auch nichts. Der Merker
+ * gilt fuer den ganzen Prozess, weil marstek_status(), marstek_dev() und
+ * marstek_devices() die Lesefunktion selbst rufen; ein Schalter an einer
+ * einzelnen Aufrufstelle waere die naechste Wette darauf, dass jemand daran
+ * denkt. Gemessen an 1.1.4: ein einziges ?status ohne Token stellte die
+ * Konfiguration samt Aktionstoken aus der Zweitschrift wieder her. */
+$GLOBALS['marstek_nur_lesen'] = true;
 
 /** Einen Parameter als Zeichenkette holen - oder null.
  *  Erst is_string, dann alles andere: ein ?p[]=1 ist ein Feld, und (int) darauf
@@ -56,10 +71,20 @@ function mv_par($name) {
     return trim($_GET[$name]);
 }
 
-$debug = isset($_GET['debug']);
+// Auf den WERT sehen, nicht nur auf das Vorhandensein: ?debug=0 schaltete
+// die Rohdatenansicht bis 1.1.4 ebenfalls ein.
+$debug = (mv_par('debug') === '1');
 $mv_devpar = mv_par('dev');
 $mv_alle = ($mv_devpar !== null && strtolower($mv_devpar) === 'alle');
 $dev = 1;
+// ?dev=alle gilt nur fuer den Sollwert. Bis 1.1.4 lieferten ?status&dev=alle
+// und ?energy&dev=alle kommentarlos Geraet 1, waehrend ?dev=7 mit ERR=DEV
+// abgewiesen wurde - eine Adresse, die nicht tut, was sie sagt.
+if ($mv_alle && !isset($_GET['p'])) {
+    http_response_code(400);
+    echo "FEHLER;OK=0;ERR=DEV_ALLE_NUR_BEI_P\n";
+    exit;
+}
 if ($mv_devpar !== null && !$mv_alle) {
     if (!preg_match('/^[1-9]$/', $mv_devpar)) {
         http_response_code(400);
@@ -67,6 +92,14 @@ if ($mv_devpar !== null && !$mv_alle) {
         exit;
     }
     $dev = (int) $mv_devpar;
+    // Ein Geraet, das gar nicht eingetragen ist, ist ein Adressierungsfehler.
+    // Bis 1.1.4 kam dafuer HTTP 200 mit OK=0 - dieselbe Antwort wie fuer ein
+    // stummes Geraet, und in Loxone sah das aus wie ein defekter Speicher.
+    if (marstek_dev($dev) === null) {
+        http_response_code(400);
+        echo 'FEHLER;OK=0;ERR=DEV_NICHT_EINGETRAGEN;DEV=' . $dev . "\n";
+        exit;
+    }
 }
 $mv_trocken = (mv_par('dry') === '1');
 
@@ -85,7 +118,10 @@ $mv_trocken = (mv_par('dry') === '1');
  * Antwort: SELFTEST;OK=1;TOKEN=OK bzw. HTTP 403 und SELFTEST;OK=0;ERR=TOKEN
  */
 if (isset($_GET['selftest'])) {
-    $mv_cfg_st = marstek_config();
+    // marstek_config(false): der unangemeldete Endpunkt legt NICHTS an.
+    // Bis 1.1.4 stellte ein einziger Aufruf ohne Token die Konfiguration aus
+    // der Zweitschrift wieder her - gemessen, mit Gegenprobe.
+    $mv_cfg_st = marstek_config(false);
     $mv_soll_st = isset($mv_cfg_st['aktionstoken']) ? (string) $mv_cfg_st['aktionstoken'] : '';
     $mv_ist_st = (string) mv_par('token');
     if ($mv_soll_st === '') {
@@ -105,9 +141,12 @@ if (isset($_GET['selftest'])) {
 /* ---------- Token-Pruefung fuer alles, was schaltet oder etwas kostet ----------
  *
  * p und mode schalten. diag schaltet nicht, kostet aber Zeit und schickt
- * Rundrufe - deshalb steht es seit 1.1.0 mit in dieser Liste. */
-if (isset($_GET['p']) || isset($_GET['mode']) || isset($_GET['diag'])) {
-    $mv_cfg_tok = marstek_config();
+ * Rundrufe - deshalb steht es seit 1.1.0 mit in dieser Liste. debug steht
+ * seit 1.1.5 dabei: es umgeht den Zwischenspeicher und erzwingt einen
+ * frischen Abruf, gemessen 30 s je Aufruf gegen ein stummes Geraet. */
+if (isset($_GET['p']) || isset($_GET['mode']) || isset($_GET['diag'])
+        || isset($_GET['debug'])) {
+    $mv_cfg_tok = marstek_config(false);
     $mv_soll = isset($mv_cfg_tok['aktionstoken']) ? (string) $mv_cfg_tok['aktionstoken'] : '';
     $mv_ist = (string) mv_par('token');
     if ($mv_soll === '' || !hash_equals($mv_soll, $mv_ist)) {
@@ -135,7 +174,7 @@ if (isset($_GET['p'])) {
     if ($mv_t === null) { $mv_t = '240'; }
 
     if ($mv_alle) {
-        $mv_cfg_v = marstek_config();
+        $mv_cfg_v = marstek_config(false);
         if (empty($mv_cfg_v['verteilen_ein'])) {
             http_response_code(400);
             echo "SET;OK=0;ERR=VERTEILEN_AUS\n";

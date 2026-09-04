@@ -95,6 +95,14 @@ function mv_oberflaeche_zaehlen()
     if ($s === '') {
         return array(0, 0, 0, 0, 0);
     }
+    // Setzt der Server das sm-active? Ohne serverseitiges sm-active ist die
+    // Seite ohne JavaScript leer - und hausstandard_pruefen.py ist an genau
+    // dieser Stelle blind, weil die Klasse zusammengesetzt ist. Wer eine
+    // Pruefung blind macht, ERSETZT sie (VORLAGE_hausstandard.css.html).
+    $GLOBALS['mv_smactive'] = array(
+        preg_match_all('/class="sm-tab<\?=[^>]*sm-active/', $s),
+        preg_match_all('/class="sm-seite<\?=[^>]*sm-active/', $s),
+    );
     preg_match_all('/data-ziel="(tab-[a-z]+)"/', $s, $a);
     preg_match_all('/id="(tab-[a-z]+)"/', $s, $b);
     preg_match('/\$mv_reiter_liste = array\((.*?)\);/s', $s, $c);
@@ -122,12 +130,61 @@ function mv_oberflaeche_zaehlen()
  */
 function mv_themen_pruefen()
 {
-    $themen = marstek_mqtt_themen(true);
-    $erwartet = count(marstek_felder('status')) + 1        // + ts
-              + count(marstek_felder('energy'))
-              + count(marstek_felder('ranks'))
-              + 2;                                          // takt_zaehler, takt_ts
-    return array(count($themen), $erwartet);
+    /* BERICHTIGT 04.09.2026. Bis 1.1.4 rechnete diese Zeile die erwartete
+     * Zahl aus DERSELBEN Feldtabelle, aus der marstek_mqtt_themen() entsteht -
+     * eine Tautologie. Geeicht: dem Sendecode wurde ein Thema hinzugefuegt,
+     * es ging am UDP-Tor gemessen wirklich hinaus, und die Zeile blieb
+     * gruen. Der Text im Reiter MQTT sagte dem Anwender derweil, hier
+     * wuerden beide Seiten gegeneinander gemessen.
+     *
+     * marstek_themen_abgleich() liest die vier veroeffentlichenden
+     * Funktionen und gibt zurueck, was nur in der Liste und was nur im
+     * Sendecode steht. */
+    list($nur_liste, $nur_code) = marstek_themen_abgleich();
+    return array(count(marstek_mqtt_themen(true)), $nur_liste, $nur_code);
+}
+
+/**
+ * Verweist jede Zeile der Baustein-Liste nur auf kleinere Nummern?
+ *
+ * Gemessen an der GERENDERTEN Tabelle, nicht am Quelltext: die Nummern
+ * stehen in Sprachwerten ("#25, #26"), und zwischen Quelltext und Anzeige
+ * liegen die Sprachdateien.
+ *
+ * Rueckgabe: array(Zahl der Zeilen, Fehlerliste).
+ */
+function mv_bausteinliste_pruefen()
+{
+    $s = @file_get_contents(__DIR__ . '/index.php');
+    if (!is_string($s) || $s === '') {
+        return array(0, array('index.php nicht lesbar - diese Zeile misst nichts'));
+    }
+    if (!preg_match('/\$mv_bausteine = array\((.*?)\n\);/s', $s, $m)) {
+        return array(0, array('die Baustein-Liste wurde nicht gefunden'));
+    }
+    preg_match_all("/array\('[^']*', '([^']*)', '[^']*', '([^']*)'\)/", $m[1], $z);
+    $fehler = array();
+    $n = count($z[1]);
+    foreach ($z[2] as $i => $eingang) {
+        if ($eingang === '') { continue; }
+        $text = strpos($eingang, 'LOX.') === 0 ? marstek_t($eingang) : $eingang;
+        if (preg_match_all('/#(\d+)/', $text, $t)) {
+            foreach ($t[1] as $verweis) {
+                if ((int) $verweis >= $i + 1) {
+                    $fehler[] = sprintf('#%d verweist auf #%s', $i + 1, $verweis);
+                } elseif ((int) $verweis < 1 || (int) $verweis > $n) {
+                    $fehler[] = sprintf('#%d verweist auf #%s, das es nicht gibt', $i + 1, $verweis);
+                }
+            }
+        }
+        // Ein UND oder ODER hat zwei Eingaenge - nicht drei.
+        $typ = isset($z[1][$i]) ? $z[1][$i] : '';
+        if (preg_match('/B_/', $typ) && substr_count($text, '#') > 2
+                && strpos($s, "'LOX.T_UND', '" . $typ . "'") !== false) {
+            $fehler[] = sprintf('#%d: ein UND mit mehr als zwei Eingaengen', $i + 1);
+        }
+    }
+    return array($n, $fehler);
 }
 
 /** Jede erzeugbare Vorlage durch den Parser schicken. Rueckgabe: array(gut, gesamt, fehler). */
@@ -158,12 +215,14 @@ function mv_vorlagen_pruefen()
  */
 function mv_test_seite($ft, $plugindir, array $cfg, array $devices, $suchergebnis, $suchmeldung, $aktiv = true)
 {
-    $e = function ($s) { return htmlspecialchars((string) $s, ENT_QUOTES, 'UTF-8'); };
+    // Der Maskierhelfer liegt in der Bibliothek. Bis 1.1.4 gab es ihn
+    // dreimal: hier als Closure, in index.php als globale Funktion e() und
+    // in marstek_lib.php als marstek_e().
     ?>
-<h2><?= $e(marstek_t('TEST.H_SELBSTPRUEFUNG')) ?></h2>
+<h2><?= marstek_e(marstek_t('TEST.H_SELBSTPRUEFUNG')) ?></h2>
 <div class="sm-hinweis"><?= marstek_t('TEST.SELBSTPRUEFUNG_ERKLAERUNG') ?></div>
 <?php if (!$aktiv) { ?>
-<div class="sm-alert sm-info"><?= $e(marstek_t('TEST.REITER_OEFFNEN')) ?></div>
+<div class="sm-alert sm-info"><?= marstek_e(marstek_t('TEST.REITER_OEFFNEN')) ?></div>
 <?php } else {
     $befund = marstek_befund();
     $zustand = marstek_config_zustand();
@@ -286,9 +345,14 @@ function mv_test_seite($ft, $plugindir, array $cfg, array $devices, $suchergebni
                          : ($gw['autostart'] ? sprintf(marstek_t('TEST.GATEWAY_OK'), $gw['fassung'] > 0 ? $gw['fassung'] : '?')
                                              : marstek_t('TEST.GATEWAY_KEIN_AUTOSTART')));
     }
-    list($n_themen, $n_erwartet) = mv_themen_pruefen();
-    mv_pruefzeile(marstek_t('TEST.Z_THEMEN'), $n_themen === $n_erwartet && $n_themen > 0,
-        sprintf(marstek_t('TEST.THEMEN_TEXT'), $n_themen, $n_erwartet));
+    list($n_themen, $n_nur_liste, $n_nur_code) = mv_themen_pruefen();
+    mv_pruefzeile(marstek_t('TEST.Z_THEMEN'),
+        $n_themen > 0 && !$n_nur_liste && !$n_nur_code,
+        ($n_nur_liste || $n_nur_code)
+            ? sprintf(marstek_t('TEST.THEMEN_ABWEICHUNG'),
+                implode(', ', array_slice($n_nur_liste, 0, 6)) ?: '-',
+                implode(', ', array_slice($n_nur_code, 0, 6)) ?: '-')
+            : sprintf(marstek_t('TEST.THEMEN_TEXT'), $n_themen, $n_themen));
 
     // --- Vorlagen
     list($v_gut, $v_ges, $v_fehler) = mv_vorlagen_pruefen();
@@ -306,6 +370,45 @@ function mv_test_seite($ft, $plugindir, array $cfg, array $devices, $suchergebni
         $formulare > 0 && $formulare === $mit_token,
         sprintf(marstek_t('TEST.FORMULARE_TEXT'), $mit_token, $formulare));
 
+    // Setzt der Server das sm-active - an der Leiste UND an den Bereichen?
+    list($sa_leiste, $sa_bereiche) = isset($GLOBALS['mv_smactive'])
+        ? $GLOBALS['mv_smactive'] : array(0, 0);
+    mv_pruefzeile(marstek_t('TEST.Z_SMACTIVE'),
+        $sa_leiste > 0 && $sa_leiste === $leiste && $sa_bereiche === $bereiche,
+        sprintf(marstek_t('TEST.SMACTIVE_TEXT'), $sa_leiste, $leiste, $sa_bereiche, $bereiche));
+
+    // Ist der eigene Cron-Eintrag da - und ist er eine DATEI? LoxBerry
+    // fuehrt in diesen Ordnern nur Dateien aus; ein gleichnamiges
+    // Verzeichnis aus einer aelteren Fassung blockiert dieselbe Stelle.
+    $mv_home = marstek_paths()['lbhome'];
+    if ($mv_home === '') {
+        mv_pruefzeile(marstek_t('TEST.Z_CRON'), null, marstek_t('TEST.CRON_UNBEKANNT'));
+    } else {
+        $mv_cron = $mv_home . '/system/cron/cron.01min/' . $plugindir;
+        $mv_andere = array();
+        foreach (array('cron.03min', 'cron.05min', 'cron.10min', 'cron.15min',
+                       'cron.30min', 'cron.hourly') as $mv_o) {
+            if (file_exists($mv_home . '/system/cron/' . $mv_o . '/' . $plugindir)) {
+                $mv_andere[] = $mv_o;
+            }
+        }
+        mv_pruefzeile(marstek_t('TEST.Z_CRON'), is_file($mv_cron),
+            (is_file($mv_cron) ? marstek_t('TEST.CRON_DA')
+                : (is_dir($mv_cron) ? marstek_t('TEST.CRON_VERZEICHNIS')
+                                    : marstek_t('TEST.CRON_FEHLT')))
+            . ($mv_andere ? ' ' . sprintf(marstek_t('TEST.CRON_RESTE'),
+                                          implode(', ', $mv_andere)) : ''));
+    }
+
+    // Verweist jede Zeile der Baustein-Liste nur auf KLEINERE Nummern?
+    // Die Kaskade in 1.1.5 hat alles ab #27 verschoben; ohne diese Zeile
+    // faellt ein vergessener Verweis erst dem Anwender auf.
+    list($bl_zeilen, $bl_fehler) = mv_bausteinliste_pruefen();
+    mv_pruefzeile(marstek_t('TEST.Z_BAUSTEINLISTE'),
+        $bl_zeilen > 0 && !$bl_fehler,
+        $bl_fehler ? implode('; ', array_slice($bl_fehler, 0, 4))
+                   : sprintf(marstek_t('TEST.BAUSTEINLISTE_TEXT'), $bl_zeilen));
+
     // --- Mitschnitt. Er soll nicht aus Versehen stehenbleiben.
     $mbis = marstek_mitschnitt_bis();
     mv_pruefzeile(marstek_t('TEST.Z_MITSCHNITT'), $mbis ? null : true,
@@ -321,98 +424,98 @@ function mv_test_seite($ft, $plugindir, array $cfg, array $devices, $suchergebni
 </table>
 <?php } ?>
 
-<h2><?= $e(marstek_t('TEST.H_KNOEPFE')) ?></h2>
+<h2><?= marstek_e(marstek_t('TEST.H_KNOEPFE')) ?></h2>
 <div class="sm-legende">
-<span><i class="sm-punkt sm-b-lesen"></i> <?= $e(marstek_t('LEGENDE.LESEN')) ?></span>
-<span><i class="sm-punkt sm-b-technik"></i> <?= $e(marstek_t('LEGENDE.TECHNIK')) ?></span>
-<span><i class="sm-punkt sm-b-aktion"></i> <?= $e(marstek_t('LEGENDE.AKTION')) ?></span>
+<span><i class="sm-punkt sm-b-lesen"></i> <?= marstek_e(marstek_t('LEGENDE.LESEN')) ?></span>
+<span><i class="sm-punkt sm-b-technik"></i> <?= marstek_e(marstek_t('LEGENDE.TECHNIK')) ?></span>
+<span><i class="sm-punkt sm-b-aktion"></i> <?= marstek_e(marstek_t('LEGENDE.AKTION')) ?></span>
 </div>
 
-<h3 class="sm-h3"><?= $e(marstek_t('TEST.H_SUCHE')) ?></h3>
-<div class="sm-hilfe"><?= $e(marstek_t('TEST.SUCHE_ERKLAERUNG')) ?></div>
+<h3 class="sm-h3"><?= marstek_e(marstek_t('TEST.H_SUCHE')) ?></h3>
+<div class="sm-hilfe"><?= marstek_e(marstek_t('TEST.SUCHE_ERKLAERUNG')) ?></div>
 <div class="sm-knopfreihe">
   <form action="index.php" method="post">
-    <input data-role="none" type="hidden" name="formtoken" value="<?= $e($ft) ?>">
+    <input data-role="none" type="hidden" name="formtoken" value="<?= marstek_e($ft) ?>">
     <input data-role="none" type="hidden" name="activetab" value="tab-test">
-    <button data-role="none" class="sm-btn sm-b-lesen" type="submit" name="suchen" value="1"><?= $e(marstek_t('TEST.K_SUCHEN')) ?></button>
+    <button data-role="none" class="sm-btn sm-b-lesen" type="submit" name="suchen" value="1"><?= marstek_e(marstek_t('TEST.K_SUCHEN')) ?></button>
   </form>
 </div>
-<?php if ($suchmeldung !== '') { ?><div class="sm-alert sm-warn"><?= $e($suchmeldung) ?></div><?php } ?>
+<?php if ($suchmeldung !== '') { ?><div class="sm-alert sm-warn"><?= marstek_e($suchmeldung) ?></div><?php } ?>
 <?php if (is_array($suchergebnis)) {
     if (!$suchergebnis) { ?>
-<div class="sm-alert sm-info"><?= $e(marstek_t('TEST.SUCHE_LEER')) ?></div>
+<div class="sm-alert sm-info"><?= marstek_e(marstek_t('TEST.SUCHE_LEER')) ?></div>
 <?php } else { ?>
 <table class="sm-tbl">
-<tr><th><?= $e(marstek_t('TEST.SP_IP')) ?></th><th><?= $e(marstek_t('TEST.SP_MODELL')) ?></th><th><?= $e(marstek_t('TEST.SP_FW')) ?></th><th style="width:200px;"></th></tr>
+<tr><th><?= marstek_e(marstek_t('TEST.SP_IP')) ?></th><th><?= marstek_e(marstek_t('TEST.SP_MODELL')) ?></th><th><?= marstek_e(marstek_t('TEST.SP_FW')) ?></th><th style="width:200px;"></th></tr>
 <?php foreach ($suchergebnis as $g) { ?>
-<tr><td><span class="sm-mono"><?= $e($g['ip']) ?></span></td><td><?= $e($g['model']) ?></td><td><?= (int) $g['fw'] ?></td>
+<tr><td><span class="sm-mono"><?= marstek_e($g['ip']) ?></span></td><td><?= marstek_e($g['model']) ?></td><td><?= (int) $g['fw'] ?></td>
 <td><form action="index.php" method="post" style="margin:0;">
-<input data-role="none" type="hidden" name="formtoken" value="<?= $e($ft) ?>">
+<input data-role="none" type="hidden" name="formtoken" value="<?= marstek_e($ft) ?>">
 <input data-role="none" type="hidden" name="activetab" value="tab-test">
-<button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="uebernehmen" value="<?= $e($g['ip']) ?>" style="min-width:180px;"><?= $e(marstek_t('TEST.K_UEBERNEHMEN')) ?></button>
+<button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="uebernehmen" value="<?= marstek_e($g['ip']) ?>" style="min-width:180px;"><?= marstek_e(marstek_t('TEST.K_UEBERNEHMEN')) ?></button>
 </form></td></tr>
 <?php } ?>
 </table>
 <?php } } ?>
 
-<h3 class="sm-h3"><?= $e(marstek_t('TEST.H_TECHNIK')) ?></h3>
+<h3 class="sm-h3"><?= marstek_e(marstek_t('TEST.H_TECHNIK')) ?></h3>
 <?php $mv_tok = rawurlencode((string) $cfg['aktionstoken']);
 $mv_testdevs = $devices ? $devices : array(1 => array('name' => 'Venus E', 'modbus' => 1));
 foreach ($mv_testdevs as $n => $d) {
     $q = $n > 1 ? '&amp;dev=' . (int) $n : ''; ?>
-<div class="sm-small" style="margin-top:10px;"><b><?= $e($d['name']) ?></b><?= $n > 1 ? ' <span class="sm-mono">&amp;dev=' . (int) $n . '</span>' : '' ?></div>
+<div class="sm-small" style="margin-top:10px;"><b><?= marstek_e($d['name']) ?></b><?= $n > 1 ? ' <span class="sm-mono">&amp;dev=' . (int) $n . '</span>' : '' ?></div>
 <div class="sm-knopfreihe">
-<a class="sm-btn sm-b-technik" href="/plugins/<?= $e($plugindir) ?>/marstek.php?status&amp;debug=1<?= $q ?>" target="_blank"><?= $e(marstek_t('TEST.K_STATUS')) ?></a>
+<a class="sm-btn sm-b-technik" href="/plugins/<?= marstek_e($plugindir) ?>/marstek.php?status&amp;debug=1<?= $q ?>&amp;token=<?= $mv_tok ?>" target="_blank"><?= marstek_e(marstek_t('TEST.K_STATUS')) ?></a>
 <?php if (!empty($d['modbus'])) { ?>
-<a class="sm-btn sm-b-technik" href="/plugins/<?= $e($plugindir) ?>/marstek.php?energy&amp;debug=1<?= $q ?>" target="_blank"><?= $e(marstek_t('TEST.K_ENERGY')) ?></a>
+<a class="sm-btn sm-b-technik" href="/plugins/<?= marstek_e($plugindir) ?>/marstek.php?energy&amp;debug=1<?= $q ?>&amp;token=<?= $mv_tok ?>" target="_blank"><?= marstek_e(marstek_t('TEST.K_ENERGY')) ?></a>
 <?php } ?>
-<a class="sm-btn sm-b-technik" href="/plugins/<?= $e($plugindir) ?>/marstek.php?diag=1<?= $q ?>&amp;token=<?= $mv_tok ?>" target="_blank"><?= $e(marstek_t('TEST.K_DIAG')) ?></a>
+<a class="sm-btn sm-b-technik" href="/plugins/<?= marstek_e($plugindir) ?>/marstek.php?diag=1<?= $q ?>&amp;token=<?= $mv_tok ?>" target="_blank"><?= marstek_e(marstek_t('TEST.K_DIAG')) ?></a>
 </div>
 <?php } ?>
 <div class="sm-knopfreihe" style="margin-top:10px;">
-<a class="sm-btn sm-b-technik" href="/plugins/<?= $e($plugindir) ?>/marstek.php?ranks&amp;debug=1" target="_blank"><?= $e(marstek_t('TEST.K_RANKS')) ?></a>
+<a class="sm-btn sm-b-technik" href="/plugins/<?= marstek_e($plugindir) ?>/marstek.php?ranks&amp;debug=1&amp;token=<?= $mv_tok ?>" target="_blank"><?= marstek_e(marstek_t('TEST.K_RANKS')) ?></a>
 <?php if (count($devices) > 1) { ?>
-<a class="sm-btn sm-b-technik" href="/plugins/<?= $e($plugindir) ?>/marstek.php?summe&amp;debug=1" target="_blank"><?= $e(marstek_t('TEST.K_SUMME')) ?></a>
+<a class="sm-btn sm-b-technik" href="/plugins/<?= marstek_e($plugindir) ?>/marstek.php?summe&amp;debug=1&amp;token=<?= $mv_tok ?>" target="_blank"><?= marstek_e(marstek_t('TEST.K_SUMME')) ?></a>
 <?php } ?>
 </div>
 
-<h3 class="sm-h3"><?= $e(marstek_t('TEST.H_TROCKEN')) ?></h3>
-<div class="sm-hilfe"><?= $e(marstek_t('TEST.TROCKEN_ERKLAERUNG')) ?></div>
+<h3 class="sm-h3"><?= marstek_e(marstek_t('TEST.H_TROCKEN')) ?></h3>
+<div class="sm-hilfe"><?= marstek_e(marstek_t('TEST.TROCKEN_ERKLAERUNG')) ?></div>
 <div class="sm-knopfreihe">
 <?php foreach ($mv_testdevs as $n => $d) { $q = $n > 1 ? '&amp;dev=' . (int) $n : ''; ?>
-<a class="sm-btn sm-b-lesen" href="/plugins/<?= $e($plugindir) ?>/marstek.php?p=800&amp;t=120&amp;dry=1<?= $q ?>&amp;token=<?= $mv_tok ?>" target="_blank"><?= $e(sprintf(marstek_t('TEST.K_TROCKEN_LADEN'), $d['name'])) ?></a>
+<a class="sm-btn sm-b-technik" href="/plugins/<?= marstek_e($plugindir) ?>/marstek.php?p=800&amp;t=120&amp;dry=1<?= $q ?>&amp;token=<?= $mv_tok ?>" target="_blank"><?= marstek_e(sprintf(marstek_t('TEST.K_TROCKEN_LADEN'), $d['name'])) ?></a>
 <?php } ?>
 </div>
 
-<h3 class="sm-h3"><?= $e(marstek_t('TEST.H_SCHALTEN')) ?></h3>
-<div class="sm-warnung"><?= $e(marstek_t('TEST.SCHALTEN_WARNUNG')) ?></div>
+<h3 class="sm-h3"><?= marstek_e(marstek_t('TEST.H_SCHALTEN')) ?></h3>
+<div class="sm-warnung"><?= marstek_e(marstek_t('TEST.SCHALTEN_WARNUNG')) ?></div>
 <?php foreach ($mv_testdevs as $n => $d) { $q = $n > 1 ? '&amp;dev=' . (int) $n : ''; ?>
-<div class="sm-small" style="margin-top:10px;"><b><?= $e($d['name']) ?></b></div>
+<div class="sm-small" style="margin-top:10px;"><b><?= marstek_e($d['name']) ?></b></div>
 <div class="sm-knopfreihe">
-<a class="sm-btn sm-b-aktion" href="/plugins/<?= $e($plugindir) ?>/marstek.php?p=0&amp;t=60<?= $q ?>&amp;token=<?= $mv_tok ?>" target="_blank"><?= $e(marstek_t('TEST.K_LEERLAUF')) ?></a>
-<a class="sm-btn sm-b-aktion" href="/plugins/<?= $e($plugindir) ?>/marstek.php?p=-800&amp;t=120<?= $q ?>&amp;token=<?= $mv_tok ?>" target="_blank"><?= $e(marstek_t('TEST.K_ENTLADEN')) ?></a>
-<a class="sm-btn sm-b-aktion" href="/plugins/<?= $e($plugindir) ?>/marstek.php?p=800&amp;t=120<?= $q ?>&amp;token=<?= $mv_tok ?>" target="_blank"><?= $e(marstek_t('TEST.K_LADEN')) ?></a>
-<a class="sm-btn sm-b-aktion" href="/plugins/<?= $e($plugindir) ?>/marstek.php?mode=auto<?= $q ?>&amp;token=<?= $mv_tok ?>" target="_blank"><?= $e(marstek_t('TEST.K_AUTO')) ?></a>
+<a class="sm-btn sm-b-aktion" href="/plugins/<?= marstek_e($plugindir) ?>/marstek.php?p=0&amp;t=60<?= $q ?>&amp;token=<?= $mv_tok ?>" target="_blank"><?= marstek_e(marstek_t('TEST.K_LEERLAUF')) ?></a>
+<a class="sm-btn sm-b-aktion" href="/plugins/<?= marstek_e($plugindir) ?>/marstek.php?p=-800&amp;t=120<?= $q ?>&amp;token=<?= $mv_tok ?>" target="_blank"><?= marstek_e(marstek_t('TEST.K_ENTLADEN')) ?></a>
+<a class="sm-btn sm-b-aktion" href="/plugins/<?= marstek_e($plugindir) ?>/marstek.php?p=800&amp;t=120<?= $q ?>&amp;token=<?= $mv_tok ?>" target="_blank"><?= marstek_e(marstek_t('TEST.K_LADEN')) ?></a>
+<a class="sm-btn sm-b-aktion" href="/plugins/<?= marstek_e($plugindir) ?>/marstek.php?mode=auto<?= $q ?>&amp;token=<?= $mv_tok ?>" target="_blank"><?= marstek_e(marstek_t('TEST.K_AUTO')) ?></a>
 </div>
 <?php } ?>
 
-<h3 class="sm-h3"><?= $e(marstek_t('TEST.H_MITSCHNITT')) ?></h3>
-<div class="sm-hilfe"><?= $e(marstek_t('TEST.MITSCHNITT_ERKLAERUNG')) ?></div>
+<h3 class="sm-h3"><?= marstek_e(marstek_t('TEST.H_MITSCHNITT')) ?></h3>
+<div class="sm-hilfe"><?= marstek_e(marstek_t('TEST.MITSCHNITT_ERKLAERUNG')) ?></div>
 <div class="sm-knopfreihe">
   <form action="index.php" method="post">
-    <input data-role="none" type="hidden" name="formtoken" value="<?= $e($ft) ?>">
+    <input data-role="none" type="hidden" name="formtoken" value="<?= marstek_e($ft) ?>">
     <input data-role="none" type="hidden" name="activetab" value="tab-test">
-    <button data-role="none" class="sm-btn sm-b-technik" type="submit" name="mitschnitt" value="600"><?= $e(marstek_t('TEST.K_MITSCHNITT_AN')) ?></button>
+    <button data-role="none" class="sm-btn sm-b-technik" type="submit" name="mitschnitt" value="600"><?= marstek_e(marstek_t('TEST.K_MITSCHNITT_AN')) ?></button>
   </form>
   <form action="index.php" method="post">
-    <input data-role="none" type="hidden" name="formtoken" value="<?= $e($ft) ?>">
+    <input data-role="none" type="hidden" name="formtoken" value="<?= marstek_e($ft) ?>">
     <input data-role="none" type="hidden" name="activetab" value="tab-test">
-    <button data-role="none" class="sm-btn sm-b-technik" type="submit" name="mitschnitt" value="0"><?= $e(marstek_t('TEST.K_MITSCHNITT_AUS')) ?></button>
+    <button data-role="none" class="sm-btn sm-b-technik" type="submit" name="mitschnitt" value="0"><?= marstek_e(marstek_t('TEST.K_MITSCHNITT_AUS')) ?></button>
   </form>
 </div>
 <?php $mv_mit = marstek_mitschnitt_lesen(200);
 if ($mv_mit) { ?>
-<div class="sm-log" style="max-height:300px;"><?= $e(implode("
+<div class="sm-log" style="max-height:300px;"><?= marstek_e(implode("
 ", $mv_mit)) ?></div>
 <?php } ?>
 

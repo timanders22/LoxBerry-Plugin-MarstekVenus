@@ -160,14 +160,17 @@ if ($mv_post && isset($_POST['vorlage'])) {
  * Token waere nach dem Zurueckspielen wertlos, weil alle Adressen im
  * Miniserver ungueltig wuerden.
  */
-if ($mv_post && isset($_POST['konfig_export'])) {
-    $cfg = marstek_config();
+if ($mv_post && isset($_POST['mv_sichern'])) {
+    // Mit lesbarem Kopf (_hinweis, _stand, _fassung). Bis 1.1.4 hatte die
+    // Datei keinen, und eine Datei MIT einem solchen Kopf wurde beim
+    // Zurueckspielen abgewiesen - gemessen.
     header('Content-Type: application/x-download');
     header('Content-Disposition: attachment; filename="marstekvenus_' . date('Ymd_His') . '.json"');
-    echo json_encode($cfg, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    echo json_encode(marstek_sicherung_schreiben(),
+        JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
     exit;
 }
-if ($mv_post && isset($_POST['konfig_import'])) {
+if ($mv_post && isset($_POST['mv_zurueck'])) {
     // Abgewiesen wird, was nicht passt - nie zurechtgebogen.
     if (!isset($_FILES['konfigdatei']) || !is_uploaded_file($_FILES['konfigdatei']['tmp_name'])) {
         $mv_save_error = marstek_t('MELD.IMPORT_KEINE_DATEI');
@@ -176,29 +179,43 @@ if ($mv_post && isset($_POST['konfig_import'])) {
          * Alles darueber wird gar nicht erst gelesen. */
         $mv_save_error = marstek_t('MELD.IMPORT_ZU_GROSS');
     } else {
+        /* Gelesen wird in der BIBLIOTHEK, nicht hier. Zwei Gruende:
+         *
+         * 1. Bis 1.1.4 wurden nur die Schluessel geprueft, nie die Werte.
+         *    Gemessen gingen sechs von sechs vergifteten Werten durch;
+         *    ein Aktionstoken als Feld liess ?token=Array schalten, und ein
+         *    Themen-Praefix mit Zeilenumbruch schleuste eine zweite
+         *    publish-Zeile in jedes Datagramm.
+         * 2. Die drei Hauswerkzeuge fuer den Sicherungs-Bauplan suchen eine
+         *    benannte Lesefunktion. Weil es keine gab, haben sie diese Linie
+         *    ueberhaupt nicht gemessen - eines meldete "1 in Ordnung" mit
+         *    leerer Tabelle.
+         */
         $roh = (string) @file_get_contents($_FILES['konfigdatei']['tmp_name']);
-        $neu = json_decode($roh, true);
-        if (!is_array($neu)) {
-            $mv_save_error = marstek_t('MELD.IMPORT_KEIN_JSON');
-        } elseif (!array_key_exists('devices', $neu)) {
-            $mv_save_error = marstek_t('MELD.IMPORT_FREMD');
-        } elseif (array_diff(array_keys($neu), array_keys(marstek_vorgaben()))) {
-            /* Ein Schluessel, den marstek_vorgaben() nicht kennt, stammt aus einer
-             * anderen Fassung oder einem anderen Plugin. Bisher wurde er ueber
-             * "$neu + vorgaben" mit uebernommen: er stand danach in der
-             * Konfiguration, tat dort nichts und war an nichts zu erkennen.
-             * Uebernommen wird jetzt entweder alles oder nichts. */
-            $mv_save_error = sprintf(marstek_t('MELD.IMPORT_UNBEKANNT'),
-                e(implode(', ', array_slice(array_diff(array_keys($neu),
-                            array_keys(marstek_vorgaben())), 0, 8))));
+        list($mv_imp_cfg, $mv_imp_meld, ) = marstek_sicherung_lesen($roh);
+        if ($mv_imp_cfg !== null) {
+            $mv_saved = true;
+            $mv_meldung = marstek_t('MELD.IMPORT_OK');
         } else {
-            $vollstaendig = $neu + marstek_vorgaben();
-            if (marstek_cfg_schreiben($vollstaendig)) {
-                $mv_saved = true;
-                $mv_meldung = marstek_t('MELD.IMPORT_OK');
-                marstek_log('Konfiguration aus einer hochgeladenen Datei zurueckgespielt.');
-            } else {
+            $mv_erste = isset($mv_imp_meld[0]) ? (string) $mv_imp_meld[0] : '';
+            if ($mv_erste === 'KEIN_JSON') {
+                $mv_save_error = marstek_t('MELD.IMPORT_KEIN_JSON');
+            } elseif ($mv_erste === 'FREMD') {
+                $mv_save_error = marstek_t('MELD.IMPORT_FREMD');
+            } elseif (strncmp($mv_erste, 'UNBEKANNT:', 10) === 0) {
+                $mv_save_error = sprintf(marstek_t('MELD.IMPORT_UNBEKANNT'),
+                    marstek_e(substr($mv_erste, 10)));
+            } elseif ($mv_erste === 'SCHREIBEN') {
                 $mv_save_error = marstek_t('MELD.SPEICHERN_FEHLGESCHLAGEN');
+            } else {
+                // Alle Beanstandungen, nicht die erste.
+                $mv_liste = array();
+                foreach ($mv_imp_meld as $mv_z) {
+                    $mv_liste[] = marstek_e(strncmp($mv_z, 'WERT:', 5) === 0
+                        ? substr($mv_z, 5) : $mv_z);
+                }
+                $mv_save_error = sprintf(marstek_t('MELD.IMPORT_WERTE'),
+                    implode(' | ', $mv_liste));
             }
         }
     }
@@ -413,17 +430,19 @@ foreach ($mv_devices as $n => $d) {
         $mv_statuses[$n] = $st;
     }
 }
-$mv_log_lines = array();
-if (is_file($mv_log_file)) {
-    $mv_log_lines = array_slice(array_reverse(file($mv_log_file, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) ?: array()), 0, 300);
-}
-$mv_err_lines = array();
-if (is_file($mv_err_file) && filesize($mv_err_file) > 0) {
-    $mv_err_lines = array_slice(array_reverse(file($mv_err_file, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) ?: array()), 0, 50);
-}
+// Vom ENDE lesen, nicht die ganze Datei einlesen. file() zieht sie
+// vollstaendig in den Speicher; cron.err hatte bis 1.1.4 ausserdem keine
+// Kappung und konnte auf der Ramdisk beliebig wachsen.
+$mv_log_lines = array_reverse(marstek_log_ende($mv_log_file, 300));
+$mv_err_lines = array_reverse(marstek_log_ende($mv_err_file, 50));
 
-/** Kurzform fuer maskierte Ausgabe. */
-function e($s) { return htmlspecialchars((string) $s, ENT_QUOTES, 'UTF-8'); }
+/* Die Kurzform e() ist in 1.1.5 entfallen. Sie stand als GLOBALE Funktion
+ * ohne Plugin-Kuerzel hier, mit 196 Aufrufen, waehrend die Bibliothek
+ * daneben marstek_e() mit demselben Rumpf fuehrte und sechsmal gerufen wurde.
+ * index.php bindet vorher loxberry_system.php und loxberry_web.php ein; eine
+ * gleichnamige Funktion dort waere ein sofortiger fataler Fehler gewesen.
+ * Jetzt gibt es einen Maskierhelfer, und der liegt in der Bibliothek.
+ */
 
 /**
  * Mini-SVG: SOC-Verlauf eines Tages, dazu die Batterieleistung als zweite
@@ -477,7 +496,7 @@ function mv_soc_svg($points, $tag = '') {
         $svg .= '<circle cx="' . $last[0] . '" cy="' . $last[1] . '" r="3" fill="#6dac20"/>';
     } else {
         $svg .= '<text x="' . ($x0 + $pw / 2) . '" y="' . ($y0 + $ph / 2) . '" font-size="11" fill="#aaa" text-anchor="middle">'
-              . e(marstek_t('EINST.KEINE_MESSPUNKTE')) . '</text>';
+              . marstek_e(marstek_t('EINST.KEINE_MESSPUNKTE')) . '</text>';
     }
     return $svg . '</svg>';
 }
@@ -488,8 +507,12 @@ $mv_use_frame = class_exists('LBWeb', false);
 if ($mv_use_frame) {
     LBWeb::lbheader('Marstek Venus E', 'https://wiki.loxberry.de/', 'help.html');
 }
-$mv_host = e(isset($_SERVER['HTTP_HOST']) ? $_SERVER['HTTP_HOST'] : '<loxberry-ip>');
-$mv_ft = e(marstek_formtoken());
+$mv_host = marstek_e(isset($_SERVER['HTTP_HOST']) ? $_SERVER['HTTP_HOST'] : '<loxberry-ip>');
+$mv_ft = marstek_e(marstek_formtoken());
+// Laesst sich das Merkmal nicht ablegen, weist die Seite JEDES Formular ab.
+// Bis 1.1.4 stand nirgends, warum - die Meldung riet zum Neuladen, was nie
+// half. Gemessen mit einem Verzeichnis an der Stelle der Datei.
+$mv_ft_stoerung = marstek_formtoken_stoerung();
 $mv_gw = marstek_mqtt_gateway_info();
 $mv_gwf = ($mv_gw === null) ? 0 : (int) $mv_gw['fassung'];
 $mv_verlauf_dev = isset($_GET['vdev']) ? max(1, (int) $_GET['vdev']) : 0;
@@ -528,7 +551,25 @@ $mv_verlauf_tag = isset($_GET['vtag']) && is_string($_GET['vtag']) ? preg_replac
 .sm-tbl { border-collapse: collapse; margin: 8px 0; width: 100%; font-size: 0.9em; }
 .sm-tbl th, .sm-tbl td { border: 1px solid #ddd; padding: 5px 8px; text-align: left; vertical-align: top; }
 .sm-tbl th { background: #eef3e6; font-weight: 600; }
-.sm-breit { overflow-x: auto; }
+.sm-breit { overflow-x: auto; -webkit-overflow-scrolling: touch; margin: 10px 0; }
+/* Diese zweite Zeile stand bis 1.1.4 nicht da. Nachgetragen aus
+   VORLAGE_hausstandard.css.html - der Behaelter rollt zwar auch ohne sie
+   (am Bildschirm gemessen: 580 px Inhalt in 380 px Behaelter, weil die
+   Eingabefelder eine Mindestbreite erzwingen), aber die Vorlage ist die
+   Vorlage. */
+.sm-breit .sm-tbl { margin: 0; min-width: 760px; }
+/* Auswahlfelder zeichnen ihren Pfeil selbst. Die Rahmen-CSS von jQuery
+   Mobile setzt appearance auf none und nimmt den Pfeil weg; data-role="none"
+   haelt nur deren Umbauten fern, nicht deren Stilregeln. Ohne Pfeil sieht
+   das Feld aus wie ein Textfeld - dieselbe Fehlerklasse hat zweimal ein
+   Mensch am Geraet gefunden. Die Raute im SVG ist %23, eine rohe Raute
+   beendete den CSS-Wert. */
+.sm-wrap select, .sm-tbl select, .sm-auswahl {
+    appearance: none; -webkit-appearance: none; -moz-appearance: none;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath fill='%23546e7a' d='M1 1l5 5 5-5'/%3E%3C/svg%3E");
+    background-repeat: no-repeat; background-position: right 10px center;
+    padding-right: 32px;
+}
 .sm-devtbl input, .sm-devtbl select { min-width: 60px; }
 .sm-kacheln { display: flex; flex-wrap: wrap; gap: 10px; margin: 10px 0; }
 .sm-kachel { border: 1px solid #ddd; border-radius: 10px; padding: 10px 14px; min-width: 130px; }
@@ -565,36 +606,39 @@ $mv_verlauf_tag = isset($_GET['vtag']) && is_string($_GET['vtag']) ? preg_replac
 .sm-hinw { color: #8a6d1a; font-weight: 700; }
 </style>
 <div class="sm-wrap">
+<?php if ($mv_ft_stoerung !== '') { ?>
+<div class="sm-warnung"><?= marstek_e(sprintf(marstek_t('MELD.FORMTOKEN_ABLAGE'), $mv_ft_stoerung)) ?></div>
+<?php } ?>
 
-<?php if ($mv_saved) { ?><div class="sm-alert sm-ok"><b><?= e(marstek_t('MELD.GESPEICHERT')) ?></b> <?= e(marstek_t('MELD.GESPEICHERT_ZUSATZ')) ?></div><?php } ?>
-<?php if ($mv_meldung !== '') { ?><div class="sm-alert sm-ok"><?= e($mv_meldung) ?></div><?php } ?>
-<?php if ($mv_save_error !== '') { ?><div class="sm-alert sm-err"><b><?= e(marstek_t('MELD.FEHLER')) ?></b> <?= e($mv_save_error) ?></div><?php } ?>
-<?php if ($mv_beanstandung) { ?><div class="sm-alert sm-warn"><b><?= e(marstek_t('MELD.BEANSTANDUNG')) ?></b><ul style="margin:6px 0 0 18px;padding:0;">
-<?php foreach ($mv_beanstandung as $b) { ?><li><?= e($b) ?></li><?php } ?>
+<?php if ($mv_saved) { ?><div class="sm-alert sm-ok"><b><?= marstek_e(marstek_t('MELD.GESPEICHERT')) ?></b> <?= marstek_e(marstek_t('MELD.GESPEICHERT_ZUSATZ')) ?></div><?php } ?>
+<?php if ($mv_meldung !== '') { ?><div class="sm-alert sm-ok"><?= marstek_e($mv_meldung) ?></div><?php } ?>
+<?php if ($mv_save_error !== '') { ?><div class="sm-alert sm-err"><b><?= marstek_e(marstek_t('MELD.FEHLER')) ?></b> <?= marstek_e($mv_save_error) ?></div><?php } ?>
+<?php if ($mv_beanstandung) { ?><div class="sm-alert sm-warn"><b><?= marstek_e(marstek_t('MELD.BEANSTANDUNG')) ?></b><ul style="margin:6px 0 0 18px;padding:0;">
+<?php foreach ($mv_beanstandung as $b) { ?><li><?= marstek_e($b) ?></li><?php } ?>
 </ul></div><?php } ?>
-<?php if ($mv_fehlten) { ?><div class="sm-alert sm-info"><?= e(sprintf(marstek_t('MELD.KONFIG_ERGAENZT'), implode(', ', $mv_fehlten))) ?></div><?php } ?>
+<?php if ($mv_fehlten) { ?><div class="sm-alert sm-info"><?= marstek_e(sprintf(marstek_t('MELD.KONFIG_ERGAENZT'), implode(', ', $mv_fehlten))) ?></div><?php } ?>
 
 <?php foreach ($mv_statuses as $n => $st) {
     $alter = !empty($st['mess']) ? time() - (int) $st['mess'] : -1; ?>
-<div class="sm-alert sm-info"><b><?= e($mv_devices[$n]['name']) ?></b>
- &middot; <?= e(marstek_t('EINST.LADEZUSTAND')) ?>: <?= e($st['soc']) ?> %
- &middot; <?= e(marstek_t('EINST.BATTERIELEISTUNG')) ?>: <?= e($st['batp']) ?> W
- &middot; <?= e(marstek_t('EINST.TEMPERATUR')) ?>: <?= e($st['temp']) ?> &deg;C
- &middot; <?= e(marstek_t('EINST.VERBINDUNG')) ?>: <?php if (!empty($st['ok'])) { ?><span class="sm-ja">OK</span><?php } else { ?><span class="sm-nein"><?= e(marstek_t('EINST.GESTOERT')) ?></span><?php } ?>
-<?php if (!empty($st['ok'])) { ?> &middot; <?= e(isset($st['model']) && $st['model'] !== '' ? $st['model'] : 'Venus') ?>
- &middot; <?= e(marstek_t('EINST.FIRMWARE')) ?> <?= (int) (isset($st['fw']) ? $st['fw'] : 0) ?>
- &middot; <?= e(marstek_t('EINST.ANTWORTZEIT')) ?> <?= (int) (isset($st['ms']) ? $st['ms'] : 0) ?> ms<?php } ?>
-<br><span class="sm-small"><?= e(sprintf(marstek_t('EINST.LETZTE_MESSUNG'),
+<div class="sm-alert sm-info"><b><?= marstek_e($mv_devices[$n]['name']) ?></b>
+ &middot; <?= marstek_e(marstek_t('EINST.LADEZUSTAND')) ?>: <?= marstek_e($st['soc']) ?> %
+ &middot; <?= marstek_e(marstek_t('EINST.BATTERIELEISTUNG')) ?>: <?= marstek_e($st['batp']) ?> W
+ &middot; <?= marstek_e(marstek_t('EINST.TEMPERATUR')) ?>: <?= marstek_e($st['temp']) ?> &deg;C
+ &middot; <?= marstek_e(marstek_t('EINST.VERBINDUNG')) ?>: <?php if (!empty($st['ok'])) { ?><span class="sm-ja">OK</span><?php } else { ?><span class="sm-nein"><?= marstek_e(marstek_t('EINST.GESTOERT')) ?></span><?php } ?>
+<?php if (!empty($st['ok'])) { ?> &middot; <?= marstek_e(isset($st['model']) && $st['model'] !== '' ? $st['model'] : 'Venus') ?>
+ &middot; <?= marstek_e(marstek_t('EINST.FIRMWARE')) ?> <?= (int) (isset($st['fw']) ? $st['fw'] : 0) ?>
+ &middot; <?= marstek_e(marstek_t('EINST.ANTWORTZEIT')) ?> <?= (int) (isset($st['ms']) ? $st['ms'] : 0) ?> ms<?php } ?>
+<br><span class="sm-small"><?= marstek_e(sprintf(marstek_t('EINST.LETZTE_MESSUNG'),
         $alter >= 0 ? date('d.m.Y H:i:s', (int) $st['mess']) . ' (' . $alter . ' s)' : marstek_t('EINST.NIE'))) ?></span>
 <?php if (!empty($mv_devices[$n]['modbus'])) {
     $mv_edat = marstek_tmpdir() . '/energy_dev' . $n . '.json';
     $en = is_file($mv_edat) ? json_decode((string) @file_get_contents($mv_edat), true) : null;
     if (is_array($en) && !empty($en['chgt'])) { ?>
-<br><?= e(marstek_t('EINST.ENERGIE_HEUTE')) ?>: <b><?= e($en['chgd']) ?> kWh</b> <?= e(marstek_t('EINST.GELADEN')) ?>,
-<b><?= e($en['disd']) ?> kWh</b> <?= e(marstek_t('EINST.ABGEGEBEN')) ?>
-&middot; <?= e(marstek_t('EINST.MONAT')) ?>: <?= e($en['chgm']) ?> / <?= e($en['dism']) ?> kWh
-&middot; <?= e(marstek_t('EINST.ZYKLEN')) ?>: <?= (int) $en['cyc'] ?>
-&middot; <?= e(marstek_t('EINST.WIRKUNGSGRAD')) ?>: <?= e($en['eff']) ?> %
+<br><?= marstek_e(marstek_t('EINST.ENERGIE_HEUTE')) ?>: <b><?= marstek_e($en['chgd']) ?> kWh</b> <?= marstek_e(marstek_t('EINST.GELADEN')) ?>,
+<b><?= marstek_e($en['disd']) ?> kWh</b> <?= marstek_e(marstek_t('EINST.ABGEGEBEN')) ?>
+&middot; <?= marstek_e(marstek_t('EINST.MONAT')) ?>: <?= marstek_e($en['chgm']) ?> / <?= marstek_e($en['dism']) ?> kWh
+&middot; <?= marstek_e(marstek_t('EINST.ZYKLEN')) ?>: <?= (int) $en['cyc'] ?>
+&middot; <?= marstek_e(marstek_t('EINST.WIRKUNGSGRAD')) ?>: <?= marstek_e($en['eff']) ?> %
 <?php } } ?>
 <?php
     $vtag = ($mv_verlauf_dev === $n && $mv_verlauf_tag !== '') ? $mv_verlauf_tag : date('Ymd');
@@ -602,14 +646,14 @@ $mv_verlauf_tag = isset($_GET['vtag']) && is_string($_GET['vtag']) ? preg_replac
     $hist = marstek_history_read($n, $vtag);
     $kz = marstek_history_kennzahlen($n, $vtag); ?>
 <div style="margin-top:8px;"><?= mv_soc_svg($hist, $vtag) ?></div>
-<div class="sm-small"><?= e(marstek_t('EINST.VERLAUF_ERKLAERUNG')) ?>
-<?php if (!empty($kz['ok'])) { ?> &middot; <?= e(sprintf(marstek_t('EINST.VERLAUF_KENNZAHLEN'), $kz['socmin'], $kz['socmax'], $kz['hub'], $kz['n'])) ?><?php } ?>
+<div class="sm-small"><?= marstek_e(marstek_t('EINST.VERLAUF_ERKLAERUNG')) ?>
+<?php if (!empty($kz['ok'])) { ?> &middot; <?= marstek_e(sprintf(marstek_t('EINST.VERLAUF_KENNZAHLEN'), $kz['socmin'], $kz['socmax'], $kz['hub'], $kz['n'])) ?><?php } ?>
 </div>
 <?php if (count($vtage) > 1) { ?>
-<div class="sm-small" style="margin-top:4px;"><?= e(marstek_t('EINST.TAG_WAEHLEN')) ?>:
+<div class="sm-small" style="margin-top:4px;"><?= marstek_e(marstek_t('EINST.TAG_WAEHLEN')) ?>:
 <?php foreach (array_slice($vtage, 0, 14) as $t) {
     $bez = substr($t, 6, 2) . '.' . substr($t, 4, 2) . '.'; ?>
-<a href="index.php?tab=settings&amp;vdev=<?= $n ?>&amp;vtag=<?= e($t) ?>"<?= $t === $vtag ? ' style="font-weight:700;"' : '' ?>><?= e($bez) ?></a>
+<a href="index.php?tab=settings&amp;vdev=<?= $n ?>&amp;vtag=<?= marstek_e($t) ?>"<?= $t === $vtag ? ' style="font-weight:700;"' : '' ?>><?= marstek_e($bez) ?></a>
 <?php } ?>
 </div>
 <?php } ?>
@@ -617,8 +661,8 @@ $mv_verlauf_tag = isset($_GET['vtag']) && is_string($_GET['vtag']) ? preg_replac
   <input data-role="none" type="hidden" name="formtoken" value="<?= $mv_ft ?>">
   <input data-role="none" type="hidden" name="activetab" value="tab-settings">
   <input data-role="none" type="hidden" name="verlauf_dev" value="<?= $n ?>">
-  <input data-role="none" type="hidden" name="verlauf_tag" value="<?= e($vtag) ?>">
-  <button data-role="none" class="sm-btn sm-b-lesen" type="submit" name="verlauf_csv" value="1" style="min-width:200px;"><?= e(marstek_t('EINST.K_CSV')) ?></button>
+  <input data-role="none" type="hidden" name="verlauf_tag" value="<?= marstek_e($vtag) ?>">
+  <button data-role="none" class="sm-btn sm-b-lesen" type="submit" name="verlauf_csv" value="1" style="min-width:200px;"><?= marstek_e(marstek_t('EINST.K_CSV')) ?></button>
 </form>
 </div>
 <?php } ?>
@@ -628,50 +672,50 @@ $mv_verlauf_tag = isset($_GET['vtag']) && is_string($_GET['vtag']) ? preg_replac
      Ueberfliegen wie ein Haken ein. -->
 <div class="sm-tabs">
 	<a class="sm-tab<?= $mv_active_tab === 'tab-settings' ? ' sm-active' : '' ?>" data-ziel="tab-settings"
-	   href="index.php?tab=settings"><?= e(marstek_t('REITER.EINSTELLUNGEN')) ?></a>
+	   href="index.php?tab=settings"><?= marstek_e(marstek_t('REITER.EINSTELLUNGEN')) ?></a>
 	<a class="sm-tab<?= $mv_active_tab === 'tab-mqtt' ? ' sm-active' : '' ?>" data-ziel="tab-mqtt"
 	   href="index.php?tab=mqtt">MQTT</a>
 	<a class="sm-tab<?= $mv_active_tab === 'tab-loxone' ? ' sm-active' : '' ?>" data-ziel="tab-loxone"
-	   href="index.php?tab=loxone"><?= e(marstek_t('REITER.LOXONE')) ?></a>
+	   href="index.php?tab=loxone"><?= marstek_e(marstek_t('REITER.LOXONE')) ?></a>
 	<a class="sm-tab<?= $mv_active_tab === 'tab-test' ? ' sm-active' : '' ?>" data-ziel="tab-test"
-	   href="index.php?tab=test"><?= e(marstek_t('REITER.TEST')) ?></a>
+	   href="index.php?tab=test"><?= marstek_e(marstek_t('REITER.TEST')) ?></a>
 	<a class="sm-tab<?= $mv_active_tab === 'tab-log' ? ' sm-active' : '' ?>" data-ziel="tab-log"
-	   href="index.php?tab=log"><?= e(marstek_t('REITER.LOG')) ?></a>
+	   href="index.php?tab=log"><?= marstek_e(marstek_t('REITER.LOG')) ?></a>
 </div>
 
 <!-- ================= Reiter: Einstellungen ================= -->
 <div class="sm-seite<?= $mv_active_tab === 'tab-settings' ? ' sm-active' : '' ?>" id="tab-settings">
 <div class="sm-legende">
-<span><i class="sm-punkt sm-b-technik"></i> <?= e(marstek_t('LEGENDE.TECHNIK')) ?></span>
-<span><i class="sm-punkt sm-b-aktion"></i> <?= e(marstek_t('LEGENDE.AKTION')) ?></span>
+<span><i class="sm-punkt sm-b-technik"></i> <?= marstek_e(marstek_t('LEGENDE.TECHNIK')) ?></span>
+<span><i class="sm-punkt sm-b-aktion"></i> <?= marstek_e(marstek_t('LEGENDE.AKTION')) ?></span>
 </div>
 <form action="index.php" method="post" autocomplete="off">
 <input data-role="none" type="hidden" name="formtoken" value="<?= $mv_ft ?>">
 <input data-role="none" type="hidden" name="save" value="1">
 <input data-role="none" type="hidden" name="activetab" value="tab-settings">
 
-<h2><?= e(marstek_t('EINST.H_GERAETE')) ?></h2>
+<h2><?= marstek_e(marstek_t('EINST.H_GERAETE')) ?></h2>
 <div class="sm-hilfe"><?= marstek_t('EINST.GERAETE_ERKLAERUNG') ?></div>
 <div class="sm-breit">
 <table class="sm-tbl sm-devtbl">
-<tr><th style="width:34px;">Nr.</th><th><?= e(marstek_t('EINST.SP_NAME')) ?></th><th><?= e(marstek_t('EINST.SP_IP')) ?></th>
-<th style="width:88px;"><?= e(marstek_t('EINST.SP_PORT')) ?></th><th style="width:104px;"><?= e(marstek_t('EINST.SP_PMAX_LADEN')) ?></th>
-<th style="width:104px;"><?= e(marstek_t('EINST.SP_PMAX_ENTLADEN')) ?></th><th style="width:96px;"><?= e(marstek_t('EINST.SP_KWH')) ?></th>
-<th style="width:110px;"><?= e(marstek_t('EINST.SP_MODBUS')) ?></th></tr>
+<tr><th style="width:34px;">Nr.</th><th><?= marstek_e(marstek_t('EINST.SP_NAME')) ?></th><th><?= marstek_e(marstek_t('EINST.SP_IP')) ?></th>
+<th style="width:88px;"><?= marstek_e(marstek_t('EINST.SP_PORT')) ?></th><th style="width:104px;"><?= marstek_e(marstek_t('EINST.SP_PMAX_LADEN')) ?></th>
+<th style="width:104px;"><?= marstek_e(marstek_t('EINST.SP_PMAX_ENTLADEN')) ?></th><th style="width:96px;"><?= marstek_e(marstek_t('EINST.SP_KWH')) ?></th>
+<th style="width:110px;"><?= marstek_e(marstek_t('EINST.SP_MODBUS')) ?></th></tr>
 <?php for ($i = 0; $i < 4; $i++) {
     $d = isset($mv_cfg['devices'][$i]) && is_array($mv_cfg['devices'][$i]) ? $mv_cfg['devices'][$i] : array();
     $d += array('name' => '', 'ip' => '', 'port' => 30000, 'pmax_charge' => 2500, 'pmax_discharge' => 2500, 'modbus' => 1, 'kwh' => 0); ?>
 <tr>
 <td><?= $i + 1 ?></td>
-<td><input data-role="none" type="text" name="dev_name[]" value="<?= e($d['name']) ?>" placeholder="<?= e($i === 0 ? marstek_t('EINST.PH_NAME') : marstek_t('EINST.PH_LEER')) ?>"></td>
-<td><input data-role="none" type="text" name="dev_ip[]" value="<?= e($d['ip']) ?>" placeholder="<?= e($i === 0 ? '192.168.1.25' : '') ?>"></td>
+<td><input data-role="none" type="text" name="dev_name[]" value="<?= marstek_e($d['name']) ?>" placeholder="<?= marstek_e($i === 0 ? marstek_t('EINST.PH_NAME') : marstek_t('EINST.PH_LEER')) ?>"></td>
+<td><input data-role="none" type="text" name="dev_ip[]" value="<?= marstek_e($d['ip']) ?>" placeholder="<?= marstek_e($i === 0 ? '192.168.1.25' : '') ?>"></td>
 <td><input data-role="none" type="number" name="dev_port[]" value="<?= (int) $d['port'] ?>" min="1" max="65535"></td>
 <td><input data-role="none" type="number" name="dev_pc[]" value="<?= (int) $d['pmax_charge'] ?>" min="100" max="3600"></td>
 <td><input data-role="none" type="number" name="dev_pd[]" value="<?= (int) $d['pmax_discharge'] ?>" min="100" max="3600"></td>
-<td><input data-role="none" type="text" name="dev_kwh[]" value="<?= $d['kwh'] > 0 ? e($d['kwh']) : '' ?>" placeholder="5.12"></td>
-<td><select data-role="none" name="dev_mb[]">
-<option value="0"<?= empty($d['modbus']) ? ' selected' : '' ?>><?= e(marstek_t('EINST.AUS')) ?></option>
-<option value="1"<?= !empty($d['modbus']) ? ' selected' : '' ?>><?= e(marstek_t('EINST.EIN')) ?></option>
+<td><input data-role="none" type="text" name="dev_kwh[]" value="<?= $d['kwh'] > 0 ? marstek_e($d['kwh']) : '' ?>" placeholder="5.12"></td>
+<td><select data-role="none" class="sm-auswahl" name="dev_mb[]">
+<option value="0"<?= empty($d['modbus']) ? ' selected' : '' ?>><?= marstek_e(marstek_t('EINST.AUS')) ?></option>
+<option value="1"<?= !empty($d['modbus']) ? ' selected' : '' ?>><?= marstek_e(marstek_t('EINST.EIN')) ?></option>
 </select></td>
 </tr>
 <?php } ?>
@@ -679,103 +723,103 @@ $mv_verlauf_tag = isset($_GET['vtag']) && is_string($_GET['vtag']) ? preg_replac
 </div>
 <div class="sm-hilfe"><?= marstek_t('EINST.GRENZEN_ERKLAERUNG') ?></div>
 
-<h2><?= e(marstek_t('EINST.H_BETRIEB')) ?></h2>
+<h2><?= marstek_e(marstek_t('EINST.H_BETRIEB')) ?></h2>
 <div class="sm-row">
     <div>
-        <label><?= e(marstek_t('EINST.L_CACHE')) ?></label>
+        <label><?= marstek_e(marstek_t('EINST.L_CACHE')) ?></label>
         <input data-role="none" type="number" name="cache_sec" value="<?= (int) $mv_cfg['cache_sec'] ?>" min="5" max="300">
-        <div class="sm-hilfe"><?= e(marstek_t('EINST.H_CACHE')) ?></div>
+        <div class="sm-hilfe"><?= marstek_e(marstek_t('EINST.H_CACHE')) ?></div>
     </div>
     <div>
-        <label><?= e(marstek_t('EINST.L_FALLBACK')) ?></label>
+        <label><?= marstek_e(marstek_t('EINST.L_FALLBACK')) ?></label>
         <input data-role="none" type="number" name="fallback_min" value="<?= (int) $mv_cfg['fallback_min'] ?>" min="0" max="1440">
-        <div class="sm-hilfe"><?= e(marstek_t('EINST.H_FALLBACK')) ?></div>
+        <div class="sm-hilfe"><?= marstek_e(marstek_t('EINST.H_FALLBACK')) ?></div>
     </div>
     <div>
-        <label><?= e(marstek_t('EINST.L_VERLAUF_TAGE')) ?></label>
+        <label><?= marstek_e(marstek_t('EINST.L_VERLAUF_TAGE')) ?></label>
         <input data-role="none" type="number" name="verlauf_tage" value="<?= (int) $mv_cfg['verlauf_tage'] ?>" min="1" max="365">
-        <div class="sm-hilfe"><?= e(marstek_t('EINST.H_VERLAUF_TAGE')) ?></div>
+        <div class="sm-hilfe"><?= marstek_e(marstek_t('EINST.H_VERLAUF_TAGE')) ?></div>
     </div>
 </div>
 <label style="display:inline-flex;align-items:center;gap:6px;margin-top:14px;">
     <input data-role="none" type="checkbox" name="steuerung_ein" <?= !empty($mv_cfg['steuerung_ein']) ? 'checked' : '' ?>>
-    <?= e(marstek_t('EINST.L_STEUERUNG')) ?>
+    <?= marstek_e(marstek_t('EINST.L_STEUERUNG')) ?>
 </label>
-<div class="sm-hilfe"><?= e(marstek_t('EINST.H_STEUERUNG')) ?></div>
+<div class="sm-hilfe"><?= marstek_e(marstek_t('EINST.H_STEUERUNG')) ?></div>
 <label style="display:inline-flex;align-items:center;gap:6px;margin-top:10px;">
     <input data-role="none" type="checkbox" name="verteilen_ein" <?= !empty($mv_cfg['verteilen_ein']) ? 'checked' : '' ?>>
-    <?= e(marstek_t('EINST.L_VERTEILEN')) ?>
+    <?= marstek_e(marstek_t('EINST.L_VERTEILEN')) ?>
 </label>
-<div class="sm-hilfe"><?= e(marstek_t('EINST.H_VERTEILEN')) ?></div>
+<div class="sm-hilfe"><?= marstek_e(marstek_t('EINST.H_VERTEILEN')) ?></div>
 
-<h2><?= e(marstek_t('EINST.H_SCHUTZ')) ?></h2>
+<h2><?= marstek_e(marstek_t('EINST.H_SCHUTZ')) ?></h2>
 <div class="sm-hinweis"><?= marstek_t('EINST.SCHUTZ_ERKLAERUNG') ?></div>
 <label style="display:inline-flex;align-items:center;gap:6px;">
     <input data-role="none" type="checkbox" name="schutz_ein" <?= !empty($mv_cfg['schutz_ein']) ? 'checked' : '' ?>>
-    <?= e(marstek_t('EINST.L_SCHUTZ')) ?>
+    <?= marstek_e(marstek_t('EINST.L_SCHUTZ')) ?>
 </label>
 <div class="sm-row" style="margin-top:6px;">
-    <div><label><?= e(marstek_t('EINST.L_TEMP_MIN')) ?></label>
+    <div><label><?= marstek_e(marstek_t('EINST.L_TEMP_MIN')) ?></label>
         <input data-role="none" type="number" name="temp_min" value="<?= (int) $mv_cfg['temp_min'] ?>" min="-20" max="20"></div>
-    <div><label><?= e(marstek_t('EINST.L_TEMP_MAX')) ?></label>
+    <div><label><?= marstek_e(marstek_t('EINST.L_TEMP_MAX')) ?></label>
         <input data-role="none" type="number" name="temp_max" value="<?= (int) $mv_cfg['temp_max'] ?>" min="20" max="80"></div>
-    <div><label><?= e(marstek_t('EINST.L_SOC_MIN')) ?></label>
+    <div><label><?= marstek_e(marstek_t('EINST.L_SOC_MIN')) ?></label>
         <input data-role="none" type="number" name="soc_min" value="<?= (int) $mv_cfg['soc_min'] ?>" min="0" max="50"></div>
-    <div><label><?= e(marstek_t('EINST.L_SOC_MAX')) ?></label>
+    <div><label><?= marstek_e(marstek_t('EINST.L_SOC_MAX')) ?></label>
         <input data-role="none" type="number" name="soc_max" value="<?= (int) $mv_cfg['soc_max'] ?>" min="50" max="100"></div>
 </div>
 
-<h2><?= e(marstek_t('EINST.H_MELDEN')) ?></h2>
+<h2><?= marstek_e(marstek_t('EINST.H_MELDEN')) ?></h2>
 <label style="display:inline-flex;align-items:center;gap:6px;">
     <input data-role="none" type="checkbox" name="melden_ein" <?= !empty($mv_cfg['melden_ein']) ? 'checked' : '' ?>>
-    <?= e(marstek_t('EINST.L_MELDEN')) ?>
+    <?= marstek_e(marstek_t('EINST.L_MELDEN')) ?>
 </label>
-<div class="sm-hilfe"><?= e(marstek_t('EINST.H_MELDEN')) ?></div>
+<div class="sm-hilfe"><?= marstek_e(marstek_t('EINST.H_MELDEN')) ?></div>
 <div class="sm-row" style="margin-top:6px;">
-    <div style="max-width:240px;"><label><?= e(marstek_t('EINST.L_MELDEN_AB')) ?></label>
+    <div style="max-width:240px;"><label><?= marstek_e(marstek_t('EINST.L_MELDEN_AB')) ?></label>
         <input data-role="none" type="number" name="melden_ab" value="<?= (int) $mv_cfg['melden_ab'] ?>" min="1" max="20"></div>
 </div>
 
-<h2><?= e(marstek_t('EINST.H_SPOT')) ?></h2>
+<h2><?= marstek_e(marstek_t('EINST.H_SPOT')) ?></h2>
 <div class="sm-row">
     <div>
-        <label><?= e(marstek_t('EINST.L_MARKT')) ?></label>
-        <select data-role="none" name="awattar">
-            <option value="de"<?= $mv_cfg['awattar'] === 'de' ? ' selected' : '' ?>><?= e(marstek_t('EINST.MARKT_DE')) ?></option>
-            <option value="at"<?= $mv_cfg['awattar'] === 'at' ? ' selected' : '' ?>><?= e(marstek_t('EINST.MARKT_AT')) ?></option>
+        <label><?= marstek_e(marstek_t('EINST.L_MARKT')) ?></label>
+        <select data-role="none" class="sm-auswahl" name="awattar">
+            <option value="de"<?= $mv_cfg['awattar'] === 'de' ? ' selected' : '' ?>><?= marstek_e(marstek_t('EINST.MARKT_DE')) ?></option>
+            <option value="at"<?= $mv_cfg['awattar'] === 'at' ? ' selected' : '' ?>><?= marstek_e(marstek_t('EINST.MARKT_AT')) ?></option>
         </select>
     </div>
     <div>
-        <label><?= e(marstek_t('EINST.L_UST')) ?></label>
-        <input data-role="none" type="text" name="vat" value="<?= e($mv_cfg['vat']) ?>" placeholder="1.19">
-        <div class="sm-hilfe"><?= e(marstek_t('EINST.H_UST')) ?></div>
+        <label><?= marstek_e(marstek_t('EINST.L_UST')) ?></label>
+        <input data-role="none" type="text" name="vat" value="<?= marstek_e($mv_cfg['vat']) ?>" placeholder="1.19">
+        <div class="sm-hilfe"><?= marstek_e(marstek_t('EINST.H_UST')) ?></div>
     </div>
     <div>
-        <label><?= e(marstek_t('EINST.L_AUFSCHLAG')) ?></label>
-        <input data-role="none" type="text" name="aufschlag_ct" value="<?= e($mv_cfg['aufschlag_ct']) ?>" placeholder="0">
-        <div class="sm-hilfe"><?= e(marstek_t('EINST.H_AUFSCHLAG')) ?></div>
+        <label><?= marstek_e(marstek_t('EINST.L_AUFSCHLAG')) ?></label>
+        <input data-role="none" type="text" name="aufschlag_ct" value="<?= marstek_e($mv_cfg['aufschlag_ct']) ?>" placeholder="0">
+        <div class="sm-hilfe"><?= marstek_e(marstek_t('EINST.H_AUFSCHLAG')) ?></div>
     </div>
 </div>
 
-<button data-role="none" class="sm-btn sm-b-aktion" type="submit" style="margin-top:18px;"><?= e(marstek_t('EINST.K_SPEICHERN')) ?></button>
+<button data-role="none" class="sm-btn sm-b-aktion" type="submit" style="margin-top:18px;"><?= marstek_e(marstek_t('EINST.K_SPEICHERN')) ?></button>
 </form>
 
-<h2><?= e(marstek_t('EINST.H_SICHERUNG')) ?></h2>
+<h2><?= marstek_e(marstek_t('EINST.H_SICHERUNG')) ?></h2>
 <div class="sm-hinweis"><?= marstek_t('EINST.SICHERUNG_ERKLAERUNG') ?></div>
 <div class="sm-knopfreihe">
   <form action="index.php" method="post">
     <input data-role="none" type="hidden" name="formtoken" value="<?= $mv_ft ?>">
     <input data-role="none" type="hidden" name="activetab" value="tab-settings">
-    <button data-role="none" class="sm-btn sm-b-technik" type="submit" name="konfig_export" value="1"><?= e(marstek_t('EINST.K_EXPORT')) ?></button>
+    <button data-role="none" class="sm-btn sm-b-technik" type="submit" name="mv_sichern" value="1"><?= marstek_e(marstek_t('EINST.K_EXPORT')) ?></button>
   </form>
 </div>
 <form action="index.php" method="post" enctype="multipart/form-data" style="margin-top:10px;">
   <input data-role="none" type="hidden" name="formtoken" value="<?= $mv_ft ?>">
   <input data-role="none" type="hidden" name="activetab" value="tab-settings">
-  <label><?= e(marstek_t('EINST.L_IMPORT')) ?></label>
+  <label><?= marstek_e(marstek_t('EINST.L_IMPORT')) ?></label>
   <input data-role="none" type="file" name="konfigdatei" accept=".json,application/json" style="max-width:420px;">
   <div class="sm-knopfreihe" style="margin-top:8px;">
-    <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="konfig_import" value="1"><?= e(marstek_t('EINST.K_IMPORT')) ?></button>
+    <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="mv_zurueck" value="1"><?= marstek_e(marstek_t('EINST.K_IMPORT')) ?></button>
   </div>
 </form>
 
@@ -784,30 +828,30 @@ $mv_verlauf_tag = isset($_GET['vtag']) && is_string($_GET['vtag']) ? preg_replac
 <!-- ================= Reiter: MQTT ================= -->
 <div class="sm-seite<?= $mv_active_tab === 'tab-mqtt' ? ' sm-active' : '' ?>" id="tab-mqtt">
 <div class="sm-legende">
-<span><i class="sm-punkt sm-b-aktion"></i> <?= e(marstek_t('LEGENDE.AKTION')) ?></span>
+<span><i class="sm-punkt sm-b-aktion"></i> <?= marstek_e(marstek_t('LEGENDE.AKTION')) ?></span>
 </div>
 <form action="index.php" method="post">
 <input data-role="none" type="hidden" name="formtoken" value="<?= $mv_ft ?>">
 <input data-role="none" type="hidden" name="mqtt_save" value="1">
 <input data-role="none" type="hidden" name="activetab" value="tab-mqtt">
-<h2><?= e(marstek_t('MQTT.H_MQTT')) ?></h2>
-<?php if ($mv_gw !== null && !$mv_gw['autostart']) { ?><div class="sm-warnung"><b>MQTT:</b> <?= e(marstek_t('MQTT.W_AUTOSTART')) ?></div><?php } ?>
-<?php if (marstek_mqtt_udpport() === 0) { ?><div class="sm-warnung"><?= e(marstek_t('MQTT.W_KEIN_GATEWAY')) ?></div><?php } ?>
+<h2><?= marstek_e(marstek_t('MQTT.H_MQTT')) ?></h2>
+<?php if ($mv_gw !== null && !$mv_gw['autostart']) { ?><div class="sm-warnung"><b>MQTT:</b> <?= marstek_e(marstek_t('MQTT.W_AUTOSTART')) ?></div><?php } ?>
+<?php if (marstek_mqtt_udpport() === 0) { ?><div class="sm-warnung"><?= marstek_e(marstek_t('MQTT.W_KEIN_GATEWAY')) ?></div><?php } ?>
 <label style="display:inline-flex;align-items:center;gap:6px;">
     <input data-role="none" type="checkbox" name="mqtt_enabled" <?= !empty($mv_cfg['mqtt_enabled']) ? 'checked' : '' ?>>
-    <?= e(marstek_t('MQTT.L_EIN')) ?>
+    <?= marstek_e(marstek_t('MQTT.L_EIN')) ?>
 </label>
 <div class="sm-row" style="margin-top:6px;">
     <div style="max-width:420px;">
-        <label><?= e(marstek_t('MQTT.L_PRAEFIX')) ?></label>
-        <input data-role="none" type="text" name="mqtt_topic" value="<?= e($mv_cfg['mqtt_topic']) ?>" placeholder="marstek">
-        <div class="sm-hilfe"><?= e(marstek_t('MQTT.H_PRAEFIX')) ?></div>
+        <label><?= marstek_e(marstek_t('MQTT.L_PRAEFIX')) ?></label>
+        <input data-role="none" type="text" name="mqtt_topic" value="<?= marstek_e($mv_cfg['mqtt_topic']) ?>" placeholder="marstek">
+        <div class="sm-hilfe"><?= marstek_e(marstek_t('MQTT.H_PRAEFIX')) ?></div>
     </div>
 </div>
-<button data-role="none" class="sm-btn sm-b-aktion" type="submit" style="margin-top:18px;"><?= e(marstek_t('EINST.K_SPEICHERN')) ?></button>
+<button data-role="none" class="sm-btn sm-b-aktion" type="submit" style="margin-top:18px;"><?= marstek_e(marstek_t('EINST.K_SPEICHERN')) ?></button>
 </form>
 
-<h2><?= e(marstek_t('MQTT.H_ABO')) ?></h2>
+<h2><?= marstek_e(marstek_t('MQTT.H_ABO')) ?></h2>
 <?php
 /* Der Satz "Ohne diesen Eintrag kommt am Miniserver nichts an" gilt NUR fuer
  * Gateway V1. Unter V2 schaltet der LoxBerry-Kern die Knoepfe auf der
@@ -824,31 +868,51 @@ if ($mv_gwf >= 2) { ?>
 <div class="sm-hinweis"><?= marstek_t('MQTT.ABO_V2') ?></div>
 <div class="sm-hilfe"><?= marstek_t('MQTT.ABO_UNBEKANNT') ?></div>
 <?php } ?>
-<p><?= e(marstek_t('MQTT.ABO_EINTRAG')) ?> <span class="sm-mono"><?= e($mv_cfg['mqtt_topic']) ?>/#</span></p>
+<p><?= marstek_e(marstek_t('MQTT.ABO_EINTRAG')) ?> <span class="sm-mono"><?= marstek_e($mv_cfg['mqtt_topic']) ?>/#</span></p>
 
-<h2><?= e(marstek_t('MQTT.H_THEMEN')) ?></h2>
+<h2><?= marstek_e(marstek_t('MQTT.H_THEMEN')) ?></h2>
 <div class="sm-hinweis"><?= marstek_t('MQTT.THEMEN_ERKLAERUNG') ?></div>
 <div class="sm-breit">
 <table class="sm-tbl">
-<tr><th style="width:38%;"><?= e(marstek_t('MQTT.SP_THEMA')) ?></th><th><?= e(marstek_t('MQTT.SP_BEDEUTUNG')) ?></th></tr>
+<tr><th style="width:38%;"><?= marstek_e(marstek_t('MQTT.SP_THEMA')) ?></th><th><?= marstek_e(marstek_t('MQTT.SP_BEDEUTUNG')) ?></th></tr>
 <?php foreach (marstek_mqtt_themen(true) as $thema => $bedeutung) { ?>
-<tr><td><span class="sm-mono"><?= e($mv_cfg['mqtt_topic']) ?>/<?= e($thema) ?></span></td><td><?= e($bedeutung) ?></td></tr>
+<tr><td><span class="sm-mono"><?= marstek_e($mv_cfg['mqtt_topic']) ?>/<?= marstek_e($thema) ?></span></td><td><?= marstek_e($bedeutung) ?></td></tr>
 <?php } ?>
 </table>
 </div>
-<div class="sm-hilfe"><?= e(sprintf(marstek_t('MQTT.THEMEN_ANZAHL'), count(marstek_mqtt_themen(true)))) ?></div>
+<div class="sm-hilfe"><?= marstek_e(sprintf(marstek_t('MQTT.THEMEN_ANZAHL'), count(marstek_mqtt_themen(true)))) ?></div>
 <?php if (count($mv_devices) > 1) { ?>
-<div class="sm-hilfe"><?= e(sprintf(marstek_t('MQTT.MEHRERE_GERAETE'), $mv_cfg['mqtt_topic'], $mv_cfg['mqtt_topic'])) ?></div>
+<div class="sm-hilfe"><?= marstek_e(sprintf(marstek_t('MQTT.MEHRERE_GERAETE'), $mv_cfg['mqtt_topic'], $mv_cfg['mqtt_topic'])) ?></div>
 <?php } ?>
 </div>
 
 <!-- ================= Reiter: Einbindung in Loxone ================= -->
 <div class="sm-seite<?= $mv_active_tab === 'tab-loxone' ? ' sm-active' : '' ?>" id="tab-loxone">
-<h2><?= e(marstek_t('LOX.H_EINBINDUNG')) ?></h2>
+<h2><?= marstek_e(marstek_t('LOX.H_EINBINDUNG')) ?></h2>
 <div class="sm-hinweis"><?= marstek_t('LOX.GRUNDGEDANKE') ?></div>
 
-<div class="sm-step"><b><?= e(marstek_t('LOX.S1_TITEL')) ?></b><br>
+<!-- Eine gesammelte Legende OBEN im Reiter, nicht zwei Teillegenden
+     mittendrin. Sie nennt genau die Farben, die hier vorkommen: grau fuer
+     die Vorlagen, orange fuer "Neues Aktionstoken erzeugen". -->
+<div class="sm-legende">
+<span><i class="sm-punkt sm-b-technik"></i> <?= marstek_e(marstek_t('LEGENDE.TECHNIK')) ?></span>
+<span><i class="sm-punkt sm-b-aktion"></i> <?= marstek_e(marstek_t('LEGENDE.AKTION_ADRESSEN')) ?></span>
+</div>
+
+<?php
+/* SIEBEN feste Schritte, in der Reihenfolge des Hausstandards. Bis 1.1.4
+ * trug Kasten 1 keine Nummer, die Zaehlung begann bei "Schritt 2", das Abo
+ * war in Kasten 1 hineingefaltet, und die Zahl der Kaesten haengte an der
+ * Geraetezahl: acht bei einem Speicher, neun bei zweien. Eine Anleitung,
+ * deren Nummern sich mit der Anlage verschieben, laesst sich nicht
+ * zitieren - und die Baustein-Liste verweist auf feste Nummern. */
+$mv_schritt = 0;
+?>
+<div class="sm-step"><b><?= marstek_e(sprintf(marstek_t('LOX.SCHRITT'), ++$mv_schritt)) ?>: <?= marstek_e(marstek_t('LOX.S1_TITEL')) ?></b><br>
 <?= marstek_t('LOX.S1_TEXT') ?>
+</div>
+
+<div class="sm-step"><b><?= marstek_e(sprintf(marstek_t('LOX.SCHRITT'), ++$mv_schritt)) ?>: <?= marstek_e(marstek_t('LOX.S_ABO')) ?></b><br>
 <?php if ($mv_gwf >= 2) { ?>
 <div class="sm-hinweis"><?= marstek_t('MQTT.ABO_V2') ?></div>
 <?php } elseif ($mv_gwf === 1) { ?>
@@ -866,56 +930,66 @@ if ($mv_gwf >= 2) { ?>
  * 1.0.16 standen sie in vierzig einzelnen Sprachschluesseln daneben, und
  * genau daraus sind drei Fehler entstanden: MS falsch beschriftet, RANKD mit
  * zwei Bedeutungen, GRIDP gar nicht erwaehnt. */
+// Der Takt kommt aus marstek_satz_takt() - dieselbe Quelle, aus der die
+// erzeugte Vorlage ihr PollingTime nimmt. Bis 1.1.4 stand er hier zweimal,
+// und fuer ?summe liefen beide auseinander: die Oberflaeche nannte 60 s,
+// die Datei daneben trug PollingTime="300".
 $mv_saetze = array(
-    'status' => array('titel' => marstek_t('LOX.SATZ_STATUS'), 'takt' => 60,  'q' => '?status', 'jedev' => true),
-    'ranks'  => array('titel' => marstek_t('LOX.SATZ_RANKS'),  'takt' => 300, 'q' => '?ranks',  'jedev' => false),
-    'energy' => array('titel' => marstek_t('LOX.SATZ_ENERGY'), 'takt' => 300, 'q' => '?energy', 'jedev' => true),
+    'status' => array('titel' => marstek_t('LOX.SATZ_STATUS'), 'q' => '?status', 'jedev' => true),
+    'ranks'  => array('titel' => marstek_t('LOX.SATZ_RANKS'),  'q' => '?ranks',  'jedev' => false),
+    'energy' => array('titel' => marstek_t('LOX.SATZ_ENERGY'), 'q' => '?energy', 'jedev' => true),
 );
 if (count($mv_devices) > 1) {
-    $mv_saetze['summe'] = array('titel' => marstek_t('LOX.SATZ_SUMME'), 'takt' => 60, 'q' => '?summe', 'jedev' => false);
+    $mv_saetze['summe'] = array('titel' => marstek_t('LOX.SATZ_SUMME'), 'q' => '?summe', 'jedev' => false);
 }
-$mv_schritt = 1;
-foreach ($mv_saetze as $satz => $info) { $mv_schritt++; ?>
-<div class="sm-step"><b><?= e(sprintf(marstek_t('LOX.SCHRITT'), $mv_schritt)) ?>: <?= e($info['titel']) ?></b><br>
+foreach ($mv_saetze as $mv_s => $mv_unused) {
+    $mv_saetze[$mv_s]['takt'] = marstek_satz_takt($mv_s);
+}
+// Schritt 3 ist EIN Kasten. Die drei bis vier Saetze stehen darin als
+// Unterabschnitte, damit die Schrittnummern nicht an der Geraetezahl haengen.
+?>
+<div class="sm-step"><b><?= marstek_e(sprintf(marstek_t('LOX.SCHRITT'), ++$mv_schritt)) ?>: <?= marstek_e(marstek_t('LOX.S_EINGAENGE')) ?></b><br>
+<?php foreach ($mv_saetze as $satz => $info) { ?>
+<h3 class="sm-h3"><?= marstek_e($info['titel']) ?></h3>
 <table class="sm-tbl">
-<tr><th style="width:34%;"><?= e(marstek_t('LOX.SP_EIGENSCHAFT')) ?></th><th><?= e(marstek_t('LOX.SP_WERT')) ?></th></tr>
-<tr><td><?= e(marstek_t('LOX.SP_ADRESSE')) ?></td><td><span class="sm-mono">http://<?= $mv_host ?>/plugins/<?= e($mv_plugindir) ?>/marstek.php<?= e($info['q']) ?></span></td></tr>
-<tr><td><?= e(marstek_t('LOX.SP_TAKT')) ?></td><td><?= (int) $info['takt'] ?> s</td></tr>
+<tr><th style="width:34%;"><?= marstek_e(marstek_t('LOX.SP_EIGENSCHAFT')) ?></th><th><?= marstek_e(marstek_t('LOX.SP_WERT')) ?></th></tr>
+<tr><td><?= marstek_e(marstek_t('LOX.SP_ADRESSE')) ?></td><td><span class="sm-mono">http://<?= $mv_host ?>/plugins/<?= marstek_e($mv_plugindir) ?>/marstek.php<?= marstek_e($info['q']) ?></span></td></tr>
+<tr><td><?= marstek_e(marstek_t('LOX.SP_TAKT')) ?></td><td><?= (int) $info['takt'] ?> s</td></tr>
 </table>
 <div class="sm-breit">
 <table class="sm-tbl">
-<tr><th style="width:22%;"><?= e(marstek_t('LOX.SP_SUCHTEXT')) ?></th><th style="width:10%;"><?= e(marstek_t('LOX.SP_EINHEIT')) ?></th><th><?= e(marstek_t('LOX.SP_BEDEUTUNG')) ?></th></tr>
+<tr><th style="width:22%;"><?= marstek_e(marstek_t('LOX.SP_SUCHTEXT')) ?></th><th style="width:10%;"><?= marstek_e(marstek_t('LOX.SP_EINHEIT')) ?></th><th><?= marstek_e(marstek_t('LOX.SP_BEDEUTUNG')) ?></th></tr>
 <?php foreach (marstek_felder($satz) as $name => $f) { ?>
-<tr><td><span class="sm-mono">\i;<?= e($name) ?>=\i\v</span></td><td><?= e($f['einheit']) ?></td><td><?= e($f['text']) ?></td></tr>
+<tr><td><span class="sm-mono">\i;<?= marstek_e($name) ?>=\i\v</span></td><td><?= marstek_e($f['einheit']) ?></td><td><?= marstek_e($f['text']) ?></td></tr>
 <?php } ?>
 </table>
 </div>
 <?php if ($info['jedev'] && count($mv_devices) > 1) { ?>
-<div class="sm-hilfe"><?= e(sprintf(marstek_t('LOX.JE_GERAET'), $info['q'])) ?></div>
+<div class="sm-hilfe"><?= marstek_e(sprintf(marstek_t('LOX.JE_GERAET'), $info['q'])) ?></div>
+<?php } ?>
 <?php } ?>
 </div>
-<?php } ?>
 
-<div class="sm-step"><b><?= e(sprintf(marstek_t('LOX.SCHRITT'), ++$mv_schritt)) ?>: <?= e(marstek_t('LOX.S_AUSGANG')) ?></b><br>
+<div class="sm-step"><b><?= marstek_e(sprintf(marstek_t('LOX.SCHRITT'), ++$mv_schritt)) ?>: <?= marstek_e(marstek_t('LOX.S_AUSGANG')) ?></b><br>
 <?= marstek_t('LOX.AUSGANG_TEXT') ?>
 <table class="sm-tbl">
-<tr><th style="width:34%;"><?= e(marstek_t('LOX.SP_EIGENSCHAFT')) ?></th><th><?= e(marstek_t('LOX.SP_WERT')) ?></th></tr>
-<tr><td><?= e(marstek_t('LOX.SP_ADRESSE')) ?></td><td><span class="sm-mono">http://<?= $mv_host ?></span></td></tr>
-<tr><td><?= e(marstek_t('LOX.SP_BEFEHL_ANALOG')) ?></td><td><span class="sm-mono">/plugins/<?= e($mv_plugindir) ?>/marstek.php?p=&lt;v&gt;&amp;t=240&amp;token=<?= e($mv_cfg['aktionstoken']) ?></span></td></tr>
-<tr><td><?= e(marstek_t('LOX.SP_BEFEHL_AUTO')) ?></td><td><span class="sm-mono">/plugins/<?= e($mv_plugindir) ?>/marstek.php?mode=auto&amp;token=<?= e($mv_cfg['aktionstoken']) ?></span></td></tr>
+<tr><th style="width:34%;"><?= marstek_e(marstek_t('LOX.SP_EIGENSCHAFT')) ?></th><th><?= marstek_e(marstek_t('LOX.SP_WERT')) ?></th></tr>
+<tr><td><?= marstek_e(marstek_t('LOX.SP_ADRESSE')) ?></td><td><span class="sm-mono">http://<?= $mv_host ?></span></td></tr>
+<tr><td><?= marstek_e(marstek_t('LOX.SP_BEFEHL_ANALOG')) ?></td><td><span class="sm-mono">/plugins/<?= marstek_e($mv_plugindir) ?>/marstek.php?p=&lt;v&gt;&amp;t=240&amp;token=<?= marstek_e($mv_cfg['aktionstoken']) ?></span></td></tr>
+<tr><td><?= marstek_e(marstek_t('LOX.SP_BEFEHL_AUTO')) ?></td><td><span class="sm-mono">/plugins/<?= marstek_e($mv_plugindir) ?>/marstek.php?mode=auto&amp;token=<?= marstek_e($mv_cfg['aktionstoken']) ?></span></td></tr>
 </table>
 <div class="sm-warnung"><?= marstek_t('LOX.TOKEN_WARNUNG') ?></div>
 </div>
 
-<div class="sm-step"><b><?= e(sprintf(marstek_t('LOX.SCHRITT'), ++$mv_schritt)) ?>: <?= e(marstek_t('LOX.S_AUSFALL')) ?></b><br>
+<div class="sm-step"><b><?= marstek_e(sprintf(marstek_t('LOX.SCHRITT'), ++$mv_schritt)) ?>: <?= marstek_e(marstek_t('LOX.S_AUSFALL')) ?></b><br>
 <?= marstek_t('LOX.AUSFALL_TEXT') ?>
 </div>
 
-<div class="sm-step"><b><?= e(sprintf(marstek_t('LOX.SCHRITT'), ++$mv_schritt)) ?>: <?= e(marstek_t('LOX.S_BAUSTEINE')) ?></b><br>
+<div class="sm-step"><b><?= marstek_e(sprintf(marstek_t('LOX.SCHRITT'), ++$mv_schritt)) ?>: <?= marstek_e(marstek_t('LOX.S_BAUSTEINE')) ?></b><br>
 <?= marstek_t('LOX.BAUSTEINE_VORTEXT') ?>
 <div class="sm-breit">
 <table class="sm-tbl">
-<tr><th style="width:34px;">#</th><th style="width:20%;"><?= e(marstek_t('LOX.SP_BAUSTEIN')) ?></th><th style="width:24%;"><?= e(marstek_t('LOX.SP_NAME')) ?></th><th style="width:24%;"><?= e(marstek_t('LOX.SP_PARAMETER')) ?></th><th><?= e(marstek_t('LOX.SP_EINGAENGE')) ?></th></tr>
+<tr><th style="width:34px;">#</th><th style="width:20%;"><?= marstek_e(marstek_t('LOX.SP_BAUSTEIN')) ?></th><th style="width:24%;"><?= marstek_e(marstek_t('LOX.SP_NAME')) ?></th><th style="width:24%;"><?= marstek_e(marstek_t('LOX.SP_PARAMETER')) ?></th><th><?= marstek_e(marstek_t('LOX.SP_EINGAENGE')) ?></th></tr>
 <?php
 $mv_bausteine = array(
     array('Taster EIN/AUS', 'LOX.B_NETZLADEN', 'LOX.P_STANDARD_AUS', 'LOX.E_VISU'),
@@ -944,91 +1018,97 @@ $mv_bausteine = array(
     array('LOX.T_SCHWELLE', 'LOX.B_BEZUG_UEBER100', 'LOX.P_EIN100', 'LOX.E_NR9'),
     array('LOX.T_VERGLEICH', 'LOX.B_RANG_ENTLADE', 'LOX.P_Q1_GROESSER', 'LOX.E_NR6_RANKD'),
     array('LOX.T_SCHWELLE', 'LOX.B_ENTLADESTD_GESETZT', 'LOX.P_EIN05', 'LOX.E_NR6'),
-    array('LOX.T_UND', 'LOX.B_ENTLADEFENSTER', '', 'LOX.E_NR25_NR26_OK'),
+    // #27/#28: BERICHTIGT 04.09.2026. Hier stand EIN UND mit drei Eingaengen
+    // ("#25, #26, OK aus den Raengen"). Ein Logikbaustein hat zwei Eingaenge;
+    // drei Bedingungen brauchen die Kaskade. Die Schwesterzeile #15 hat es
+    // immer richtig gemacht. Alles ab hier ist um eine Nummer gerueckt.
+    array('LOX.T_UND', 'LOX.B_ENTLADEFENSTER_ZEIT', '', 'LOX.E_NR25_NR26'),
+    array('LOX.T_UND', 'LOX.B_ENTLADEFENSTER', '', 'LOX.E_NR27_OK'),
     array('LOX.T_NICHT', 'LOX.B_NICHT_NUR_TEUERSTE', '', 'LOX.E_NR4'),
-    array('LOX.T_ODER', 'LOX.B_ENTLADEFENSTER_ERF', '', 'LOX.E_NR27_NR28'),
-    array('LOX.T_UND', 'LOX.B_ENTLADUNG_ERLAUBT', '', 'LOX.E_NR29_NR3'),
-    array('LOX.T_UND', 'LOX.B_KEIN_NEGPREIS', '', 'LOX.E_NR30_NEG'),
-    array('LOX.T_FORMEL', 'LOX.B_ENTLADEWUNSCH', 'min(I1-50;2500)*I2*I3*I4', 'LOX.E_NR9_NR31_NR24_NR23'),
+    array('LOX.T_ODER', 'LOX.B_ENTLADEFENSTER_ERF', '', 'LOX.E_NR28_NR29'),
+    array('LOX.T_UND', 'LOX.B_ENTLADUNG_ERLAUBT', '', 'LOX.E_NR30_NR3'),
+    array('LOX.T_UND', 'LOX.B_KEIN_NEGPREIS', '', 'LOX.E_NR31_NEG'),
+    array('LOX.T_FORMEL', 'LOX.B_ENTLADEWUNSCH', 'min(I1-50;2500)*I2*I3*I4', 'LOX.E_NR9_NR32_NR24_NR23'),
     array('LOX.T_SCHWELLE', 'LOX.B_SOC_UEBER97', 'LOX.P_EIN97', 'LOX.E_SOC'),
-    array('LOX.T_FORMEL', 'LOX.B_SOLLLEISTUNG', 'I1*(1-I3)-I2', 'LOX.E_NR20_NR32_NR33'),
+    array('LOX.T_FORMEL', 'LOX.B_SOLLLEISTUNG', 'I1*(1-I3)-I2', 'LOX.E_NR20_NR33_NR34'),
     array('LOX.T_IMPULS', 'LOX.B_SENDETAKT', 'LOX.P_60_60', ''),
-    array('LOX.T_ANALOGSP', 'LOX.B_SAMPLE', 'LOX.P_TRIGGER', 'LOX.E_NR34_NR35'),
-    array('LOX.T_FORMEL', 'LOX.B_DITHER', 'I1+I2', 'LOX.E_NR36_NR35_AUSGANG'),
+    array('LOX.T_ANALOGSP', 'LOX.B_SAMPLE', 'LOX.P_TRIGGER', 'LOX.E_NR35_NR36'),
+    array('LOX.T_FORMEL', 'LOX.B_DITHER', 'I1+I2', 'LOX.E_NR37_NR36_AUSGANG'),
     array('LOX.T_NICHT', 'LOX.B_NICHT_ERREICHBAR', '', 'LOX.E_OK'),
-    array('LOX.T_EINVERZ', 'LOX.B_STOERUNG15', '900 s', 'LOX.E_NR38_PUSH'),
+    array('LOX.T_EINVERZ', 'LOX.B_STOERUNG15', '900 s', 'LOX.E_NR39_PUSH'),
     array('LOX.T_AENDERUNG', 'LOX.B_TAKT_UEBERWACHUNG', 'LOX.P_180', 'LOX.E_ZAEHLER_PUSH'),
-    array('LOX.T_VERGLEICH', 'LOX.B_SOLL_IST', 'LOX.P_Q1_ABWEICHUNG', 'LOX.E_SOLL_BATP'),
+    // #42 bis #44: BERICHTIGT 04.09.2026. Der Vergleicher allein meldete im
+    // Auto-Modus und nach jedem Auto-Fallback dauerhaft eine Stoerung:
+    // MARSTEK_STATUS_SOLL traegt dann -32768 ("kein Sollwert"), und die
+    // Abweichung zu BATP ist immer groesser als 200. Die Schwelle davor
+    // blendet den Fehlwert aus.
+    array('LOX.T_SCHWELLE', 'LOX.B_SOLL_GESETZT', 'LOX.P_EIN_SOLL', 'LOX.E_SOLL'),
+    array('LOX.T_VERGLEICH', 'LOX.B_SOLL_ABWEICHUNG', 'LOX.P_Q1_ABWEICHUNG', 'LOX.E_SOLL_BATP'),
+    array('LOX.T_UND', 'LOX.B_SOLL_IST', '', 'LOX.E_NR42_NR43'),
 );
 foreach ($mv_bausteine as $i => $b) {
     $typ = strpos($b[0], 'LOX.') === 0 ? marstek_t($b[0]) : $b[0];
     $par = strpos($b[2], 'LOX.') === 0 ? marstek_t($b[2]) : $b[2];
     $ein = $b[3] !== '' ? marstek_t($b[3]) : '';
     ?>
-<tr><td><?= $i + 1 ?></td><td><?= e($typ) ?></td><td><?= e(marstek_t($b[1])) ?></td><td><?= e($par) ?></td><td><?= e($ein) ?></td></tr>
+<tr><td><?= $i + 1 ?></td><td><?= marstek_e($typ) ?></td><td><?= marstek_e(marstek_t($b[1])) ?></td><td><?= marstek_e($par) ?></td><td><?= marstek_e($ein) ?></td></tr>
 <?php } ?>
 </table>
 </div>
 <?= marstek_t('LOX.BAUSTEINE_NACHTEXT') ?>
 </div>
 
-<div class="sm-step"><b><?= e(sprintf(marstek_t('LOX.SCHRITT'), ++$mv_schritt)) ?>: <?= e(marstek_t('LOX.S_GEGENPROBE')) ?></b><br>
+<div class="sm-step"><b><?= marstek_e(sprintf(marstek_t('LOX.SCHRITT'), ++$mv_schritt)) ?>: <?= marstek_e(marstek_t('LOX.S_GEGENPROBE')) ?></b><br>
 <?= marstek_t('LOX.GEGENPROBE_TEXT') ?>
 </div>
 
-<h2><?= e(marstek_t('LOX.H_TOKEN')) ?></h2>
-<div class="sm-legende">
-<span><i class="sm-punkt sm-b-aktion"></i> <?= e(marstek_t('LEGENDE.AKTION_ADRESSEN')) ?></span>
-</div>
+<h2><?= marstek_e(marstek_t('LOX.H_TOKEN')) ?></h2>
 <table class="sm-tbl">
-<tr><th style="width:34%;"><?= e(marstek_t('LOX.SP_EIGENSCHAFT')) ?></th><th><?= e(marstek_t('LOX.SP_WERT')) ?></th></tr>
-<tr><td><?= e(marstek_t('LOX.AKTUELLES_TOKEN')) ?></td><td><span class="sm-mono"><?= e($mv_cfg['aktionstoken']) ?></span></td></tr>
+<tr><th style="width:34%;"><?= marstek_e(marstek_t('LOX.SP_EIGENSCHAFT')) ?></th><th><?= marstek_e(marstek_t('LOX.SP_WERT')) ?></th></tr>
+<tr><td><?= marstek_e(marstek_t('LOX.AKTUELLES_TOKEN')) ?></td><td><span class="sm-mono"><?= marstek_e($mv_cfg['aktionstoken']) ?></span></td></tr>
 </table>
 <div class="sm-knopfreihe">
   <form method="post" action="index.php">
     <input data-role="none" type="hidden" name="formtoken" value="<?= $mv_ft ?>">
     <input data-role="none" type="hidden" name="activetab" value="tab-loxone">
-    <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="token_neu" value="1"><?= e(marstek_t('LOX.K_TOKEN_NEU')) ?></button>
+    <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="token_neu" value="1"><?= marstek_e(marstek_t('LOX.K_TOKEN_NEU')) ?></button>
   </form>
 </div>
 
-<h2><?= e(marstek_t('LOX.H_VORLAGEN')) ?></h2>
-<div class="sm-legende">
-<span><i class="sm-punkt sm-b-technik"></i> <?= e(marstek_t('LEGENDE.TECHNIK')) ?></span>
-</div>
+<h2><?= marstek_e(marstek_t('LOX.H_VORLAGEN')) ?></h2>
 <div class="sm-hinweis"><?= marstek_t('LOX.VORLAGEN_ERKLAERUNG') ?></div>
 <?php if (class_exists('ZipArchive')) { ?>
 <div class="sm-knopfreihe">
   <form action="index.php" method="post">
     <input data-role="none" type="hidden" name="formtoken" value="<?= $mv_ft ?>">
     <input data-role="none" type="hidden" name="activetab" value="tab-loxone">
-    <button data-role="none" class="sm-btn sm-b-technik" type="submit" name="vorlage_paket" value="1"><?= e(marstek_t('LOX.K_PAKET')) ?></button>
+    <button data-role="none" class="sm-btn sm-b-technik" type="submit" name="vorlage_paket" value="1"><?= marstek_e(marstek_t('LOX.K_PAKET')) ?></button>
   </form>
 </div>
-<div class="sm-hilfe"><?= e(sprintf(marstek_t('LOX.PAKET_INHALT'), count(marstek_vorlagen_alle()))) ?></div>
+<div class="sm-hilfe"><?= marstek_e(sprintf(marstek_t('LOX.PAKET_INHALT'), count(marstek_vorlagen_alle()))) ?></div>
 <?php } else { ?>
-<div class="sm-hilfe"><?= e(marstek_t('LOX.KEIN_ZIP_HINWEIS')) ?></div>
+<div class="sm-hilfe"><?= marstek_e(marstek_t('LOX.KEIN_ZIP_HINWEIS')) ?></div>
 <?php } ?>
 
-<h3 class="sm-h3"><?= e(marstek_t('LOX.H_EINZELN')) ?></h3>
+<h3 class="sm-h3"><?= marstek_e(marstek_t('LOX.H_EINZELN')) ?></h3>
 <?php $mv_vdevs = $mv_devices ? $mv_devices : array(1 => array('name' => 'Venus E'));
 foreach ($mv_vdevs as $n => $d) { ?>
-<div class="sm-small" style="margin-top:10px;"><b><?= e($d['name']) ?></b></div>
+<div class="sm-small" style="margin-top:10px;"><b><?= marstek_e($d['name']) ?></b></div>
 <div class="sm-knopfreihe">
 <?php foreach (array('status' => marstek_t('LOX.SATZ_STATUS'), 'energy' => marstek_t('LOX.SATZ_ENERGY')) as $vs => $vn) { ?>
   <form action="index.php" method="post">
     <input data-role="none" type="hidden" name="formtoken" value="<?= $mv_ft ?>">
     <input data-role="none" type="hidden" name="activetab" value="tab-loxone">
     <input data-role="none" type="hidden" name="vorlage_dev" value="<?= (int) $n ?>">
-    <input data-role="none" type="hidden" name="vorlage" value="<?= e($vs) ?>">
-    <button data-role="none" class="sm-btn sm-b-technik" type="submit" style="min-width:200px;"><?= e($vn) ?></button>
+    <input data-role="none" type="hidden" name="vorlage" value="<?= marstek_e($vs) ?>">
+    <button data-role="none" class="sm-btn sm-b-technik" type="submit" style="min-width:200px;"><?= marstek_e($vn) ?></button>
   </form>
 <?php } ?>
   <form action="index.php" method="post">
     <input data-role="none" type="hidden" name="formtoken" value="<?= $mv_ft ?>">
     <input data-role="none" type="hidden" name="activetab" value="tab-loxone">
     <input data-role="none" type="hidden" name="vorlage_dev" value="<?= (int) $n ?>">
-    <button data-role="none" class="sm-btn sm-b-technik" type="submit" name="vorlage_vo" value="1" style="min-width:200px;"><?= e(marstek_t('LOX.SATZ_STEUERN')) ?></button>
+    <button data-role="none" class="sm-btn sm-b-technik" type="submit" name="vorlage_vo" value="1" style="min-width:200px;"><?= marstek_e(marstek_t('LOX.SATZ_STEUERN')) ?></button>
   </form>
 </div>
 <?php } ?>
@@ -1037,14 +1117,14 @@ foreach ($mv_vdevs as $n => $d) { ?>
     <input data-role="none" type="hidden" name="formtoken" value="<?= $mv_ft ?>">
     <input data-role="none" type="hidden" name="activetab" value="tab-loxone">
     <input data-role="none" type="hidden" name="vorlage" value="ranks">
-    <button data-role="none" class="sm-btn sm-b-technik" type="submit" style="min-width:200px;"><?= e(marstek_t('LOX.SATZ_RANKS')) ?></button>
+    <button data-role="none" class="sm-btn sm-b-technik" type="submit" style="min-width:200px;"><?= marstek_e(marstek_t('LOX.SATZ_RANKS')) ?></button>
   </form>
 <?php if (count($mv_devices) > 1) { ?>
   <form action="index.php" method="post">
     <input data-role="none" type="hidden" name="formtoken" value="<?= $mv_ft ?>">
     <input data-role="none" type="hidden" name="activetab" value="tab-loxone">
     <input data-role="none" type="hidden" name="vorlage" value="summe">
-    <button data-role="none" class="sm-btn sm-b-technik" type="submit" style="min-width:200px;"><?= e(marstek_t('LOX.SATZ_SUMME')) ?></button>
+    <button data-role="none" class="sm-btn sm-b-technik" type="submit" style="min-width:200px;"><?= marstek_e(marstek_t('LOX.SATZ_SUMME')) ?></button>
   </form>
 <?php } ?>
 </div>
@@ -1068,37 +1148,37 @@ if (function_exists('mv_test_seite')) {
 
 <!-- ================= Reiter: Logdateien ================= -->
 <div class="sm-seite<?= $mv_active_tab === 'tab-log' ? ' sm-active' : '' ?>" id="tab-log">
-<h2><?= e(marstek_t('LOG.H_LOG')) ?></h2>
+<h2><?= marstek_e(marstek_t('LOG.H_LOG')) ?></h2>
 <?php if ($mv_use_frame && method_exists('LBWeb', 'loglist_html')) { ?>
 <div style="margin-bottom:12px;"><?php echo LBWeb::loglist_html(); ?></div>
 <?php } ?>
-<div class="sm-hilfe" style="margin-bottom:8px;"><?= e(marstek_t('LOG.ERKLAERUNG')) ?><br>
-<?= e(marstek_t('LOG.DATEI')) ?> <span class="sm-mono"><?= e($mv_log_file) ?></span></div>
-<div class="sm-warnung"><?= e(marstek_t('LOG.RAMDISK')) ?></div>
+<div class="sm-hilfe" style="margin-bottom:8px;"><?= marstek_e(marstek_t('LOG.ERKLAERUNG')) ?><br>
+<?= marstek_e(marstek_t('LOG.DATEI')) ?> <span class="sm-mono"><?= marstek_e($mv_log_file) ?></span></div>
+<div class="sm-warnung"><?= marstek_e(marstek_t('LOG.RAMDISK')) ?></div>
 <?php if ($mv_log_lines) { ?>
-<div class="sm-log"><?= e(implode("\n", $mv_log_lines)) ?></div>
+<div class="sm-log"><?= marstek_e(implode("\n", $mv_log_lines)) ?></div>
 <?php } else { ?>
-<div class="sm-alert sm-info"><?= e(marstek_t('LOG.LEER')) ?></div>
+<div class="sm-alert sm-info"><?= marstek_e(marstek_t('LOG.LEER')) ?></div>
 <?php } ?>
 
-<h3 class="sm-h3"><?= e(marstek_t('LOG.H_CRONERR')) ?></h3>
-<div class="sm-hilfe"><?= e(marstek_t('LOG.CRONERR_ERKLAERUNG')) ?><br>
-<span class="sm-mono"><?= e($mv_err_file) ?></span></div>
+<h3 class="sm-h3"><?= marstek_e(marstek_t('LOG.H_CRONERR')) ?></h3>
+<div class="sm-hilfe"><?= marstek_e(marstek_t('LOG.CRONERR_ERKLAERUNG')) ?><br>
+<span class="sm-mono"><?= marstek_e($mv_err_file) ?></span></div>
 <?php if ($mv_err_lines) { ?>
-<div class="sm-log"><?= e(implode("\n", $mv_err_lines)) ?></div>
+<div class="sm-log"><?= marstek_e(implode("\n", $mv_err_lines)) ?></div>
 <?php } else { ?>
-<div class="sm-alert sm-ok"><?= e(marstek_t('LOG.CRONERR_LEER')) ?></div>
+<div class="sm-alert sm-ok"><?= marstek_e(marstek_t('LOG.CRONERR_LEER')) ?></div>
 <?php } ?>
 
 <div class="sm-legende" style="margin-top:14px;">
-<span><i class="sm-punkt sm-b-aktion"></i> <?= e(marstek_t('LEGENDE.AKTION')) ?></span>
+<span><i class="sm-punkt sm-b-aktion"></i> <?= marstek_e(marstek_t('LEGENDE.AKTION')) ?></span>
 </div>
 <div class="sm-knopfreihe">
   <form action="index.php" method="post">
     <input data-role="none" type="hidden" name="formtoken" value="<?= $mv_ft ?>">
     <input data-role="none" type="hidden" name="clearlog" value="1">
     <input data-role="none" type="hidden" name="activetab" value="tab-log">
-    <button data-role="none" class="sm-btn sm-b-aktion" type="submit"><?= e(marstek_t('LOG.K_LEEREN')) ?></button>
+    <button data-role="none" class="sm-btn sm-b-aktion" type="submit"><?= marstek_e(marstek_t('LOG.K_LEEREN')) ?></button>
   </form>
 </div>
 </div>

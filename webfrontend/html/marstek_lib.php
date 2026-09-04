@@ -24,6 +24,18 @@ date_default_timezone_set('Europe/Berlin');
 
 $GLOBALS['marstek_last_ms'] = 0; // Antwortzeit des letzten RPC in Millisekunden
 
+/* Ab wann gilt der Minutentakt als stehengeblieben?
+ *
+ * EINE Zahl fuer alle. Bis 1.1.4 standen drei nebeneinander: 180 s im Feld
+ * ZAEHLER (Loxone bekam -1), 180 s im Reiter Test (Kreuz) und 300 s im
+ * Healthcheck. Zwischen drei und fuenf Minuten sagten Loxone und die
+ * Selbstpruefung "Takt steht", waehrend der Healthcheck gruen blieb.
+ * 180 s ist der Wert, mit dem auch der empfohlene Baustein #40 arbeitet.
+ */
+if (!defined('MARSTEK_TAKT_SCHRANKE')) {
+    define('MARSTEK_TAKT_SCHRANKE', 180);
+}
+
 
 /* Den LoxBerry-Wurzelordner ohne festen Systempfad bestimmen.
  *
@@ -56,8 +68,15 @@ if (!function_exists('lb_wurzel_ermitteln')) {
 function marstek_paths() {
     $lbhomedir = getenv('LBHOMEDIR') ?: lb_wurzel_ermitteln();
     $plugindir = getenv('LBPPLUGINDIR') ?: basename(__DIR__);
+    // BERICHTIGT 04.09.2026: dieselben drei Kandidaten wie in index.php. Bis
+    // 1.1.4 kannte die Bibliothek nur zwei; existierte je ein Verzeichnis
+    // config/plugins/webfrontend/, arbeiteten Oberflaeche und Bibliothek auf
+    // VERSCHIEDENEN Konfigurationsdateien, ohne dass es eine Meldung gab.
     if ($lbhomedir && is_dir($lbhomedir . '/config/plugins/' . $plugindir) === false) {
-        $plugindir = 'marstekvenus';
+        $plugindir = basename(dirname(__DIR__));
+        if (is_dir($lbhomedir . '/config/plugins/' . $plugindir) === false) {
+            $plugindir = 'marstekvenus';
+        }
     }
     if ($lbhomedir) {
         return array(
@@ -147,15 +166,46 @@ function marstek_config_zustand() {
     return json_decode($roh, true) === null ? 'kaputt' : 'ok';
 }
 
-function marstek_config() {
+/**
+ * Die Konfiguration lesen.
+ *
+ * $erzeugen = false schaltet die Selbstheilung ab. Der unangemeldete
+ * Endpunkt ruft die Funktion SO.
+ *
+ * BERICHTIGT 04.09.2026. Bis 1.1.4 hatte diese Funktion keinen Schalter, und
+ * marstek.php rief sie zweimal VOR der Tokenpruefung. Gemessen an 1.1.4, ein
+ * einziger Aufruf ohne jedes Token:
+ *
+ *     Lage    marstek.json = "{}", marstekvenus.backup.json liegt daneben
+ *     Aufruf  GET /plugins/marstekvenus/marstek.php?status      HTTP 200
+ *     danach  marstek.json = {"devices":[...],"aktionstoken":"...",...}
+ *
+ *     Gegenprobe ohne Zweitschrift: marstek.json bleibt "{}"
+ *
+ * Jedes Geraet im Heimnetz konnte damit einen Schreibvorgang auf der
+ * Speicherkarte ausloesen und eine bewusst geleerte Konfiguration samt
+ * Aktionstoken zurueckholen. Die Selbstheilung ist richtig - sie gehoert
+ * hinter die Anmeldung, nicht davor.
+ */
+function marstek_config($erzeugen = true) {
+    // Der Schalter allein genuegt nicht: marstek_status(), marstek_dev() und
+    // marstek_devices() rufen marstek_config() selbst, und der Endpunkt ruft
+    // sie. Deshalb ein Merker fuer den ganzen Prozess, den marstek.php einmal
+    // setzt - so gilt "nichts anlegen" auf JEDEM Weg und nicht nur dort, wo
+    // jemand daran gedacht hat.
+    if (!empty($GLOBALS['marstek_nur_lesen'])) {
+        $erzeugen = false;
+    }
     $p = marstek_paths();
     // Selbstheilung: fehlende/leere Konfiguration aus Sicherung wiederherstellen.
     // Entschieden wird nach INHALT, nicht nach Form - eine Datei mit "{}" ist
     // so leer wie keine.
     $roh = is_file($p['config']) ? trim((string) @file_get_contents($p['config'])) : '';
-    if (($roh === '' || $roh === '{}') && is_file($p['backup'])) {
+    if ($erzeugen && ($roh === '' || $roh === '{}') && is_file($p['backup'])) {
         if (!is_dir(dirname($p['config']))) { @mkdir(dirname($p['config']), 0775, true); }
         @copy($p['backup'], $p['config']);
+        @chmod($p['config'], 0600);
+        marstek_log('Konfiguration war leer - aus der Zweitschrift wiederhergestellt.');
         $roh = is_file($p['config']) ? trim((string) @file_get_contents($p['config'])) : '';
     }
     $cfg = $roh !== '' ? json_decode($roh, true) : array();
@@ -171,6 +221,17 @@ function marstek_config() {
             'pmax_discharge' => isset($cfg['pmax_discharge']) ? (int) $cfg['pmax_discharge'] : 2500,
             'modbus' => 1,
         ));
+        // BERICHTIGT 04.09.2026: die alten Schluessel werden nach der
+        // Migration ENTFERNT. Bis 1.1.4 blieben sie auf oberster Ebene
+        // stehen, wurden beim naechsten Speichern mitgeschrieben und
+        // wanderten in die Sicherungsdatei. Gemessen: die eigene Einfuhr
+        // wies die eigene, Minuten alte Ausfuhr ab -
+        //     "Abgelehnt: die Datei enthaelt unbekannte Schluessel
+        //      (ip, port, pmax_charge, pmax_discharge)".
+        // Betroffen war jede Anlage aus der Ein-Geraete-Zeit.
+        foreach (array('ip', 'port', 'pmax_charge', 'pmax_discharge') as $veraltet) {
+            unset($cfg[$veraltet]);
+        }
     }
     return $cfg;
 }
@@ -186,7 +247,12 @@ function marstek_cfg_schreiben(array $cfg) {
     $json = json_encode($cfg, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
     // json_encode liefert bei ungueltigem UTF-8 false, und file_put_contents
     // schriebe dann eine Datei mit NULL Bytes - und meldete das als Erfolg.
-    if (!marstek_write_atomic($p['config'], $json)) {
+    // 0600: in der Datei stehen das Aktionstoken und die Geraeteadressen.
+    // BERICHTIGT 04.09.2026 - bis 1.1.4 schrieb marstek_write_atomic() sie mit
+    // 0644, waehrend die Zweitschrift (unten), die Update-Sicherung
+    // (preupgrade.sh) und die Wiederherstellung alle 0600 trugen. Die Kopie
+    // war strenger als das Original.
+    if (!marstek_write_atomic($p['config'], $json, 0600)) {
         return false;
     }
     @copy($p['config'], $p['backup']);   // Sicherung ausserhalb des Plugin-Ordners
@@ -228,6 +294,240 @@ function marstek_cfg_vervollstaendigen() {
         marstek_log('Konfiguration ergaenzt: ' . implode(', ', $fehlten));
     }
     return $fehlten;
+}
+
+/* ================= Sichern und Zurueckspielen =======================
+ *
+ * NEU in 1.1.5. Bis 1.1.4 stand der ganze Weg inline in index.php, und er
+ * prueft nur die SCHLUESSEL. Gemessen an 1.1.4 gingen sechs von sechs
+ * vergifteten Werten unveraendert in die Konfiguration; zwei davon wirkten:
+ *
+ *   aktionstoken als Feld   -> (string) array ergibt "Array", und
+ *                              ?token=Array durfte schalten (beide
+ *                              PHP-Fassungen gemessen). Mit display_errors=1
+ *                              ging die Warnung "Array to string conversion"
+ *                              VOR http_response_code() hinaus, und die
+ *                              Abweisung kam als HTTP 200 an.
+ *   mqtt_topic mit Umbruch  -> am UDP-Tor gemessen:
+ *                              publish marstek<LF>publish fremd/x 1/soc 0
+ *
+ * Dass der Weg in index.php lag, hatte eine zweite Folge: die drei
+ * Hauswerkzeuge (sicherung_pruefen.py, sicherung_wirkung.py,
+ * sicherung_verdrahtung.py) suchen eine benannte Lesefunktion und haben
+ * diese Linie deshalb ueberhaupt nicht gemessen - eines meldete "1 in
+ * Ordnung" mit leerer Tabelle.
+ */
+
+/**
+ * Taugt der Wert ueberhaupt fuer diese Datei?
+ *
+ * Erste von zwei Stufen: hier geht es nur um die Gestalt - kein Objekt,
+ * kein Wahrheitswert, kein Steuerzeichen, nicht endlos lang. Ob der Wert
+ * fuer SEINE Einstellung zulaessig ist, entscheidet marstek_wert_pruefen().
+ */
+function marstek_wert_taugt($v)
+{
+    if (is_object($v) || is_bool($v) || is_null($v)) {
+        return false;
+    }
+    if (is_array($v)) {
+        return true;   // nur 'devices' darf eine Liste sein - siehe unten
+    }
+    $s = (string) $v;
+    if (strlen($s) > 4096) {
+        return false;
+    }
+    return preg_match('/[\x00-\x08\x0A-\x1F\x7F]/', $s) !== 1;
+}
+
+/** Eine ganze Zahl in Grenzen? */
+function marstek_wert_zahl($v, $min, $max)
+{
+    if (is_array($v) || is_bool($v) || is_null($v)) { return false; }
+    if (!is_numeric($v)) { return false; }
+    $z = (float) $v;
+    return $z >= $min && $z <= $max;
+}
+
+/**
+ * Ist der Wert fuer DIESE Einstellung zulaessig? Rueckgabe '' oder der Grund.
+ *
+ * Dieselbe Positivliste wie das Formular. Das Muster fuer das Aktionstoken
+ * bleibt bewusst WEIT: ein zu enges verwirft ein von Hand gesetztes oder aus
+ * einer aelteren Fassung uebernommenes Token, und der Schaden ist derselbe
+ * wie bei einem verlorenen (VolkswagenID 0.9.11 -> 0.9.12). Zugelassen ist,
+ * was ohne Kodierung in eine Adresse passt.
+ */
+function marstek_wert_pruefen($schluessel, $wert)
+{
+    if (!marstek_wert_taugt($wert)) {
+        return 'unzulaessige Gestalt';
+    }
+    // Eine Liste ist NUR bei 'devices' zulaessig. Ohne diese Zeile fiel
+    // ein Feld als Aktionstoken durch: (string) array ergibt "Array",
+    // und "Array" passt auf das Muster. Gefunden vom Rechenkern-Selbsttest
+    // im ersten Lauf, gemeldet als "Wert abgewiesen: aktionstoken:
+    // erwartet true, gemessen false" samt der Warnung von PHP 8.4.
+    if (is_array($wert) && $schluessel !== 'devices') {
+        return 'eine Liste ist hier nicht zulaessig';
+    }
+    switch ($schluessel) {
+        case 'devices':
+            if (!is_array($wert)) { return 'muss eine Liste sein'; }
+            if (count($wert) > 4) { return 'mehr als vier Speicher'; }
+            foreach ($wert as $g) {
+                if (!is_array($g)) { return 'ein Eintrag ist kein Geraet'; }
+                $ip = isset($g['ip']) ? (string) $g['ip'] : '';
+                if ($ip !== '' && marstek_ip_gueltig($ip) === false) {
+                    return 'unzulaessige Adresse ' . substr($ip, 0, 20);
+                }
+                foreach (array('name' => 64, 'ip' => 64) as $k => $len) {
+                    if (isset($g[$k]) && (!marstek_wert_taugt($g[$k])
+                        || strlen((string) $g[$k]) > $len)) {
+                        return 'unzulaessiger Wert bei ' . $k;
+                    }
+                }
+                if (isset($g['port']) && !marstek_wert_zahl($g['port'], 1, 65535)) {
+                    return 'Port ausserhalb 1..65535';
+                }
+                foreach (array('pmax_charge', 'pmax_discharge') as $k) {
+                    if (isset($g[$k]) && !marstek_wert_zahl($g[$k], 100, 3600)) {
+                        return $k . ' ausserhalb 100..3600';
+                    }
+                }
+                if (isset($g['kwh']) && !marstek_wert_zahl($g['kwh'], 0, 1000)) {
+                    return 'kwh ausserhalb 0..1000';
+                }
+                if (isset($g['modbus']) && !marstek_wert_zahl($g['modbus'], 0, 1)) {
+                    return 'modbus ist weder 0 noch 1';
+                }
+            }
+            return '';
+        case 'aktionstoken':
+            return preg_match('/^[A-Za-z0-9_.\-]{0,64}$/', (string) $wert) === 1
+                ? '' : 'unzulaessige Zeichen im Aktionstoken';
+        case 'mqtt_topic':
+            return preg_match('#^[A-Za-z0-9_/\-]{1,64}$#', (string) $wert) === 1
+                ? '' : 'unzulaessige Zeichen im Themen-Praefix';
+        case 'awattar':
+            return in_array((string) $wert, array('de', 'at'), true)
+                ? '' : 'Markt ist weder de noch at';
+        case 'mqtt_enabled': case 'steuerung_ein': case 'verteilen_ein':
+        case 'melden_ein': case 'schutz_ein':
+            return marstek_wert_zahl($wert, 0, 1) ? '' : 'weder 0 noch 1';
+        case 'cache_sec':    return marstek_wert_zahl($wert, 5, 300)    ? '' : 'ausserhalb 5..300';
+        case 'vat':          return marstek_wert_zahl($wert, 0.5, 2)    ? '' : 'ausserhalb 0,5..2';
+        case 'aufschlag_ct': return marstek_wert_zahl($wert, -50, 100)  ? '' : 'ausserhalb -50..100';
+        case 'fallback_min': return marstek_wert_zahl($wert, 0, 1440)   ? '' : 'ausserhalb 0..1440';
+        case 'melden_ab':    return marstek_wert_zahl($wert, 1, 20)     ? '' : 'ausserhalb 1..20';
+        case 'temp_min':     return marstek_wert_zahl($wert, -20, 20)   ? '' : 'ausserhalb -20..20';
+        case 'temp_max':     return marstek_wert_zahl($wert, 20, 80)    ? '' : 'ausserhalb 20..80';
+        case 'soc_min':      return marstek_wert_zahl($wert, 0, 50)     ? '' : 'ausserhalb 0..50';
+        case 'soc_max':      return marstek_wert_zahl($wert, 50, 100)   ? '' : 'ausserhalb 50..100';
+        case 'verlauf_tage': return marstek_wert_zahl($wert, 1, 365)    ? '' : 'ausserhalb 1..365';
+    }
+    return '';   // ein Schluessel, den die Vorgaben kennen, aber diese Liste nicht
+}
+
+/**
+ * Eine IPv4-Adresse mit Wertebereich - jede Stelle einzeln.
+ * "999.999.999.999" passte bis 1.0.16 durch, weil nur die Form geprueft wurde.
+ */
+function marstek_ip_gueltig($ip)
+{
+    $teile = explode('.', (string) $ip);
+    if (count($teile) !== 4) { return false; }
+    foreach ($teile as $t) {
+        if (preg_match('/^\d{1,3}$/', $t) !== 1 || (int) $t > 255) { return false; }
+    }
+    return true;
+}
+
+/**
+ * Der lesbare Kopf der Sicherungsdatei.
+ *
+ * NEU in 1.1.5. Bis 1.1.4 hatte die Datei keinen, und eine Datei MIT einem
+ * solchen Kopf wurde beim Zurueckspielen abgewiesen - gemessen:
+ * "Abgelehnt: die Datei enthaelt unbekannte Schluessel (_hinweis, _stand)".
+ */
+function marstek_sicherung_schreiben()
+{
+    $cfg = marstek_config();
+    $kopf = array(
+        '_hinweis' => 'Sicherung der Einstellungen des LoxBerry-Plugins Marstek Venus E. '
+                    . 'Diese Datei enthaelt das Aktionstoken und die Geraeteadressen - '
+                    . 'sie ist wie ein Passwort zu behandeln.',
+        '_stand'   => date('Y-m-d H:i'),
+        '_fassung' => marstek_fassung(),
+    );
+    return $kopf + $cfg;
+}
+
+/**
+ * Eine hochgeladene Sicherung einlesen.
+ *
+ * Rueckgabe in der Hausform: array(Konfiguration|null, Maengel, Anzahl).
+ * null heisst abgelehnt, und dann wird GAR NICHTS geschrieben - alle
+ * Beanstandungen werden gesammelt, nicht die erste gemeldet.
+ *
+ * Die Form ist nicht beliebig: sicherung_wirkung.py stellt sie fest, bevor
+ * es urteilt, und meldet fuer eine andere "andere Bauart - von Hand
+ * ansehen". Genau das war der Grund, warum die drei Hauswerkzeuge diese
+ * Linie bis 1.1.4 ueberhaupt nicht gemessen haben.
+ */
+function marstek_sicherung_lesen($roh)
+{
+    $meldungen = array();
+    $neu = json_decode((string) $roh, true);
+    if (!is_array($neu)) {
+        return array(null, array('KEIN_JSON'), 0);
+    }
+    // Der lesbare Kopf wird UEBERGANGEN, nicht beanstandet.
+    foreach (array_keys($neu) as $k) {
+        if ($k !== '' && $k[0] === '_') {
+            unset($neu[$k]);
+        }
+    }
+    if (!array_key_exists('devices', $neu)) {
+        return array(null, array('FREMD'), 0);
+    }
+    $vorgaben = marstek_vorgaben();
+    $fremd = array_diff(array_keys($neu), array_keys($vorgaben));
+    if ($fremd) {
+        return array(null, array('UNBEKANNT:' . implode(', ', array_slice($fremd, 0, 8))),
+                     count($neu));
+    }
+    foreach ($neu as $k => $v) {
+        $grund = marstek_wert_pruefen($k, $v);
+        if ($grund !== '') {
+            $meldungen[] = 'WERT:' . $k . ': ' . $grund;
+        }
+    }
+    if ($meldungen) {
+        return array(null, $meldungen, count($neu));   // fail closed
+    }
+    $vollstaendig = $neu + $vorgaben;
+    if (!marstek_cfg_schreiben($vollstaendig)) {
+        return array(null, array('SCHREIBEN'), count($neu));
+    }
+    marstek_log('Konfiguration aus einer hochgeladenen Datei zurueckgespielt.');
+    return array($vollstaendig, array(), count($neu));
+}
+
+/** Die Fassung aus der plugin.cfg - eine Quelle, kein zweiter Ort. */
+function marstek_fassung()
+{
+    $p = marstek_paths();
+    foreach (array($p['lbhome'] . '/config/plugins/'
+                   . basename(dirname($p['config'])) . '/plugin.cfg',
+                   dirname(dirname(dirname(__DIR__))) . '/plugin.cfg',
+                   dirname(dirname(__DIR__)) . '/plugin.cfg') as $k) {
+        if (is_file($k) && preg_match('/^VERSION\s*=\s*(\S+)/m',
+                                      (string) @file_get_contents($k), $m)) {
+            return trim($m[1]);
+        }
+    }
+    return '';
 }
 
 /** Geraete-Liste (nur Eintraege mit IP), 1-basiert indiziert. */
@@ -299,10 +599,31 @@ function marstek_formtoken() {
     $t = is_file($f) ? trim((string) @file_get_contents($f)) : '';
     if (strlen($t) < 16) {
         $t = marstek_token_erzeugen(32);
-        @file_put_contents($f, $t);
+        // BERICHTIGT 04.09.2026: der Rueckgabewert wird ausgewertet. Bis
+        // 1.1.4 lieferte jeder Aufruf ein NEUES Merkmal, wenn sich die Datei
+        // nicht ablegen liess - die Seite rendert eines in das Formular, die
+        // Pruefung beim Abschicken erzeugt das naechste, hash_equals()
+        // schlaegt fehl. Gemessen, mit einem Verzeichnis an der Stelle der
+        // Datei: erster=69ek7re3dp zweiter=dex8ynkvyk, Formular geht durch:
+        // False - fuer JEDES Formular, dauerhaft, und die Meldung riet zum
+        // Neuladen, was nie half.
+        if (@file_put_contents($f, $t) !== strlen($t)) {
+            $GLOBALS['marstek_formtoken_ablage'] = $f;
+            marstek_log_if_changed('formtoken',
+                'Das Formularmerkmal laesst sich nicht ablegen: ' . $f
+                . ' - solange das so ist, wird JEDES Formular abgewiesen.', 'ablage:nein');
+            return '';
+        }
         @chmod($f, 0600);
     }
     return $t;
+}
+
+/** Liegt eine Ablage-Stoerung des Formularmerkmals vor? Pfad oder ''. */
+function marstek_formtoken_stoerung() {
+    marstek_formtoken();
+    return isset($GLOBALS['marstek_formtoken_ablage'])
+        ? (string) $GLOBALS['marstek_formtoken_ablage'] : '';
 }
 
 /** Traegt die Anfrage das Merkmal? Nur fuer POST-Handler. */
@@ -342,7 +663,7 @@ function marstek_tmpdir() {
  * ungueltigem UTF-8 false, und file_put_contents($p, false) schreibt 0 Bytes
  * und meldet 0, nicht false. Deshalb wird der Inhalt vorher geprueft.
  */
-function marstek_write_atomic($datei, $inhalt) {
+function marstek_write_atomic($datei, $inhalt, $rechte = 0644) {
     if ($inhalt === false || $inhalt === null) {
         return false;
     }
@@ -352,7 +673,7 @@ function marstek_write_atomic($datei, $inhalt) {
         @unlink($tmp);
         return false;
     }
-    @chmod($tmp, 0644);          // Rechte VOR dem Umbenennen setzen
+    @chmod($tmp, $rechte);       // Rechte VOR dem Umbenennen setzen
     if (!@rename($tmp, $datei)) {
         @unlink($tmp);
         return false;
@@ -392,13 +713,59 @@ function marstek_logfile() {
     return $p['log'];
 }
 
+/**
+ * Eine Protokolldatei kappen. NEU in 1.1.5 als eigene Funktion, weil es zwei
+ * Verbraucher gibt: marstek.log und cron.err. Bis 1.1.4 wurde nur die erste
+ * gekappt; die Fehlerausgabe des Minutentakts wuchs ungebremst auf der
+ * Ramdisk, und index.php las sie mit file() vollstaendig ein.
+ *
+ * clearstatcache als erste Zeile: PHP haelt stat()-Antworten im
+ * Zwischenspeicher, und file_put_contents(..., FILE_APPEND) macht den
+ * Eintrag nicht ungueltig. Unter 7.4 faellt die Kappung sonst still aus.
+ */
+function marstek_log_kappen($f, $grenze = 512000, $behalten = 200) {
+    clearstatcache(true, $f);
+    if (is_file($f) && filesize($f) > $grenze) {
+        $tail = array_slice(file($f, FILE_IGNORE_NEW_LINES) ?: array(), -$behalten);
+        @file_put_contents($f, implode("\n", $tail) . "\n");
+        return true;
+    }
+    return false;
+}
+
+/**
+ * Die letzten $n Zeilen einer Datei - rueckwaerts ueber fseek, nicht ueber
+ * file(). Hausmuster; file() zieht die ganze Datei in den Speicher.
+ */
+function marstek_log_ende($f, $n = 300) {
+    if (!is_file($f)) { return array(); }
+    clearstatcache(true, $f);
+    $fh = @fopen($f, 'rb');
+    if (!$fh) { return array(); }
+    $puffer = '';
+    $groesse = filesize($f);
+    $pos = $groesse;
+    $zeilen = 0;
+    while ($pos > 0 && $zeilen <= $n) {
+        $schritt = min(8192, $pos);
+        $pos -= $schritt;
+        fseek($fh, $pos);
+        $stueck = (string) fread($fh, $schritt);
+        $puffer = $stueck . $puffer;
+        $zeilen = substr_count($puffer, "\n");
+    }
+    fclose($fh);
+    $aus = preg_split('/\r?\n/', $puffer);
+    $aus = array_values(array_filter($aus, 'strlen'));
+    return array_slice($aus, -$n);
+}
+
 function marstek_log($msg) {
     $f = marstek_logfile();
-    clearstatcache(true, $f);
-    if (is_file($f) && filesize($f) > 512000) { // Rotation: letzte 200 Zeilen behalten
-        $tail = array_slice(file($f, FILE_IGNORE_NEW_LINES) ?: array(), -200);
-        @file_put_contents($f, implode("\n", $tail) . "\n");
-    }
+    marstek_log_kappen($f);
+    // Die Fehlerausgabe des Minutentakts liegt daneben und hat keinen
+    // eigenen Schreiber - gekappt wird sie deshalb hier mit.
+    marstek_log_kappen(dirname($f) . '/cron.err', 262144, 200);
     @file_put_contents($f, '[' . date('Y-m-d H:i:s') . '] ' . $msg . "\n", FILE_APPEND);
 }
 
@@ -555,13 +922,24 @@ function marstek_udp_senden($h, $ip, $port, $text) {
 function marstek_udp_horchen($h, $sek, $max = 20) {
     $out = array();
     if (!$h) { return $out; }
-    $ende = microtime(true) + $sek;
+    $anfang = microtime(true);
+    $ende = $anfang + $sek;
     while (microtime(true) < $ende && count($out) < $max) {
         $von = '';
         $roh = @stream_socket_recvfrom($h, 8192, 0, $von);
         if ($roh === false || $roh === '') {
             usleep(20000);
             continue;
+        }
+        // Die Antwortzeit wird HIER gestellt, beim Empfang des ersten
+        // Datagramms. BERICHTIGT 04.09.2026: bis 1.1.4 stand sie erst nach
+        // dem Ruecksprung aus dieser Schleife, und die Schleife lief immer
+        // bis zur Zeitgrenze - $max ist 8, ein Geraet antwortet einmal.
+        // Gemessen an einem Geraet auf 127.0.0.1, das SOFORT antwortet:
+        // MS = 3030 bei einer Zeitgrenze von 3 s. Das Feld hiess seit 1.1.0
+        // richtig "Antwortzeit" und war trotzdem eine Konstante.
+        if (!count($out)) {
+            $GLOBALS['marstek_last_ms'] = (int) round((microtime(true) - $anfang) * 1000);
         }
         $von = preg_replace('/:\d+$/', '', (string) $von);
         marstek_mitschnitt('<-', $von, $roh);
@@ -614,6 +992,18 @@ function marstek_udp_rundruf($broadcast_ip, $port, $text, $sek = 3, $max = 20) {
  * Dazu kommen die Netze der schon eingetragenen Geraete - wer ein zweites
  * Netz betreibt, findet dort sonst nichts.
  */
+/**
+ * Die Rundrufadresse eines Netzes. EINE Stelle - bis 1.1.4 stand dieselbe
+ * Ersetzung dreimal wortgleich im Quelltext.
+ *
+ * GRENZE, ausdruecklich: das trifft ein /24-Netz. Die Netzmaske liefert
+ * weder die UDP-API noch PHP ohne Erweiterung; wer ein /16 betreibt, traegt
+ * das Geraet mit seiner IP ein und braucht den Rundruf nur fuer die Suche.
+ */
+function marstek_broadcast_zu($ip) {
+    return preg_replace('/\.\d+$/', '.255', (string) $ip);
+}
+
 function marstek_rundruf_adressen() {
     $out = array();
     $nr = 0; $txt = '';
@@ -622,11 +1012,11 @@ function marstek_rundruf_adressen() {
         $eigen = preg_replace('/:\d+$/', '', (string) stream_socket_get_name($s, false));
         fclose($s);
         if (preg_match('/^\d{1,3}(\.\d{1,3}){3}$/', $eigen)) {
-            $out[] = preg_replace('/\.\d+$/', '.255', $eigen);
+            $out[] = marstek_broadcast_zu($eigen);
         }
     }
     foreach (marstek_devices() as $d) {
-        $bc = preg_replace('/\.\d+$/', '.255', $d['ip']);
+        $bc = marstek_broadcast_zu($d['ip']);
         if (!in_array($bc, $out, true)) { $out[] = $bc; }
     }
     return $out;
@@ -655,7 +1045,7 @@ function marstek_rpc($method, $params = null, $dev = 1, $tries = 2, $tmo = 3) {
      * erreichen ALLE Geraete - dann sollten alle Geraete eine Firmware haben,
      * die Unicast beantwortet.
      */
-    $bc = preg_replace('/\.\d+$/', '.255', $d['ip']);
+    $bc = marstek_broadcast_zu($d['ip']);
     $modef = marstek_tmpdir() . '/udpmode_dev' . (int) $dev;
     $mode = is_file($modef) ? trim((string) file_get_contents($modef)) : 'uni';
     $wege = $mode === 'bc' ? array('bc', 'uni') : array('uni', 'bc');
@@ -669,7 +1059,13 @@ function marstek_rpc($method, $params = null, $dev = 1, $tries = 2, $tmo = 3) {
                     return array('_error' => 'UDP-Port liess sich nicht oeffnen');
                 }
                 marstek_udp_senden($h, $d['ip'], $d['port'], $payload);
-                $antworten = marstek_udp_horchen($h, $tmo, 8);
+                // EINE Antwort genuegt: die Frage ging an genau ein Geraet.
+                // Bis 1.1.4 stand hier 8, und die Schleife wartete deshalb
+                // jedes Mal die vollen drei Sekunden ab - gemessen kostete
+                // ein Cron-Durchgang 9,3 s, obwohl das Geraet sofort
+                // antwortete. Der Rundruf unten sammelt weiterhin bis zu 8,
+                // denn dort koennen mehrere Geraete antworten.
+                $antworten = marstek_udp_horchen($h, $tmo, 1);
                 fclose($h);
             } else {
                 // Ohne php-sockets faellt nur dieser Weg aus, nicht der Abruf.
@@ -683,7 +1079,9 @@ function marstek_rpc($method, $params = null, $dev = 1, $tries = 2, $tmo = 3) {
                 // id-Treffer ODER Antwort vom richtigen Geraet (id-Spiegelung fehlt bei FW 148)
                 if (is_array($j) && ((isset($j['id']) && $j['id'] == $id)
                         || ($ant['von'] === $d['ip'] && (isset($j['result']) || isset($j['error']))))) {
-                    $GLOBALS['marstek_last_ms'] = (int) round((microtime(true) - $tsend) * 1000);
+                    if ($weg === 'bc') {   // der Rundruf stellt sie nicht selbst
+                        $GLOBALS['marstek_last_ms'] = (int) round((microtime(true) - $tsend) * 1000);
+                    }
                     @file_put_contents($modef, $weg);
                     if (isset($j['error'])) {
                         return array('_error' => json_encode($j['error']));
@@ -750,7 +1148,9 @@ function marstek_status($dev = 1, $force = false) {
     $es = marstek_rpc('ES.GetStatus', null, $dev);
     $ms = (int) $GLOBALS['marstek_last_ms'];
     $bat = marstek_rpc('Bat.GetStatus', null, $dev);
-    $ok = (is_array($es) && !isset($es['_error'])) || (is_array($bat) && !isset($bat['_error'])) ? 1 : 0;
+    $es_ok = is_array($es) && !isset($es['_error']);
+    $bat_ok = is_array($bat) && !isset($bat['_error']);
+    $ok = ($es_ok || $bat_ok) ? 1 : 0;
 
     if (!$ok) {
         // Kein Wert ist besser als eine erfundene Null. Steht ein frueherer
@@ -761,6 +1161,10 @@ function marstek_status($dev = 1, $force = false) {
         $out['ok'] = 0;
         $out['ts'] = time();
         if (!isset($out['mess'])) { $out['mess'] = 0; }
+        // In diesem Durchgang wurde nichts gemessen. 'feldzeit' bleibt
+        // stehen - daran sieht die Schutzpruefung, wie alt jedes Feld ist.
+        $out['gemessen'] = array();
+        if (!isset($out['feldzeit']) || !is_array($out['feldzeit'])) { $out['feldzeit'] = array(); }
         marstek_write_json($cache, $out);
         marstek_ausfall_zaehlen($dev, true);
         marstek_log_if_changed('status_dev' . $dev,
@@ -770,14 +1174,44 @@ function marstek_status($dev = 1, $force = false) {
         return $out;
     }
 
-    $soc = 0; $batp = 0; $temp = 0; $gridp = 0;
+    /* BERICHTIGT 04.09.2026 - der halbe Abruf.
+     *
+     * Bis 1.1.4 griff der Rueckfall auf die zuletzt gemessenen Werte nur,
+     * wenn BEIDE Aufrufe scheiterten. Antwortete nur einer - und UDP verliert
+     * Pakete -, galt ok = 1, und jedes Feld, das der antwortende Aufruf nicht
+     * traegt, ging als 0 in den Zwischenspeicher. Gemessen an 1.1.4 mit einem
+     * Geraet, das nur ES.GetStatus beantwortet, mit einem vollstaendigen
+     * Abruf im Zwischenspeicher davor:
+     *
+     *     vorher : OK=1;SOC=73.5;BATP=0;TEMP=24.1;GRIDP=-120;FW=148
+     *     nachher: OK=1;SOC=73.5;BATP=-820;TEMP=0.0;GRIDP=-120;FW=148
+     *
+     * Das ist derselbe Fehler, den 1.1.0 behoben hat - nur mit OK=1, also in
+     * Loxone unsichtbar. Und mit eingeschalteten Schutzschwellen sperrte die
+     * 0 anschliessend jeden Ladebefehl (TEMP_MIN, Vorgabe temp_min = 0).
+     *
+     * Jetzt gilt je Feld: kein frischer Messwert -> der alte bleibt stehen,
+     * und 'gemessen' sagt, welche Felder in DIESEM Durchgang wirklich
+     * gemessen wurden. Nur auf die urteilen die Schutzschwellen.
+     */
+    $alt_w = is_array($alt) ? $alt : array();
+    $gemessen = array();
+    $behalten = function ($feld, $vorgabe) use ($alt_w) {
+        return array_key_exists($feld, $alt_w) ? $alt_w[$feld] : $vorgabe;
+    };
+
+    $soc = $behalten('soc', 0); $batp = $behalten('batp', 0);
+    $temp = $behalten('temp', 0); $gridp = $behalten('gridp', 0);
     if (is_array($bat) && isset($bat['soc'])) {
         $soc = $bat['soc'];
+        $gemessen[] = 'soc';
     } elseif (is_array($es) && isset($es['bat_soc'])) {
         $soc = $es['bat_soc'];
+        $gemessen[] = 'soc';
     }
     if (is_array($es) && isset($es['bat_power'])) {
         $batp = $es['bat_power']; // + = laedt
+        $gemessen[] = 'batp';
     } else {
         $d = marstek_dev($dev);
         if (is_array($d) && !empty($d['modbus'])) {
@@ -793,6 +1227,7 @@ function marstek_status($dev = 1, $force = false) {
                     $v = $regs[0] >= 32768 ? $regs[0] - 65536 : $regs[0];
                 }
                 $batp = $v; // Vorzeichen-Konvention beim ersten echten Ladevorgang verifizieren
+                $gemessen[] = 'batp';
             }
         }
     }
@@ -801,15 +1236,32 @@ function marstek_status($dev = 1, $force = false) {
         if ($temp > 100) {
             $temp = $temp / 10; // alte BMS-Firmware liefert 10x
         }
+        $gemessen[] = 'temp';
     }
     if (is_array($es) && isset($es['ongrid_power'])) {
         $gridp = $es['ongrid_power'];
+        $gemessen[] = 'gridp';
     }
     $info = marstek_devinfo($dev);
+    // Modell und Firmware kommen aus einem eigenen Zwischenspeicher (6 h).
+    // Antwortet er nicht, gilt derselbe Grundsatz: der alte Wert bleibt.
+    $fw = (int) $info['fw'];
+    $model = (string) $info['model'];
+    if ($fw === 0 && (int) $behalten('fw', 0) > 0) { $fw = (int) $behalten('fw', 0); }
+    if ($model === '' && (string) $behalten('model', '') !== '') { $model = (string) $behalten('model', ''); }
     $out = array('ok' => 1, 'soc' => round((float) $soc, 1), 'batp' => round((float) $batp),
                  'temp' => round((float) $temp, 1), 'gridp' => round((float) $gridp),
-                 'fw' => (int) $info['fw'], 'model' => (string) $info['model'],
-                 'ms' => $ms, 'ts' => time(), 'mess' => time());
+                 'fw' => $fw, 'model' => $model,
+                 'ms' => $ms, 'ts' => time(), 'mess' => time(),
+                 // Welche Felder DIESER Durchgang wirklich gemessen hat.
+                 'gemessen' => array_values(array_unique($gemessen)),
+                 // Zeitpunkt der letzten echten Messung JE FELD - daran
+                 // entscheidet marstek_schutz_pruefen(), worueber es urteilt.
+                 'feldzeit' => array());
+    $fz = is_array($alt) && isset($alt['feldzeit']) && is_array($alt['feldzeit'])
+        ? $alt['feldzeit'] : array();
+    foreach ($out['gemessen'] as $feld) { $fz[$feld] = time(); }
+    $out['feldzeit'] = $fz;
     marstek_write_json($cache, $out);
     marstek_ausfall_zaehlen($dev, false);
     marstek_log_if_changed('status_dev' . $dev,
@@ -955,6 +1407,18 @@ function marstek_befund() {
         return array('schwere' => 4, 'text' => 'Das Plugin ist noch nicht eingerichtet - '
             . 'bitte die Plugin-Oberflaeche oeffnen und mindestens einen Speicher eintragen.');
     }
+    // BERICHTIGT 04.09.2026: 'zweitschrift' fiel bis 1.1.4 durch und wurde wie
+    // 'ok' behandelt. Der Healthcheck blieb gruen, obwohl die
+    // Konfigurationsdatei verlorengegangen und aus der Zweitschrift
+    // wiederhergestellt worden war - waehrend der Reiter Test fuer denselben
+    // Zustand ein Kreuz zeigte. Zwei Verbraucher derselben Funktion duerfen
+    // nicht verschieden urteilen.
+    if ($zustand === 'zweitschrift') {
+        return array('schwere' => 4, 'text' => 'Die Konfigurationsdatei war leer und ist aus '
+            . 'der Zweitschrift neben dem Plugin-Ordner wiederhergestellt worden. Bitte im '
+            . 'Reiter Einbindung in Loxone pruefen, ob das Aktionstoken noch zu den Adressen '
+            . 'im Miniserver passt.');
+    }
     $devs = marstek_devices();
     if (!$devs) {
         return array('schwere' => 4, 'text' => 'Es ist kein Speicher eingetragen.');
@@ -967,7 +1431,7 @@ function marstek_befund() {
             . 'Nach der Installation dauert das bis zu einer Minute; bleibt es dabei, '
             . 'steht der Grund in log/plugins/<ordner>/cron.err.');
     }
-    if (time() - $h['ts'] > 300) {
+    if (time() - $h['ts'] > MARSTEK_TAKT_SCHRANKE) {
         return array('schwere' => 3, 'text' => 'Der Minutentakt lief zuletzt vor '
             . (int) round((time() - $h['ts']) / 60) . ' Minuten. Der Cron-Eintrag fehlt, '
             . 'oder cron.php bricht ab - der Grund steht in log/plugins/<ordner>/cron.err.');
@@ -1123,21 +1587,39 @@ function marstek_schutz_pruefen($p, $dev = 1) {
     if (!is_array($st) || empty($st['mess'])) {
         return '';   // nie gemessen - es wird nicht geraten
     }
-    if (time() - (int) $st['mess'] > 900) {
-        return '';   // aelter als 15 Minuten: kein Urteil auf alten Zahlen
-    }
+    /* BERICHTIGT 04.09.2026 - JE FELD, nicht fuer den ganzen Datensatz.
+     *
+     * Bis 1.1.4 fragte diese Funktion nur, OB ueberhaupt je gemessen wurde.
+     * Zusammen mit dem halben Abruf (siehe marstek_status()) hiess das:
+     * ein verlorenes UDP-Paket setzte temp auf 0, und die Vorgabe
+     * temp_min = 0 sperrte daraufhin jeden Ladebefehl. Gemessen an 1.1.4:
+     *
+     *     halber Abruf -> TEMP=0.0, dann Schutz bei p=+800: 'TEMP_MIN'
+     *
+     * Der Kopfkommentar dieser Funktion hat das immer schon anders
+     * versprochen: "ein fehlender oder alter Messwert erzeugt keine Sperre
+     * und auch keine Freigabe".
+     */
+    $fz = isset($st['feldzeit']) && is_array($st['feldzeit']) ? $st['feldzeit'] : array();
+    $frisch = function ($feld) use ($fz, $st) {
+        // Ohne 'feldzeit' (Zwischenspeicher aus 1.1.4 oder aelter) gilt der
+        // gemeinsame Zeitpunkt - so verhaelt es sich wie bisher, statt nach
+        // einem Update stumm gar nicht mehr zu schuetzen.
+        $t = array_key_exists($feld, $fz) ? (int) $fz[$feld] : (int) $st['mess'];
+        return $t > 0 && time() - $t <= 900;
+    };
     $temp = (float) $st['temp'];
     $soc = (float) $st['soc'];
-    if ($temp >= (float) $cfg['temp_max']) {
+    if ($frisch('temp') && $temp >= (float) $cfg['temp_max']) {
         return 'TEMP_MAX';
     }
-    if ($p > 0 && $temp <= (float) $cfg['temp_min']) {
+    if ($p > 0 && $frisch('temp') && $temp <= (float) $cfg['temp_min']) {
         return 'TEMP_MIN';
     }
-    if ($p > 0 && $soc >= (float) $cfg['soc_max']) {
+    if ($p > 0 && $frisch('soc') && $soc >= (float) $cfg['soc_max']) {
         return 'SOC_MAX';
     }
-    if ($p < 0 && $soc <= (float) $cfg['soc_min']) {
+    if ($p < 0 && $frisch('soc') && $soc <= (float) $cfg['soc_min']) {
         return 'SOC_MIN';
     }
     return '';
@@ -1288,12 +1770,41 @@ function marstek_fallback_check() {
             continue; // kein Passiv-Betrieb aktiv
         }
         if (time() - $s['ts'] > $min * 60) {
+            /* BERICHTIGT 04.09.2026 - einmal melden, nicht jede Minute.
+             *
+             * marstek_set_mode() loescht den Sollwert-Merker nur bei ok = 1.
+             * Kommt der Fallback nicht durch - Geraet stumm, oder der
+             * Hauptschalter steht auf aus -, blieb der Merker liegen, und der
+             * naechste Minutentakt machte dasselbe noch einmal. Gemessen,
+             * drei Durchgaenge mit steuerung_ein = 0: drei gleichlautende
+             * Protokollzeilen, Merker danach noch da. Mit eingeschalteten
+             * Benachrichtigungen waere das eine Meldung je Minute - genau das,
+             * was marstek_ausfall_zaehlen() zwei Bildschirmseiten weiter oben
+             * ausdruecklich vermeidet.
+             */
+            $cfg_h = marstek_config();
+            if (empty($cfg_h['steuerung_ein'])) {
+                marstek_log_if_changed('fallback_dev' . $n,
+                    'Auto-Fallback faellig, aber der Hauptschalter steht auf aus.', 'aus');
+                continue;
+            }
+            $gemeldet = marstek_tmpdir() . '/fallback_gemeldet_dev' . (int) $n;
             list($ok, ) = marstek_set_mode('auto', $n);
             $minuten = (int) round((time() - $s['ts']) / 60);
-            marstek_log('Auto-Fallback (Geraet ' . $n . '): ' . $minuten
-                . ' min kein Sollwert -> Auto-Modus (ok=' . $ok . ')');
-            marstek_melden(4, $d['name'] . ': seit ' . $minuten . ' Minuten kein Sollwert aus Loxone - '
-                . 'der Speicher wurde in den Auto-Modus zurueckgegeben.');
+            if ($ok) {
+                @unlink($gemeldet);
+                marstek_log('Auto-Fallback (Geraet ' . $n . '): ' . $minuten
+                    . ' min kein Sollwert -> Auto-Modus (ok=1)');
+                marstek_melden(4, $d['name'] . ': seit ' . $minuten . ' Minuten kein Sollwert aus Loxone - '
+                    . 'der Speicher wurde in den Auto-Modus zurueckgegeben.');
+            } elseif (!is_file($gemeldet)) {
+                @touch($gemeldet);
+                marstek_log('Auto-Fallback (Geraet ' . $n . '): ' . $minuten
+                    . ' min kein Sollwert, aber der Speicher nimmt den Auto-Modus nicht an '
+                    . '(ok=0). Weitere Versuche werden nicht mehr gemeldet.');
+                marstek_melden(3, $d['name'] . ': seit ' . $minuten . ' Minuten kein Sollwert aus '
+                    . 'Loxone, und der Speicher nimmt den Auto-Modus nicht an.');
+            }
         }
     }
 }
@@ -1448,6 +1959,19 @@ function marstek_bilanz_fortschreiben($dev, array $e) {
     if (empty($e['ok'])) {
         return;
     }
+    /* BERICHTIGT 04.09.2026 - zwei Wachen, beide aus demselben Grund wie bei
+     * marstek_history_add(): der Endpunkt liest, der Takt schreibt.
+     *
+     * Bis 1.1.4 schrieb diese Funktion die Datei bei JEDEM Aufruf neu, auch
+     * wenn sich kein Zaehlerstand geaendert hatte - und Aufrufer waren der
+     * Minutencron UND jeder ?energy-Abruf aus Loxone. Gemessen, dreimal
+     * derselbe Datensatz: drei verschiedene Inodes, gleiche Pruefsumme.
+     * Das sind 1440 Schreibvorgaenge je Tag und Geraet auf die
+     * Speicherkarte, dazu die Abrufe des Miniservers.
+     */
+    if (empty($GLOBALS['marstek_ist_takt'])) {
+        return;
+    }
     $f = marstek_datadir() . '/bilanz_dev' . (int) $dev . '.csv';
     $heute = date('Y-m-d');
     $zeilen = marstek_bilanz_lesen($dev);
@@ -1467,6 +1991,11 @@ function marstek_bilanz_fortschreiben($dev, array $e) {
     $text = '';
     foreach ($zeilen as $tag => $w) {
         $text .= $tag . ';' . $w[0] . ';' . $w[1] . "\n";
+    }
+    // Nur schreiben, wenn sich wirklich etwas geaendert hat.
+    clearstatcache(true, $f);
+    if (is_file($f) && (string) @file_get_contents($f) === $text) {
+        return;
     }
     marstek_write_atomic($f, $text);
 }
@@ -1613,7 +2142,7 @@ function marstek_diag($dev = 1) {
         $out[] = 'UDP-Unicast ES.GetStatus an ' . $d['ip'] . ':' . $d['port'] . ': KEINE ANTWORT (5 s Timeout)';
     }
     // 2) UDP-Rundruf (manche Firmwaren antworten nur darauf; findet auch falsche IPs)
-    $bc = preg_replace('/\.\d+$/', '.255', $d['ip']);
+    $bc = marstek_broadcast_zu($d['ip']);
     $frage = json_encode(array('id' => 77777, 'method' => 'Marstek.GetDevice', 'params' => array('ble_mac' => '0')));
     list($ant, $fehler) = marstek_udp_rundruf($bc, $d['port'], $frage, 5, 8);
     if ($fehler !== '') {
@@ -1894,9 +2423,15 @@ function marstek_mqtt_senden(array $werte, $prefix)
  * Minute. Ohne diese Bremse stuenden Themen je Minute im Broker, die
  * sechzigmal hintereinander denselben Wert tragen.
  */
-function marstek_mqtt_senden_bei_aenderung(array $werte, $prefix, $merkername)
+function marstek_mqtt_senden_bei_aenderung(array $werte, $prefix, $merkername, ?array $sigwerte = null)
 {
-    $sig = json_encode($werte);
+    // BERICHTIGT 04.09.2026: die Signatur darf keinen Wert enthalten, der
+    // sich von selbst aendert. Bis 1.1.4 ging das Feld ALTER (= jetzt minus
+    // Messzeitpunkt) mit ein, und der Filter war damit wirkungslos.
+    // Gemessen am UDP-Tor, zwei Durchgaenge ohne jede Aenderung am
+    // Zaehlerstand:  Durchgang 1: 38 Datagramme, Durchgang 2: 12 - davon
+    // zehn energie_*. Nach dem Rueckbau: Durchgang 2: 2.
+    $sig = json_encode($sigwerte === null ? $werte : $sigwerte);
     if ($sig === false) { $sig = 'unlesbar'; }
     $sigf = marstek_tmpdir() . '/mqtt_sig_' . $merkername . '.txt';
     $beat = marstek_tmpdir() . '/mqtt_beat_' . $merkername;
@@ -1912,11 +2447,31 @@ function marstek_mqtt_senden_bei_aenderung(array $werte, $prefix, $merkername)
     return true;
 }
 
+/**
+ * Ein Themen-Praefix unschaedlich machen. EINE Stelle fuer alle Wege.
+ *
+ * BERICHTIGT 04.09.2026. Bis 1.1.4 saeuberte nur das Formular
+ * (index.php), und zwar STILL. Der Weg ueber eine zurueckgespielte
+ * Sicherung ging daran vorbei; gemessen am UDP-Tor des Gateways:
+ *
+ *     publish marstek<LF>publish fremd/eingeschleust 1/rang_ok 0
+ *
+ * Der Kommentar ueber marstek_mqtt_wert_saeubern() sagt es selbst: das
+ * Gateway liest ZEILENWEISE. Gesaeubert wurde der Wert, nicht das Thema -
+ * und beide stehen in derselben Zeile desselben Datagramms.
+ */
+function marstek_mqtt_thema_saeubern($t)
+{
+    $t = preg_replace('#[^A-Za-z0-9_/\-]#', '', (string) $t);
+    $t = trim((string) $t, '/');
+    return $t !== '' ? substr($t, 0, 64) : 'marstek';
+}
+
 /** Praefix aus der Konfiguration, bei Geraet 2..9 mit angehaengter Nummer. */
 function marstek_mqtt_prefix($dev = 1)
 {
     $cfg = marstek_config();
-    $prefix = trim((string) $cfg['mqtt_topic']) !== '' ? trim((string) $cfg['mqtt_topic']) : 'marstek';
+    $prefix = marstek_mqtt_thema_saeubern($cfg['mqtt_topic']);
     if ((int) $dev > 1) { // Geraet 1 behaelt die kurzen Topics (Abwaertskompatibilitaet)
         $prefix .= '/' . (int) $dev;
     }
@@ -1974,10 +2529,17 @@ function marstek_mqtt_publish_energy(array $e, $dev = 1) {
         return;
     }
     $werte = array();
+    $sig = array();
     foreach (marstek_felder('energy') as $name => $f) {
-        $werte['energie_' . strtolower($name)] = marstek_feldwert($f, $e, $dev);
+        $w = marstek_feldwert($f, $e, $dev);
+        $werte['energie_' . strtolower($name)] = $w;
+        // Abgeleitete Zeitfelder gehen in die WERTE, nicht in die Signatur.
+        if (strpos($f['quelle'], '_alter') === false) {
+            $sig['energie_' . strtolower($name)] = $w;
+        }
     }
-    marstek_mqtt_senden_bei_aenderung($werte, marstek_mqtt_prefix($dev), 'energie_dev' . (int) $dev);
+    marstek_mqtt_senden_bei_aenderung($werte, marstek_mqtt_prefix($dev),
+                                      'energie_dev' . (int) $dev, $sig);
 }
 
 /**
@@ -1993,10 +2555,15 @@ function marstek_mqtt_publish_ranks(array $r) {
         return;
     }
     $werte = array();
+    $sig = array();
     foreach (marstek_felder('ranks') as $name => $f) {
-        $werte['rang_' . strtolower($name)] = marstek_feldwert($f, $r, 1);
+        $w = marstek_feldwert($f, $r, 1);
+        $werte['rang_' . strtolower($name)] = $w;
+        if (strpos($f['quelle'], '_alter') === false) {
+            $sig['rang_' . strtolower($name)] = $w;
+        }
     }
-    marstek_mqtt_senden_bei_aenderung($werte, marstek_mqtt_prefix(1), 'raenge');
+    marstek_mqtt_senden_bei_aenderung($werte, marstek_mqtt_prefix(1), 'raenge', $sig);
 }
 
 /**
@@ -2143,63 +2710,63 @@ function marstek_e($s) {
 function marstek_felder($satz) {
     if ($satz === 'energy') {
         return array(
-            'OK'    => array('quelle' => 'ok',   'analog' => 0, 'min' => 0, 'max' => 1,       'einheit' => '',    'form' => '%d',   'text' => '1 = Werte gueltig'),
-            'CHGT'  => array('quelle' => 'chgt', 'analog' => 1, 'min' => 0, 'max' => 1000000, 'einheit' => 'kWh', 'form' => '%.2f', 'text' => 'geladen gesamt'),
-            'DIST'  => array('quelle' => 'dist', 'analog' => 1, 'min' => 0, 'max' => 1000000, 'einheit' => 'kWh', 'form' => '%.2f', 'text' => 'abgegeben gesamt'),
-            'CHGD'  => array('quelle' => 'chgd', 'analog' => 1, 'min' => 0, 'max' => 1000,    'einheit' => 'kWh', 'form' => '%.2f', 'text' => 'geladen heute'),
-            'DISD'  => array('quelle' => 'disd', 'analog' => 1, 'min' => 0, 'max' => 1000,    'einheit' => 'kWh', 'form' => '%.2f', 'text' => 'abgegeben heute'),
-            'CHGM'  => array('quelle' => 'chgm', 'analog' => 1, 'min' => 0, 'max' => 100000,  'einheit' => 'kWh', 'form' => '%.2f', 'text' => 'geladen diesen Monat'),
-            'DISM'  => array('quelle' => 'dism', 'analog' => 1, 'min' => 0, 'max' => 100000,  'einheit' => 'kWh', 'form' => '%.2f', 'text' => 'abgegeben diesen Monat'),
-            'CYC'   => array('quelle' => 'cyc',  'analog' => 1, 'min' => 0, 'max' => 100000,  'einheit' => '',    'form' => '%d',   'text' => 'Vollzyklen'),
-            'EFF'   => array('quelle' => 'eff',  'analog' => 1, 'min' => 0, 'max' => 100,     'einheit' => '%',   'form' => '%.1f', 'text' => 'Wirkungsgrad gesamt'),
-            'ALTER' => array('quelle' => '_alter', 'analog' => 1, 'min' => -1, 'max' => 86400, 'einheit' => 's',  'form' => '%d',   'text' => 'Alter der Zaehlerstaende in Sekunden; -1 = noch nie gemessen'),
+            'OK'    => array('quelle' => 'ok',   'analog' => 0, 'min' => 0, 'max' => 1,       'einheit' => '',    'form' => '%d',   'kurz' => 'Zaehler gueltig', 'text' => '1 = Werte gueltig'),
+            'CHGT'  => array('quelle' => 'chgt', 'analog' => 1, 'min' => 0, 'max' => 1000000, 'einheit' => 'kWh', 'form' => '%.2f', 'kurz' => 'geladen gesamt', 'text' => 'geladen gesamt'),
+            'DIST'  => array('quelle' => 'dist', 'analog' => 1, 'min' => 0, 'max' => 1000000, 'einheit' => 'kWh', 'form' => '%.2f', 'kurz' => 'abgegeben gesamt', 'text' => 'abgegeben gesamt'),
+            'CHGD'  => array('quelle' => 'chgd', 'analog' => 1, 'min' => 0, 'max' => 1000,    'einheit' => 'kWh', 'form' => '%.2f', 'kurz' => 'geladen heute', 'text' => 'geladen heute'),
+            'DISD'  => array('quelle' => 'disd', 'analog' => 1, 'min' => 0, 'max' => 1000,    'einheit' => 'kWh', 'form' => '%.2f', 'kurz' => 'abgegeben heute', 'text' => 'abgegeben heute'),
+            'CHGM'  => array('quelle' => 'chgm', 'analog' => 1, 'min' => 0, 'max' => 100000,  'einheit' => 'kWh', 'form' => '%.2f', 'kurz' => 'geladen diesen Monat', 'text' => 'geladen diesen Monat'),
+            'DISM'  => array('quelle' => 'dism', 'analog' => 1, 'min' => 0, 'max' => 100000,  'einheit' => 'kWh', 'form' => '%.2f', 'kurz' => 'abgegeben diesen Monat', 'text' => 'abgegeben diesen Monat'),
+            'CYC'   => array('quelle' => 'cyc',  'analog' => 1, 'min' => 0, 'max' => 100000,  'einheit' => '',    'form' => '%d',   'kurz' => 'Vollzyklen', 'text' => 'Vollzyklen'),
+            'EFF'   => array('quelle' => 'eff',  'analog' => 1, 'min' => 0, 'max' => 100,     'einheit' => '%',   'form' => '%.1f', 'kurz' => 'Wirkungsgrad', 'text' => 'Wirkungsgrad gesamt'),
+            'ALTER' => array('quelle' => '_alter', 'analog' => 1, 'min' => -1, 'max' => 86400, 'einheit' => 's',  'form' => '%d',   'kurz' => 'Alter der Zaehlerstaende', 'text' => 'Alter der Zaehlerstaende in Sekunden; -1 = noch nie gemessen'),
         );
     }
     if ($satz === 'ranks') {
         return array(
-            'OK'      => array('quelle' => 'ok',      'analog' => 0, 'min' => 0,  'max' => 1,  'einheit' => '',        'form' => '%d',   'text' => '1 = Preisdaten gueltig'),
-            'N'       => array('quelle' => 'n',       'analog' => 1, 'min' => 0,  'max' => 48, 'einheit' => '',        'form' => '%d',   'text' => 'Anzahl bewerteter Stunden im Fenster'),
-            'RANK'    => array('quelle' => 'rank',    'analog' => 1, 'min' => 0,  'max' => 99, 'einheit' => '',        'form' => '%d',   'text' => 'Rang der laufenden Stunde im 24-Stunden-Fenster (1 = guenstigste); 99 = keine Daten'),
-            'RANKD'   => array('quelle' => 'rankd',   'analog' => 1, 'min' => 0,  'max' => 99, 'einheit' => '',        'form' => '%d',   'text' => 'derselbe Rang absteigend (1 = teuerste Stunde); 99 = keine Daten'),
-            'CURP'    => array('quelle' => 'curp',    'analog' => 1, 'min' => -1, 'max' => 10, 'einheit' => 'EUR/kWh', 'form' => '%.5f', 'text' => 'Preis der laufenden Stunde inkl. Aufschlag und USt'),
-            'NEG'     => array('quelle' => 'neg',     'analog' => 0, 'min' => 0,  'max' => 1,  'einheit' => '',        'form' => '%d',   'text' => '1 = der Preis der laufenden Stunde ist negativ'),
-            'MINP'    => array('quelle' => 'minp',    'analog' => 1, 'min' => -1, 'max' => 10, 'einheit' => 'EUR/kWh', 'form' => '%.5f', 'text' => 'guenstigste Stunde im Fenster'),
-            'MAXP'    => array('quelle' => 'maxp',    'analog' => 1, 'min' => -1, 'max' => 10, 'einheit' => 'EUR/kWh', 'form' => '%.5f', 'text' => 'teuerste Stunde im Fenster'),
-            'SPREAD'  => array('quelle' => 'spread',  'analog' => 1, 'min' => 0,  'max' => 10, 'einheit' => 'EUR/kWh', 'form' => '%.5f', 'text' => 'Abstand teuerste zu guenstigster Stunde - lohnt sich der Umschlag heute?'),
-            'NEXTP'   => array('quelle' => 'nextp',   'analog' => 1, 'min' => -1, 'max' => 10, 'einheit' => 'EUR/kWh', 'form' => '%.5f', 'text' => 'Preis der naechsten Stunde'),
-            'HBIS'    => array('quelle' => 'hbis',    'analog' => 1, 'min' => -1, 'max' => 24, 'einheit' => 'h',       'form' => '%d',   'text' => 'Stunden bis zur guenstigsten Stunde (0 = jetzt); -1 = unbekannt'),
-            'HBISMAX' => array('quelle' => 'hbismax', 'analog' => 1, 'min' => -1, 'max' => 24, 'einheit' => 'h',       'form' => '%d',   'text' => 'Stunden bis zur teuersten Stunde (0 = jetzt); -1 = unbekannt'),
-            'ERRC'    => array('quelle' => 'errc',    'analog' => 1, 'min' => 0,  'max' => 9,  'einheit' => '',        'form' => '%d',   'text' => 'Grund fuer OK=0: 0 in Ordnung, 1 keine Preise geholt, 2 Fenster zu kurz, 3 keine Preise fuer die laufende Stunde'),
+            'OK'      => array('quelle' => 'ok',      'analog' => 0, 'min' => 0,  'max' => 1,  'einheit' => '',        'form' => '%d',   'kurz' => 'Preisdaten gueltig', 'text' => '1 = Preisdaten gueltig'),
+            'N'       => array('quelle' => 'n',       'analog' => 1, 'min' => 0,  'max' => 48, 'einheit' => '',        'form' => '%d',   'kurz' => 'bewertete Stunden', 'text' => 'Anzahl bewerteter Stunden im Fenster'),
+            'RANK'    => array('quelle' => 'rank',    'analog' => 1, 'min' => 0,  'max' => 99, 'einheit' => '',        'form' => '%d',   'kurz' => 'Rang guenstig', 'text' => 'Rang der laufenden Stunde im 24-Stunden-Fenster (1 = guenstigste); 99 = keine Daten'),
+            'RANKD'   => array('quelle' => 'rankd',   'analog' => 1, 'min' => 0,  'max' => 99, 'einheit' => '',        'form' => '%d',   'kurz' => 'Rang teuer', 'text' => 'derselbe Rang absteigend (1 = teuerste Stunde); 99 = keine Daten'),
+            'CURP'    => array('quelle' => 'curp',    'analog' => 1, 'min' => -1, 'max' => 10, 'einheit' => 'EUR/kWh', 'form' => '%.5f', 'kurz' => 'Preis dieser Stunde', 'text' => 'Preis der laufenden Stunde inkl. Aufschlag und USt'),
+            'NEG'     => array('quelle' => 'neg',     'analog' => 0, 'min' => 0,  'max' => 1,  'einheit' => '',        'form' => '%d',   'kurz' => 'Preis negativ', 'text' => '1 = der Preis der laufenden Stunde ist negativ'),
+            'MINP'    => array('quelle' => 'minp',    'analog' => 1, 'min' => -1, 'max' => 10, 'einheit' => 'EUR/kWh', 'form' => '%.5f', 'kurz' => 'guenstigste Stunde', 'text' => 'guenstigste Stunde im Fenster'),
+            'MAXP'    => array('quelle' => 'maxp',    'analog' => 1, 'min' => -1, 'max' => 10, 'einheit' => 'EUR/kWh', 'form' => '%.5f', 'kurz' => 'teuerste Stunde', 'text' => 'teuerste Stunde im Fenster'),
+            'SPREAD'  => array('quelle' => 'spread',  'analog' => 1, 'min' => 0,  'max' => 10, 'einheit' => 'EUR/kWh', 'form' => '%.5f', 'kurz' => 'Preisspanne', 'text' => 'Abstand teuerste zu guenstigster Stunde - lohnt sich der Umschlag heute?'),
+            'NEXTP'   => array('quelle' => 'nextp',   'analog' => 1, 'min' => -1, 'max' => 10, 'einheit' => 'EUR/kWh', 'form' => '%.5f', 'kurz' => 'Preis naechste Stunde', 'text' => 'Preis der naechsten Stunde'),
+            'HBIS'    => array('quelle' => 'hbis',    'analog' => 1, 'min' => -1, 'max' => 24, 'einheit' => 'h',       'form' => '%d',   'kurz' => 'Stunden bis guenstigste', 'text' => 'Stunden bis zur guenstigsten Stunde (0 = jetzt); -1 = unbekannt'),
+            'HBISMAX' => array('quelle' => 'hbismax', 'analog' => 1, 'min' => -1, 'max' => 24, 'einheit' => 'h',       'form' => '%d',   'kurz' => 'Stunden bis teuerste', 'text' => 'Stunden bis zur teuersten Stunde (0 = jetzt); -1 = unbekannt'),
+            'ERRC'    => array('quelle' => 'errc',    'analog' => 1, 'min' => 0,  'max' => 9,  'einheit' => '',        'form' => '%d',   'kurz' => 'Grund fuer OK=0', 'text' => 'Grund fuer OK=0: 0 in Ordnung, 1 keine Preise geholt, 2 Fenster zu kurz, 3 keine Preise fuer die laufende Stunde'),
         );
     }
     if ($satz === 'summe') {
         return array(
-            'OK'      => array('quelle' => 'ok',      'analog' => 0, 'min' => 0,      'max' => 1,     'einheit' => '',    'form' => '%d',   'text' => '1 = ALLE Speicher haben geantwortet'),
-            'N'       => array('quelle' => 'n',       'analog' => 1, 'min' => 0,      'max' => 9,     'einheit' => '',    'form' => '%d',   'text' => 'Anzahl eingetragener Speicher'),
-            'NOK'     => array('quelle' => 'nok',     'analog' => 1, 'min' => 0,      'max' => 9,     'einheit' => '',    'form' => '%d',   'text' => 'Anzahl Speicher ohne Antwort'),
-            'SOC'     => array('quelle' => 'soc',     'analog' => 1, 'min' => -1,     'max' => 100,   'einheit' => '%',   'form' => '%.1f', 'text' => 'nach Kapazitaet gewichteter Ladezustand; -1 = nicht bildbar'),
-            'KAPAZ'   => array('quelle' => 'kapaz',   'analog' => 1, 'min' => -1,     'max' => 1000,  'einheit' => 'kWh', 'form' => '%.2f', 'text' => 'Gesamtkapazitaet; -1 = bei mindestens einem Speicher nicht eingetragen'),
-            'RESTKWH' => array('quelle' => 'restkwh', 'analog' => 1, 'min' => -1,     'max' => 1000,  'einheit' => 'kWh', 'form' => '%.2f', 'text' => 'noch gespeicherte Menge; -1 = nicht bildbar'),
-            'BATP'    => array('quelle' => 'batp',    'analog' => 1, 'min' => -40000, 'max' => 40000, 'einheit' => 'W',   'form' => '%d',   'text' => 'Summe der Batterieleistungen (+ laedt / - entlaedt)'),
-            'ALTER'   => array('quelle' => 'alter',   'analog' => 1, 'min' => -1,     'max' => 86400, 'einheit' => 's',   'form' => '%d',   'text' => 'Alter der aeltesten Teilmessung; -1 = nicht bildbar'),
+            'OK'      => array('quelle' => 'ok',      'analog' => 0, 'min' => 0,      'max' => 1,     'einheit' => '',    'form' => '%d',   'kurz' => 'alle Speicher erreichbar', 'text' => '1 = ALLE Speicher haben geantwortet'),
+            'N'       => array('quelle' => 'n',       'analog' => 1, 'min' => 0,      'max' => 9,     'einheit' => '',    'form' => '%d',   'kurz' => 'Anzahl Speicher', 'text' => 'Anzahl eingetragener Speicher'),
+            'NOK'     => array('quelle' => 'nok',     'analog' => 1, 'min' => 0,      'max' => 9,     'einheit' => '',    'form' => '%d',   'kurz' => 'Speicher ohne Antwort', 'text' => 'Anzahl Speicher ohne Antwort'),
+            'SOC'     => array('quelle' => 'soc',     'analog' => 1, 'min' => -1,     'max' => 100,   'einheit' => '%',   'form' => '%.1f', 'kurz' => 'Ladezustand gewichtet', 'text' => 'nach Kapazitaet gewichteter Ladezustand; -1 = nicht bildbar'),
+            'KAPAZ'   => array('quelle' => 'kapaz',   'analog' => 1, 'min' => -1,     'max' => 1000,  'einheit' => 'kWh', 'form' => '%.2f', 'kurz' => 'Gesamtkapazitaet', 'text' => 'Gesamtkapazitaet; -1 = bei mindestens einem Speicher nicht eingetragen'),
+            'RESTKWH' => array('quelle' => 'restkwh', 'analog' => 1, 'min' => -1,     'max' => 1000,  'einheit' => 'kWh', 'form' => '%.2f', 'kurz' => 'gespeicherte Menge', 'text' => 'noch gespeicherte Menge; -1 = nicht bildbar'),
+            'BATP'    => array('quelle' => 'batp',    'analog' => 1, 'min' => -40000, 'max' => 40000, 'einheit' => 'W',   'form' => '%d',   'kurz' => 'Batterieleistung gesamt', 'text' => 'Summe der Batterieleistungen (+ laedt / - entlaedt)'),
+            'ALTER'   => array('quelle' => 'alter',   'analog' => 1, 'min' => -1,     'max' => 86400, 'einheit' => 's',   'form' => '%d',   'kurz' => 'Alter der Teilmessungen', 'text' => 'Alter der aeltesten Teilmessung; -1 = nicht bildbar'),
         );
     }
     return array(
-        'OK'        => array('quelle' => 'ok',    'analog' => 0, 'min' => 0,      'max' => 1,      'einheit' => '',   'form' => '%d',   'text' => '1 = Speicher erreichbar'),
-        'SOC'       => array('quelle' => 'soc',   'analog' => 1, 'min' => 0,      'max' => 100,    'einheit' => '%',  'form' => '%.1f', 'text' => 'Ladezustand'),
-        'BATP'      => array('quelle' => 'batp',  'analog' => 1, 'min' => -10000, 'max' => 10000,  'einheit' => 'W',  'form' => '%d',   'text' => 'Batterieleistung (+ laedt / - entlaedt)'),
-        'TEMP'      => array('quelle' => 'temp',  'analog' => 1, 'min' => -20,    'max' => 80,     'einheit' => '°C', 'form' => '%.1f', 'text' => 'Batterietemperatur'),
-        'GRIDP'     => array('quelle' => 'gridp', 'analog' => 1, 'min' => -20000, 'max' => 20000,  'einheit' => 'W',  'form' => '%d',   'text' => 'Netzleistung am Speicher'),
-        'FW'        => array('quelle' => 'fw',    'analog' => 1, 'min' => 0,      'max' => 100000, 'einheit' => '',   'form' => '%d',   'text' => 'Firmwarestand des Geraets'),
+        'OK'        => array('quelle' => 'ok',    'analog' => 0, 'min' => 0,      'max' => 1,      'einheit' => '',   'form' => '%d',   'kurz' => 'Speicher erreichbar', 'text' => '1 = Speicher erreichbar'),
+        'SOC'       => array('quelle' => 'soc',   'analog' => 1, 'min' => 0,      'max' => 100,    'einheit' => '%',  'form' => '%.1f', 'kurz' => 'Ladezustand', 'text' => 'Ladezustand'),
+        'BATP'      => array('quelle' => 'batp',  'analog' => 1, 'min' => -10000, 'max' => 10000,  'einheit' => 'W',  'form' => '%d',   'kurz' => 'Batterieleistung', 'text' => 'Batterieleistung (+ laedt / - entlaedt)'),
+        'TEMP'      => array('quelle' => 'temp',  'analog' => 1, 'min' => -20,    'max' => 80,     'einheit' => '°C', 'form' => '%.1f', 'kurz' => 'Batterietemperatur', 'text' => 'Batterietemperatur'),
+        'GRIDP'     => array('quelle' => 'gridp', 'analog' => 1, 'min' => -20000, 'max' => 20000,  'einheit' => 'W',  'form' => '%d',   'kurz' => 'Netzleistung', 'text' => 'Netzleistung am Speicher'),
+        'FW'        => array('quelle' => 'fw',    'analog' => 1, 'min' => 0,      'max' => 100000, 'einheit' => '',   'form' => '%d',   'kurz' => 'Firmwarestand', 'text' => 'Firmwarestand des Geraets'),
         // BERICHTIGT 24.08.2026: hiess "Betriebsmodus des Geraets" mit Bereich
         // 0..10 und ist in Wahrheit die Antwortzeit. Die eigene Ausfuhr aus
         // Loxone Config fuehrt dasselbe Feld mit 0..10000 und "ms".
-        'MS'        => array('quelle' => 'ms',    'analog' => 1, 'min' => 0,      'max' => 10000,  'einheit' => 'ms', 'form' => '%d',   'text' => 'Antwortzeit des Geraets'),
-        'ALTER'     => array('quelle' => '_alter',     'analog' => 1, 'min' => -1,     'max' => 86400, 'einheit' => 's', 'form' => '%d', 'text' => 'Alter der letzten echten Messung in Sekunden; -1 = noch nie gemessen'),
-        'ZAEHLER'   => array('quelle' => '_zaehler',   'analog' => 1, 'min' => -1,     'max' => 999,   'einheit' => '',  'form' => '%d', 'text' => 'Herzschlag des Minutentakts, zaehlt 0..999 um; -1 = der Takt laeuft nicht'),
-        'SOLL'      => array('quelle' => '_soll',      'analog' => 1, 'min' => -32768, 'max' => 10000, 'einheit' => 'W', 'form' => '%d', 'text' => 'zuletzt vom Geraet ANGENOMMENER Sollwert (+ laden); -32768 = keiner'),
-        'SOLLALTER' => array('quelle' => '_sollalter', 'analog' => 1, 'min' => -1,     'max' => 86400, 'einheit' => 's', 'form' => '%d', 'text' => 'Sekunden seit dem letzten angenommenen Sollwert; -1 = keiner'),
-        'FBREST'    => array('quelle' => '_fbrest',    'analog' => 1, 'min' => -2,     'max' => 86400, 'einheit' => 's', 'form' => '%d', 'text' => 'Sekunden bis zum Auto-Fallback; -1 = abgeschaltet, -2 = kein Passivbetrieb'),
+        'MS'        => array('quelle' => 'ms',    'analog' => 1, 'min' => 0,      'max' => 10000,  'einheit' => 'ms', 'form' => '%d',   'kurz' => 'Antwortzeit', 'text' => 'Antwortzeit des Geraets'),
+        'ALTER'     => array('quelle' => '_alter',     'analog' => 1, 'min' => -1,     'max' => 86400, 'einheit' => 's', 'form' => '%d', 'kurz' => 'Alter der Messung', 'text' => 'Alter der letzten echten Messung in Sekunden; -1 = noch nie gemessen'),
+        'ZAEHLER'   => array('quelle' => '_zaehler',   'analog' => 1, 'min' => -1,     'max' => 999,   'einheit' => '',  'form' => '%d', 'kurz' => 'Herzschlag des Takts', 'text' => 'Herzschlag des Minutentakts, zaehlt 0..999 um; -1 = der Takt laeuft nicht'),
+        'SOLL'      => array('quelle' => '_soll',      'analog' => 1, 'min' => -32768, 'max' => 10000, 'einheit' => 'W', 'form' => '%d', 'kurz' => 'angenommener Sollwert', 'text' => 'zuletzt vom Geraet ANGENOMMENER Sollwert (+ laden); -32768 = keiner'),
+        'SOLLALTER' => array('quelle' => '_sollalter', 'analog' => 1, 'min' => -1,     'max' => 86400, 'einheit' => 's', 'form' => '%d', 'kurz' => 'Alter des Sollwerts', 'text' => 'Sekunden seit dem letzten angenommenen Sollwert; -1 = keiner'),
+        'FBREST'    => array('quelle' => '_fbrest',    'analog' => 1, 'min' => -2,     'max' => 86400, 'einheit' => 's', 'form' => '%d', 'kurz' => 'Rest bis Auto-Fallback', 'text' => 'Sekunden bis zum Auto-Fallback; -1 = abgeschaltet, -2 = kein Passivbetrieb'),
     );
 }
 
@@ -2218,7 +2785,7 @@ function marstek_feldwert(array $f, array $werte, $dev = 1) {
     if ($q === '_zaehler') {
         $h = marstek_herzstand();
         // Laeuft der Takt nicht mehr, ist die Zahl wertlos - dann -1.
-        return ($h['ts'] > 0 && time() - $h['ts'] <= 180) ? $h['zaehler'] : -1;
+        return ($h['ts'] > 0 && time() - $h['ts'] <= MARSTEK_TAKT_SCHRANKE) ? $h['zaehler'] : -1;
     }
     if ($q === '_soll') {
         $s = marstek_soll_lesen($dev);
@@ -2282,6 +2849,13 @@ function marstek_xml_virtual_in_http($kopf, $cmds) {
     return $o;
 }
 
+/** <v.n> zum Zahlenformat des Feldes. */
+function marstek_einheit_muster(array $f) {
+    $nk = 0;
+    if (preg_match('/%\.(\d)f/', (string) $f['form'], $m)) { $nk = (int) $m[1]; }
+    return '<v.' . $nk . '>';
+}
+
 function marstek_x($s) {
     return htmlspecialchars((string) $s, ENT_QUOTES | ENT_XML1, 'UTF-8');
 }
@@ -2317,6 +2891,20 @@ function marstek_host() {
         : (gethostname() ?: 'loxberry');
 }
 
+/**
+ * Der Abfragetakt je Satz - EINE Quelle.
+ *
+ * BERICHTIGT 04.09.2026: bis 1.1.4 stand er zweimal, in index.php als
+ * 'takt' und hier als Bedingung "status ? 60 : 300". Fuer ?summe liefen
+ * beide auseinander - die Oberflaeche nannte 60 s, die Datei daneben trug
+ * PollingTime="300". Der Status und die Summe haengen am Geraet und werden
+ * minuetlich gebraucht, Raenge und Zaehlerstaende aendern sich stuendlich.
+ */
+function marstek_satz_takt($satz) {
+    $t = array('status' => 60, 'summe' => 60, 'ranks' => 300, 'energy' => 300);
+    return isset($t[$satz]) ? $t[$satz] : 300;
+}
+
 /** Vorlage fuer den Import in Loxone Config. Rueckgabe: array(name, inhalt) */
 function marstek_vorlage($satz = 'status', $dev = 1) {
     $satz = in_array($satz, array('status', 'energy', 'ranks', 'summe'), true) ? $satz : 'status';
@@ -2335,12 +2923,20 @@ function marstek_vorlage($satz = 'status', $dev = 1) {
     foreach (marstek_felder($satz) as $name => $f) {
         $cmds[] = array(
             'title' => 'MARSTEK_' . strtoupper($satz) . '_' . $name . ($je_geraet && $dev > 1 ? '_' . $dev : ''),
-            'comment' => $f['text'] . ($f['einheit'] !== '' ? ' [' . $f['einheit'] . ']' : ''),
+            // Der Comment wird in Loxone Config zum ANZEIGENAMEN der Kachel,
+            // nicht zur Dokumentation. BERICHTIGT 04.09.2026: bis 1.1.4 stand
+            // hier der ganze Erklaertext - gemessen bis 112 Zeichen, und die
+            // massgebliche eigene Ausfuhr vom 12.08.2026 fuehrt ihn leer.
+            // Jetzt die Kurzform; der lange Text bleibt in der Oberflaeche.
+            'comment' => $f['kurz'],
             // Das Trennzeichen gehoert in den Suchtext. Ohne es haengt allein
             // an der Reihenfolge der Zeile, dass der richtige Wert ankommt -
             // eine Zusicherung, die beim naechsten neuen Feld still faellt.
             'check' => '\i;' . $name . '=\i\v',
-            'unit' => ($f['einheit'] !== '' ? '<v.1> ' . $f['einheit'] : '<v.1>'),
+            // Nachkommastellen aus dem Format der Antwortzeile: ein Preis
+            // mit %.5f wurde bis 1.1.4 als <v.1> angezeigt, also 0,3 statt
+            // 0,28374 - und OK als "1,0".
+            'unit' => marstek_einheit_muster($f) . ($f['einheit'] !== '' ? ' ' . $f['einheit'] : ''),
             'analog' => $f['analog'], 'min' => $f['min'], 'max' => $f['max'],
         );
     }
@@ -2349,7 +2945,7 @@ function marstek_vorlage($satz = 'status', $dev = 1) {
     return array('VI_marstek_' . $satz . $endung . '.xml', marstek_xml_virtual_in_http(array(
         'title' => 'Marstek ' . ucfirst($satz) . $gname,
         'address' => 'http://' . $host . '/plugins/' . $ordner . '/marstek.php' . $q,
-        'polling' => $satz === 'status' ? '60' : '300',
+        'polling' => (string) marstek_satz_takt($satz),
         'comment' => 'Erzeugt vom LoxBerry-Plugin Marstek Venus E (' . date('d.m.Y') . '). '
                    . 'Loxone Config legt beim Import neu an und ueberschreibt nichts - '
                    . 'zweimal eingelesen ergibt doppelte Bausteine.',
@@ -2459,4 +3055,194 @@ function marstek_vorlagen_paket() {
     $inhalt = (string) @file_get_contents($tmp);
     @unlink($tmp);
     return array('marstek_vorlagen_' . date('Ymd') . '.zip', $inhalt);
+}
+/* ==================== Rechenkern-Selbsttest ==========================
+ *
+ * Aufruf:  php bin/cron.php --selbsttest
+ *
+ * Jeder Fall hat eine vorher feststehende Erwartung, und jede Gruppe hat
+ * einen Fall, der DURCHGEHEN muss, und einen, der ABGEWIESEN werden muss -
+ * sonst misst der Lauf sein eigenes Schweigen.
+ *
+ * Was er ausdruecklich NICHT misst: das Geraet, den Broker, den Miniserver
+ * und die Dateirechte. Dafuer ist der Reiter Test da und das, was nur am
+ * Geraet zu messen ist.
+ */
+function marstek_selbsttest()
+{
+    $faelle = 0;
+    $fehl = array();
+    $pruefe = function ($name, $ist, $soll) use (&$faelle, &$fehl) {
+        $faelle++;
+        if ($ist !== $soll) {
+            $fehl[] = sprintf('%s: erwartet %s, gemessen %s', $name,
+                var_export($soll, true), var_export($ist, true));
+        }
+    };
+
+    /* --- 1. Die Feldtabelle: Grenzen, Kurzform, Zahlenformat --- */
+    foreach (array('status', 'energy', 'ranks', 'summe') as $satz) {
+        foreach (marstek_felder($satz) as $name => $f) {
+            $pruefe($satz . '.' . $name . ' min<=max', $f['min'] <= $f['max'], true);
+            $pruefe($satz . '.' . $name . ' Kurzform vorhanden',
+                isset($f['kurz']) && $f['kurz'] !== '', true);
+            // Der Comment wird in Loxone Config zum Kachelnamen - ueber
+            // vierzig Zeichen ist es ein Satz, kein Name.
+            $pruefe($satz . '.' . $name . ' Kurzform hoechstens 40 Zeichen',
+                strlen((string) $f['kurz']) <= 40, true);
+            // Traegt MinVal jeden Fehlwert, den der Text nennt?
+            if (preg_match_all('/(-\d+) = /', $f['text'], $m)) {
+                foreach ($m[1] as $fehlwert) {
+                    $pruefe($satz . '.' . $name . ' MinVal traegt ' . $fehlwert,
+                        (int) $fehlwert >= (int) $f['min'], true);
+                }
+            }
+        }
+    }
+
+    /* --- 2. Die Suchtexte an der ERZEUGTEN Antwortzeile --- */
+    foreach (array('status', 'energy', 'ranks', 'summe') as $satz) {
+        $zeile = marstek_zeile($satz, array(), 1);
+        foreach (array_keys(marstek_felder($satz)) as $name) {
+            $pruefe($satz . ': Suchtext ;' . $name . '= genau einmal',
+                substr_count($zeile, ';' . $name . '='), 1);
+        }
+    }
+
+    /* --- 3. Themenliste gegen den Sendecode --- */
+    list($nur_liste, $nur_code) = marstek_themen_abgleich();
+    $pruefe('Themen: in der Liste, aber nicht im Sendecode', $nur_liste, array());
+    $pruefe('Themen: im Sendecode, aber nicht in der Liste', $nur_code, array());
+
+    /* --- 4. Der Abfragetakt: eine Quelle --- */
+    foreach (array('status' => 60, 'summe' => 60, 'ranks' => 300, 'energy' => 300) as $s => $t) {
+        $pruefe('Takt ' . $s, marstek_satz_takt($s), $t);
+        list(, $xml) = marstek_vorlage($s, 1);
+        $pruefe('Vorlage ' . $s . ' PollingTime',
+            preg_match('/PollingTime="' . $t . '"/', $xml) === 1, true);
+    }
+
+    /* --- 5. Das Zahlenformat der Vorlage --- */
+    $pruefe('Einheit %d  -> <v.0>', marstek_einheit_muster(array('form' => '%d')), '<v.0>');
+    $pruefe('Einheit %.1f -> <v.1>', marstek_einheit_muster(array('form' => '%.1f')), '<v.1>');
+    $pruefe('Einheit %.5f -> <v.5>', marstek_einheit_muster(array('form' => '%.5f')), '<v.5>');
+
+    /* --- 6. Die Vorlagen sind wohlgeformt --- */
+    if (function_exists('simplexml_load_string')) {
+        $alt = libxml_use_internal_errors(true);
+        foreach (marstek_vorlagen_alle() as $name => $inhalt) {
+            $pruefe('Vorlage wohlgeformt: ' . $name,
+                simplexml_load_string($inhalt) !== false, true);
+            libxml_clear_errors();
+        }
+        libxml_use_internal_errors($alt);
+    }
+
+    /* --- 7. Adressen: jede Stelle einzeln --- */
+    $pruefe('IP 192.0.2.7 gueltig', marstek_ip_gueltig('192.0.2.7'), true);
+    $pruefe('IP 999.999.999.999 abgewiesen', marstek_ip_gueltig('999.999.999.999'), false);
+    $pruefe('IP 192.0.2 abgewiesen', marstek_ip_gueltig('192.0.2'), false);
+    $pruefe('Rundrufadresse', marstek_broadcast_zu('192.0.2.77'), '192.0.2.255');
+
+    /* --- 8. Das Themen-Praefix: Einschleusung geht nicht durch --- */
+    $pruefe('Thema sauber bleibt', marstek_mqtt_thema_saeubern('marstek/keller'),
+        'marstek/keller');
+    $pruefe('Thema mit Zeilenumbruch',
+        marstek_mqtt_thema_saeubern("marstek\npublish fremd/x 1"), 'marstekpublishfremd/x1');
+    $pruefe('Thema leer', marstek_mqtt_thema_saeubern('   '), 'marstek');
+
+    /* --- 9. Die Wertpruefung, in beide Richtungen --- */
+    $gut = array(
+        array('cache_sec', 40), array('vat', 1.19), array('awattar', 'de'),
+        array('mqtt_topic', 'marstek'), array('aktionstoken', 'abc-123_XY.z'),
+        array('aktionstoken', ''), array('soc_max', 98), array('temp_max', 45),
+        array('devices', array(array('name' => 'Venus E', 'ip' => '192.0.2.7',
+                                     'port' => 30000, 'pmax_charge' => 2500,
+                                     'pmax_discharge' => 2500, 'modbus' => 1, 'kwh' => 5.12))),
+    );
+    foreach ($gut as $g) {
+        $pruefe('Wert zulaessig: ' . $g[0], marstek_wert_pruefen($g[0], $g[1]), '');
+    }
+    $schlecht = array(
+        array('aktionstoken', array('a', 'b')),
+        array('cache_sec', 'abc'),
+        array('mqtt_topic', "marstek\npublish fremd/x 1"),
+        array('devices', 'keine Liste'),
+        array('temp_max', 9999),
+        array('soc_min', -5),
+        array('awattar', 'ch'),
+        array('devices', array(array('ip' => '999.999.999.999'))),
+    );
+    foreach ($schlecht as $s) {
+        $pruefe('Wert abgewiesen: ' . $s[0],
+            marstek_wert_pruefen($s[0], $s[1]) !== '', true);
+    }
+
+    /* --- 10. Die Sicherung: eigene Ausfuhr, eigene Einfuhr --- */
+    $ausfuhr = marstek_sicherung_schreiben();
+    $pruefe('Sicherung traegt einen lesbaren Kopf',
+        isset($ausfuhr['_hinweis']) && isset($ausfuhr['_stand']), true);
+    $fremd = array_diff(array_keys($ausfuhr), array_keys(marstek_vorgaben()));
+    $fremd = array_values(array_filter($fremd, function ($k) { return $k === '' || $k[0] !== '_'; }));
+    $pruefe('Sicherung enthaelt nichts, was die Einfuhr nicht kennt', $fremd, array());
+
+    /* --- 11. Die Schranke fuer den Takt steht an einer Stelle --- */
+    $pruefe('Taktschranke definiert', defined('MARSTEK_TAKT_SCHRANKE'), true);
+
+    printf("Rechenkern Marstek Venus E: %d Faelle geprueft, %d Fehlschlaege.\n",
+           $faelle, count($fehl));
+    foreach ($fehl as $z) {
+        printf("  FEHL %s\n", $z);
+    }
+    return count($fehl) === 0 ? 0 : 1;
+}
+
+/**
+ * Die Themenliste gegen den SENDECODE halten.
+ *
+ * BERICHTIGT 04.09.2026. Die Zeile im Reiter Test hat bis 1.1.4 die Zahl aus
+ * marstek_mqtt_themen() gegen eine aus DERSELBEN Feldtabelle gerechnete Zahl
+ * gehalten - eine Tautologie. Geeicht: dem Sendecode wurde ein Thema
+ * hinzugefuegt, es ging hinaus, und die Zeile blieb gruen.
+ *
+ * Jetzt werden die vier veroeffentlichenden Funktionen wirklich gelesen und
+ * ihre Themen gebildet. Rueckgabe: array(nur in der Liste, nur im Sendecode).
+ */
+function marstek_themen_abgleich()
+{
+    $liste = array_keys(marstek_mqtt_themen(true));
+
+    // Was der Sendecode bildet - dieselben Schleifen wie dort, aber aus
+    // dieser Funktion gelesen, damit ein neues Thema hier auffaellt.
+    $code = array();
+    foreach (array_keys(marstek_felder('status')) as $n) { $code[] = strtolower($n); }
+    $code[] = 'ts';
+    foreach (array_keys(marstek_felder('energy')) as $n) { $code[] = 'energie_' . strtolower($n); }
+    foreach (array_keys(marstek_felder('ranks')) as $n) { $code[] = 'rang_' . strtolower($n); }
+    $code[] = 'takt_zaehler';
+    $code[] = 'takt_ts';
+
+    // Und was in den publish-Funktionen WIRKLICH steht: jede Zuweisung an
+    // $werte[...] in den vier marstek_mqtt_publish*-Funktionen.
+    $quelle = @file_get_contents(__FILE__);
+    $zusatz = array();
+    if (is_string($quelle) && $quelle !== '') {
+        foreach (array('marstek_mqtt_publish', 'marstek_mqtt_publish_energy',
+                       'marstek_mqtt_publish_ranks', 'marstek_mqtt_publish_takt') as $fn) {
+            $i = strpos($quelle, 'function ' . $fn . '(');
+            if ($i === false) { continue; }
+            $j = strpos($quelle, "\n}\n", $i);
+            $rumpf = substr($quelle, $i, ($j === false ? 2000 : $j - $i));
+            if (preg_match_all("/'([a-z0-9_]+)'\s*=>/", $rumpf, $m)) {
+                foreach ($m[1] as $t) { $zusatz[] = $t; }
+            }
+            if (preg_match_all("/\\\$werte\['([a-z0-9_]+)'\]/", $rumpf, $m)) {
+                foreach ($m[1] as $t) { $zusatz[] = $t; }
+            }
+        }
+    }
+    $code = array_values(array_unique(array_merge($code, $zusatz)));
+
+    return array(array_values(array_diff($liste, $code)),
+                 array_values(array_diff($code, $liste)));
 }

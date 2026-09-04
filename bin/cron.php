@@ -65,14 +65,75 @@
  * wird relativ zu dieser Datei gebildet.
  */
 $mv_htmldir = 'REPLACELBPHTMLDIR';
+$mv_gesucht = array();
 if (strpos($mv_htmldir, 'REPLACE') === 0 || !is_file($mv_htmldir . '/marstek_lib.php')) {
-    $mv_htmldir = dirname(__DIR__) . '/webfrontend/html';
+    $mv_gesucht[] = $mv_htmldir;
+    $mv_htmldir = dirname(__DIR__) . '/webfrontend/html';   // ausgepacktes Archiv
 }
 if (!is_file($mv_htmldir . '/marstek_lib.php')) {
-    fwrite(STDERR, "marstek_lib.php nicht gefunden (gesucht in $mv_htmldir)\n");
+    /* ZWEITER RUECKFALL - fuer die INSTALLIERTE Lage. NEU in 1.1.5.
+     *
+     * bin/ und webfrontend/html/ liegen installiert in GETRENNTEN Baeumen;
+     * der Rueckfall darueber trifft nur das ausgepackte Archiv. Wird der
+     * Platzhalter aus irgendeinem Grund nicht ersetzt, lief der Minutentakt
+     * bis 1.1.4 jede Minute ins Leere. Gemessen in der installierten Lage
+     * mit unersetztem Platzhalter, beide PHP-Fassungen:
+     *
+     *     cron.php     Rueckgabewert 1   "marstek_lib.php nicht gefunden"
+     *     healthcheck  Rueckgabewert 0   findet die Bibliothek
+     *
+     * bin/healthcheck fuehrt diese Kandidatenliste seit jeher; die
+     * Schwesterlinie Saugroboter 1.1.3 ebenfalls, mit derselben Begruendung.
+     * Von <home>/bin/plugins/<ordner>/ sind es drei Ebenen bis <home>.
+     */
+    $mv_gesucht[] = $mv_htmldir;
+    foreach (array(
+        (string) getenv('LBHOMEDIR') . '/webfrontend/html/plugins/' . basename(__DIR__),
+        dirname(dirname(dirname(__DIR__))) . '/webfrontend/html/plugins/' . basename(__DIR__),
+    ) as $mv_kandidat) {
+        $mv_gesucht[] = $mv_kandidat;
+        if (is_file($mv_kandidat . '/marstek_lib.php')) {
+            $mv_htmldir = $mv_kandidat;
+            break;
+        }
+    }
+}
+if (!is_file($mv_htmldir . '/marstek_lib.php')) {
+    fwrite(STDERR, "marstek_lib.php nicht gefunden (gesucht in "
+        . implode(', ', $mv_gesucht) . ")\n");
     exit(1);
 }
 require_once $mv_htmldir . '/marstek_lib.php';
+
+/* Ein unbekannter Schalter beendet den Lauf mit Antwort, statt einen vollen
+ * Durchgang zu starten. NEU in 1.1.5.
+ *
+ * Gemessen an 1.1.4: "php cron.php --quatsch" lief vollstaendig durch und
+ * endete mit Rueckgabewert 0 - Preise geholt, Geraete abgefragt, per MQTT
+ * veroeffentlicht, und ueber den Auto-Fallback kann dabei ein Speicher in
+ * den Auto-Modus wechseln. Derselbe Fall wie Zendure 25.08.2026, wo
+ * "--selftest" statt "--selbsttest" stillschweigend in der Dienstschleife
+ * landete.
+ */
+$mv_erlaubt = array('--selbsttest', '--einmal');
+foreach ($argv as $mv_i => $mv_a) {
+    if ($mv_i === 0 || strncmp((string) $mv_a, '--', 2) !== 0) {
+        continue;
+    }
+    if (!in_array($mv_a, $mv_erlaubt, true)) {
+        fwrite(STDERR, 'Unbekannter Schalter: ' . $mv_a . ' - erlaubt sind '
+            . implode(' ', $mv_erlaubt) . "\n");
+        exit(2);
+    }
+}
+
+/* --selbsttest: der Rechenkern, ohne Geraet, ohne Netz, ohne Schreibzugriff
+ * auf die Konfiguration. Die Freigabepruefung sucht genau diesen Schalter;
+ * bis 1.1.4 stand ihre Zeile deshalb dauerhaft auf einem Strich
+ * ("unter bin/ wertet keine Datei --selbsttest aus"). */
+if (in_array('--selbsttest', $argv, true)) {
+    exit(marstek_selbsttest());
+}
 
 $sperre = marstek_tmpdir() . '/cron.lock';
 $fp = @fopen($sperre, 'c');

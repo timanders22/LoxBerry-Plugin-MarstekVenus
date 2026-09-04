@@ -99,9 +99,15 @@ echo "<INFO> LoxBerry -> System -> MQTT Gateway."
 # data/plugins/<ordner>.upgrade_sicherung liegt AUSSERHALB des Ordners, den
 # LoxBerry beim Deinstallieren loescht - genau deshalb uebersteht er ein
 # Update. Wer ihn hier nicht abraeumt, laesst Zugangsdaten liegen.
-UN_FOLDER="${3:-}"
-UN_BASE="${5:-$LBHOMEDIR}"
-if [ -n "$UN_FOLDER" ] && [ -n "$UN_BASE" ] && [ -d "$UN_BASE/data/plugins" ]; then
-    rm -rf "$UN_BASE/data/plugins/$UN_FOLDER.upgrade_sicherung" 2>/dev/null
+# BERICHTIGT 04.09.2026: hier standen $PDIR und $BASE ein zweites Mal, aus
+# $3 und $5 neu hergeleitet - ohne die beiden Rueckfaelle von oben. Fehlte
+# eines der beiden Argumente, raeumte der obere Teil die Zweitschrift und den
+# Verlauf weg, dieser Teil aber nichts, und die Update-Sicherung mit
+# derselben marstek.json blieb liegen. Jetzt gelten dieselben Groessen.
+if [ -n "$PDIR" ] && [ -n "$BASE" ] && [ -d "$BASE/data/plugins" ]; then
+    SICHER="$BASE/data/plugins/$PDIR.upgrade_sicherung"
+    if [ -d "$SICHER" ]; then
+        rm -rf "$SICHER" && echo "<OK> Update-Sicherung entfernt: $PDIR.upgrade_sicherung"
+    fi
 fi
 exit 0

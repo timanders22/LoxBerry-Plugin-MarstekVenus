@@ -13,6 +13,98 @@ den Auto-Modus des Geräts zurück.
 
 Kompatibel mit LoxBerry 3.x und **LoxBerry 4** (reines PHP, läuft mit PHP 7.4 und 8.x).
 
+## Neu in 1.1.5
+
+Diese Fassung behebt einunddreißig Befunde aus einer erneuten Durchsicht der
+veröffentlichten 1.1.4. Vier davon wirkten im laufenden Betrieb.
+
+**1. Ein verlorenes UDP-Paket setzte die Temperatur auf 0 — und die
+Schutzschwelle sperrte daraufhin das Laden.** Der Rückfall auf die zuletzt
+gemessenen Werte aus 1.1.0 griff nur, wenn *beide* Abfragen scheiterten.
+Antwortete nur eine — und UDP verliert Pakete —, galt `OK=1`, und jedes Feld,
+das die antwortende Abfrage nicht trägt, ging als 0 in den Zwischenspeicher.
+Gemessen, mit einem vollständigen Abruf davor:
+
+```
+vorher : OK=1;SOC=73.5;BATP=0;TEMP=24.1;GRIDP=-120;FW=148
+nachher: OK=1;SOC=73.5;BATP=-820;TEMP=0.0;GRIDP=-120;FW=148
+```
+
+Mit eingeschalteten Schutzschwellen sperrte die 0 anschließend jeden
+Ladebefehl (`TEMP_MIN`, Vorgabe `temp_min = 0`) — bei `OK=1`, also in Loxone
+unsichtbar. Jetzt gilt je Feld: kein frischer Messwert, alter Wert bleibt
+stehen, und die Schutzschwellen urteilen nur über Felder, die in diesem
+Durchgang wirklich gemessen wurden.
+
+**2. Der unangemeldete Endpunkt schrieb.** Ein einziges `?status` ohne Token
+stellte die Konfiguration samt Aktionstoken aus der Zweitschrift wieder her
+(gemessen, mit Gegenprobe ohne Zweitschrift). Der Endpunkt legt jetzt nichts
+mehr an; die Selbstheilung gehört hinter die Anmeldung.
+
+**3. Beim Zurückspielen einer Sicherung wurden nur die Schlüssel geprüft, nie
+die Werte.** Sechs von sechs vergifteten Werten gingen unverändert in die
+Konfiguration. Zwei wirkten: ein Aktionstoken als Liste ließ `?token=Array`
+schalten (beide PHP-Fassungen gemessen), und ein Themen-Präfix mit
+Zeilenumbruch schleuste eine zweite `publish`-Zeile in jedes Datagramm an das
+MQTT-Gateway. Der Weg liegt jetzt in der Bibliothek
+(`marstek_sicherung_lesen()`), prüft jeden Wert gegen dieselbe Positivliste
+wie das Formular und schreibt bei einem Durchfall **gar nichts**.
+
+**4. `?debug=1` war ohne Token erreichbar** und umging den Zwischenspeicher:
+gemessen 30 Sekunden je Aufruf gegen ein stummes Gerät, dreimal
+hintereinander, während `?status` warm 0 Sekunden brauchte. Genau mit dieser
+Begründung ist `?diag` seit 1.1.0 tokenpflichtig; `?debug` steht jetzt mit in
+der Liste, und `?debug=0` schaltet nichts mehr ein.
+
+### Was sich sonst geändert hat
+
+- **Ein Cron-Durchgang dauerte neun Sekunden**, auch wenn das Gerät sofort
+  antwortete: die Horchschleife wartete immer die volle Zeitgrenze ab. Damit
+  war auch das Feld `MS` keine Antwortzeit, sondern eine Konstante (gemessen
+  3030 ms bei 3 s Zeitgrenze an einem Gerät auf `127.0.0.1`).
+- **Der Doppelt-senden-Filter der Energiezähler griff nicht**, weil das Feld
+  `ALTER` in seine Signatur einging: zehn Themen je Minute statt nur bei
+  Änderung (28 → 12 Datagramme statt 28 → 2; per Rückbau geeicht).
+- **`bin/cron.php` hatte keinen Rückfall für die installierte Lage.** Blieb
+  der Platzhalter unersetzt, fand es die Bibliothek nicht — `bin/healthcheck`
+  daneben schon.
+- **Die Tagesbilanz wurde bei jedem Durchgang neu geschrieben**, auch ohne
+  Änderung, und zwar auch bei jedem `?energy`-Abruf aus Loxone.
+- **Der Auto-Fallback meldete jede Minute weiter**, wenn er nicht durchkam.
+- **Eine Anlage aus der Ein-Geräte-Zeit konnte ihre eigene Sicherung nicht
+  zurückspielen** (`ip`, `port`, `pmax_*` blieben nach der Migration stehen).
+- **Ließ sich das Formularmerkmal nicht ablegen**, wies die Oberfläche jedes
+  Formular ab, ohne dass irgendwo stand, warum.
+- Die Konfigurationsdatei bekommt **0600** wie alle ihre Kopien.
+- Die Baustein-Liste: `#27` verlangte drei Eingänge an einem UND (aufgelöst in
+  eine Kaskade), und die Soll/Ist-Meldung `#44` bekommt eine Schwelle davor —
+  ohne sie meldete sie im Auto-Modus dauerhaft eine Störung, weil
+  `MARSTEK_STATUS_SOLL` dann den Fehlwert `-32768` trägt. Zwei
+  Vergleicher-Parameter trugen denselben Text, obwohl sie das Gegenteil
+  bedeuten.
+- Der Reiter „Einbindung in Loxone" hat **sieben feste Schritte**; bis 1.1.4
+  begann die Zählung bei „Schritt 2", und die Zahl der Kästen hing an der
+  Gerätezahl.
+- Der `Comment` der erzeugten Vorlagen wird in Loxone Config zum Kachelnamen
+  und ist jetzt kurz (bis 1.1.4 bis zu 112 Zeichen); die Nachkommastellen
+  kommen aus dem Zahlenformat des Feldes.
+- Der Reiter Test misst **wirklich**, ob Themenliste und Sendecode
+  übereinstimmen — bis 1.1.4 verglich die Zeile zwei Rechnungen aus derselben
+  Quelle und konnte gar nicht rot werden. Dazu drei neue Zeilen: das
+  serverseitige `sm-active`, der eigene Cron-Eintrag und die
+  Rückwärtsverweise der Baustein-Liste.
+- `php bin/cron.php --selbsttest` prüft den Rechenkern (229 Fälle) und weist
+  unbekannte Schalter ab, statt einen vollen Durchgang zu starten.
+- `cron.err` wird gekappt, und beide Protokolle werden vom Ende gelesen.
+
+## Neu in 1.1.4
+
+Der Reiter MQTT unterscheidet die beiden Gateway-Fassungen. Ist
+`Mqtt.Gatewayversion` in `config/system/general.json` nicht lesbar, stehen
+beide Fälle nebeneinander, mit einem eigenen Satz dazu — vorher galt
+stillschweigend der Wortlaut für Fassung 1, und der schickt jeden
+V2-Anwender zu einem Eingabefeld, das der Kern dort abschaltet.
+
 ## Neu in 1.1.0
 
 Diese Fassung behebt zweiundzwanzig Befunde aus einer zeilenweisen Durchsicht
@@ -118,8 +210,11 @@ Rundruf und Gerätesuche aus, und der Reiter Test sagt das ausdrücklich.
 - Optionales MQTT-Publish über das LoxBerry MQTT Gateway — Status,
   Energiezähler (`energie_*`), Spotpreis-Ränge (`rang_*`) und der Takt
 - Anschluss an den LoxBerry-Healthcheck und an das Benachrichtigungszentrum
-- Konfiguration und Log überleben Plugin-Updates und sogar eine Neuinstallation
-  (Sicherungskopie außerhalb des Plugin-Ordners)
+- Die **Konfiguration** übersteht Plugin-Updates und eine Neuinstallation
+  (Zweitschrift außerhalb des Plugin-Ordners, `postinstall.sh` holt sie
+  zurück). Das **Protokoll** übersteht ein Update — es wird von
+  `preupgrade.sh` gesichert und von `postupgrade.sh` zurückgespielt —, eine
+  Neuinstallation aber nicht; bis 1.1.4 stand hier beides in einem Satz
 
 ## Voraussetzungen
 
@@ -146,6 +241,7 @@ Rundruf und Gerätesuche aus, und der Reiter Test sagt das ausdrücklich.
 | `?mode=auto\|ai&token=T[&dev=N][&dry=1]` | Regie an den Speicher zurückgeben |
 | `?selftest=1&token=T` | prüft nur das Token, ohne den Speicher anzufassen |
 | `?diag=1&token=T` | Diagnose: Unicast, Rundruf, Modbus einzeln |
+| `?debug=1&token=T` | Rohdaten. Tokenpflichtig seit 1.1.5: der Schalter umgeht den Zwischenspeicher, gemessen 30 s je Aufruf gegen ein stummes Gerät |
 
 Alle Ausgaben sind abwärtskompatibel zu Ein-Geräte-Installationen — ohne
 `&dev=` wird immer Gerät 1 angesprochen. **Welche Felder ein Satz trägt, steht
@@ -167,10 +263,21 @@ Reitern: Statuszeile und Verlaufsgrafik je Gerät.
 
 ## Datenschutz
 
-Es sind **keine persönlichen Daten** im Plugin enthalten — IP-Adressen und alle
-Einstellungen liegen ausschließlich in der lokalen Konfiguration
-(`config/plugins/marstekvenus/marstek.json`). Externe Verbindungen gibt es nur
-zur aWATTar-Preis-API (ohne Kennung).
+Es sind **keine persönlichen Daten** im Plugin enthalten. IP-Adressen,
+Einstellungen und das Aktionstoken bleiben auf dem LoxBerry; externe
+Verbindungen gibt es nur zur aWATTar-Preis-API (ohne Kennung).
+
+Sie liegen dabei an **drei** Orten, alle mit Rechten 0600 — das ist Absicht
+und in 1.1.5 richtiggestellt, denn bis dahin stand hier „ausschließlich in
+der lokalen Konfiguration":
+
+| Ort | wozu |
+|---|---|
+| `config/plugins/marstekvenus/marstek.json` | die Konfiguration selbst |
+| `config/plugins/marstekvenus.backup.json` | die Zweitschrift; sie liegt **neben** dem Ordner, den der Installer bei jedem Update abräumt |
+| `data/plugins/marstekvenus.upgrade_sicherung/` | nur **während** eines Updates; `postupgrade.sh` entfernt sie danach |
+
+`uninstall/uninstall` räumt alle drei weg und sagt das auch.
 
 ## Ältere Fassungen
 
@@ -198,9 +305,10 @@ unvollständige Lesevorgänge im Testlauf, danach 0), zwei fest verdrahtete
 `/tmp`-Pfade, und `$q` wurde benutzt, bevor es gesetzt war.
 
 ## Fassung 1.1.3 — der Stat-Zwischenspeicher
-Die Protokollkappung (262 144 Byte bzw. 512 000 Byte) stand in
-`webfrontend/html/marstek_lib.php:398`,
-`webfrontend/html/marstek_lib.php:504`. PHP merkt sich aber die Antworten
+Die Protokollkappung stand in `webfrontend/html/marstek_lib.php:398`
+(512 000 Byte, Protokoll) und `webfrontend/html/marstek_lib.php:504`
+(262 144 Byte, Mitschnitt) — in 1.1.4 waren die beiden Zahlen in diesem
+Satz vertauscht. PHP merkt sich aber die Antworten
 von `stat()`: innerhalb **eines** Prozesses sieht `filesize()` die erste
 Größe und danach nie wieder eine neue — `file_put_contents(…, FILE_APPEND)`
 macht den Eintrag nicht ungültig. Die Kappung fällt dann still aus.
