@@ -33,7 +33,17 @@ $GLOBALS['marstek_last_ms'] = 0; // Antwortzeit des letzten RPC in Millisekunden
  * 180 s ist der Wert, mit dem auch der empfohlene Baustein #40 arbeitet.
  */
 if (!defined('MARSTEK_TAKT_SCHRANKE')) {
-    define('MARSTEK_TAKT_SCHRANKE', 180);
+    /**
+ * Ab wie vielen Vollzyklen der Wirkungsgrad ueberhaupt einer ist.
+ *
+ * Zehn ist keine gemessene Grenze, sondern eine bewusst gesetzte: bei zehn
+ * Zyklen ist rund das Zehnfache der Kapazitaet durch den Speicher gelaufen,
+ * und was gerade darin steht, verzerrt den Quotienten nicht mehr wesentlich.
+ * Wer sie aendert, aendert sie hier - EINE Quelle, wie bei MARSTEK_TAKT_SCHRANKE.
+ */
+define('MARSTEK_EFF_ZYKLEN', 10);
+
+define('MARSTEK_TAKT_SCHRANKE', 180);
 }
 
 
@@ -1400,7 +1410,7 @@ function marstek_melden($schwere, $text) {
 function marstek_befund() {
     $zustand = marstek_config_zustand();
     if ($zustand === 'kaputt') {
-        return array('schwere' => 3, 'text' => 'Die Konfigurationsdatei ist beschaedigt und '
+        return array('schwere' => 3, 'text' => 'Die Konfigurationsdatei ist beschädigt und '
             . 'konnte nicht gelesen werden. Die Zweitschrift liegt daneben.');
     }
     if ($zustand === 'fehlt' || $zustand === 'leer') {
@@ -1936,7 +1946,23 @@ function marstek_energy_ermitteln($dev = 1, $force = false) {
         'ts' => time(),
         'mess' => time(),
     );
-    $out['eff'] = $out['chgt'] > 0 ? round($out['dist'] / $out['chgt'] * 100, 1) : 0;
+    // BERICHTIGT 06.09.2026 - "Wirkungsgrad gesamt" war keiner.
+    //
+    // Gerechnet wird abgegeben durch geladen, beides Lebensdauerzaehler. Am
+    // 05.09.2026 an der Anlage gemessen: CHGT=35,34 DIST=7,80 CYC=4, macht
+    // EFF=22,1. In Loxone stand also die Kachel Wirkungsgrad gesamt auf
+    // 22,1 Prozent, waehrend eine LiFePO4 bei rund 90 % liegt. Die Zahl war
+    // nicht
+    // ungenau - sie beantwortete eine andere Frage: nach vier Zyklen steckt
+    // der groesste Teil der geladenen Energie noch im Speicher.
+    //
+    // Der Quotient naehert sich dem Wirkungsgrad erst, wenn der Durchsatz die
+    // gespeicherte Menge deutlich uebersteigt. Deshalb die Schwelle. Bis
+    // dahin der Fehlwert -1, wie bei jedem anderen Feld, das noch nichts
+    // sagen kann - lieber "weiss ich nicht" als eine falsche Zahl.
+    $out['eff'] = ($out['cyc'] >= MARSTEK_EFF_ZYKLEN && $out['chgt'] > 0)
+        ? round($out['dist'] / $out['chgt'] * 100, 1)
+        : -1;
     marstek_write_json($cache, $out);
     marstek_log_if_changed('energy_dev' . (int) $dev,
         'OK CHGD=' . $out['chgd'] . ' DISD=' . $out['disd'] . ' CYC=' . $out['cyc'], 'ok=1');
@@ -2391,6 +2417,58 @@ function marstek_mqtt_udpport()
 }
 
 /**
+ * Wird dieses Thema mit Retain gesendet?  NEU 06.09.2026.
+ *
+ * Der Hausstandard vom 03.09.2026 (Regeln/07, Abschnitt 3) teilt in drei:
+ * ZUSTAENDE mit Retain, damit Loxone nach einem Neustart des Miniservers oder
+ * des Gateways sofort den Stand hat; MESSWERTE MIT ZEITBEZUG ohne, damit nach
+ * einem Ausfall kein alter Wert als aktuell erscheint; das LEBENSZEICHEN nie,
+ * denn retained zeigt es immer "lebt".
+ *
+ * Die Entscheidung steht je Feld in marstek_felder() - eine Quelle, dieselbe
+ * wie fuer Einheit, Zahlenformat und Kachelname. Wer ein Feld hinzufuegt, muss
+ * sich entscheiden; marstek_selbsttest() weist eine Tabelle ohne 'retain' ab.
+ *
+ * WARUM DAS UEBERHAUPT GEHT: bis 1.1.6 schrieb das Plugin an dieser Stelle
+ * immer 'publish '. Am laufenden Gateway gemessen (05.09.2026): unter
+ * marstek/# lag NICHTS retained, obwohl gesendet wurde. Der UDP-Weg kann es
+ * aber - sbin/mqttgateway.pl:227 fuehrt "retain my/topic data" auf, :354
+ * ruft dafuer $mqtt->retain(). Mit zwei Beweisdatagrammen nachgemessen: das
+ * mit 'publish' blieb fluechtig, das mit 'retain' lag im Broker.
+ *
+ * Zusammen mit der Aenderungssperre (marstek_mqtt_senden_bei_aenderung) war
+ * das eine Luecke: was sich selten aendert, geht selten hinaus - und war nach
+ * einem Neustart beliebig lange gar nicht da. Im Mitschnitt ueber 150 s ging
+ * rang_* kein einziges Mal hinaus.
+ *
+ * $schluessel ist das Thema OHNE Praefix, also 'soc', 'energie_chgt',
+ * 'rang_curp', 'ts', 'takt_zaehler'.
+ */
+function marstek_mqtt_retain($schluessel)
+{
+    // Das Lebenszeichen und die Zeitstempel: nie. Sie stehen in keiner
+    // Feldtabelle, deshalb hier - und deshalb zuerst.
+    if ($schluessel === 'ts' || strpos($schluessel, 'takt_') === 0) {
+        return false;
+    }
+    if (strpos($schluessel, 'energie_') === 0) {
+        $satz = 'energy'; $feld = substr($schluessel, 8);
+    } elseif (strpos($schluessel, 'rang_') === 0) {
+        $satz = 'ranks';  $feld = substr($schluessel, 5);
+    } else {
+        $satz = 'status'; $feld = $schluessel;
+    }
+    $felder = marstek_felder($satz);
+    $feld = strtoupper($feld);
+    // Unbekanntes Thema: nicht retained. Ein fluechtiger Wert ist der
+    // harmlosere Fehler - ein retained Wert bliebe fuer immer stehen.
+    if (!isset($felder[$feld]) || !isset($felder[$feld]['retain'])) {
+        return false;
+    }
+    return !empty($felder[$feld]['retain']);
+}
+
+/**
  * Themen unter einem Praefix senden - gemeinsamer Unterbau aller
  * Veroeffentlichungen (Status, Energiezaehler, Spotpreis-Raenge, Takt).
  *
@@ -2408,7 +2486,8 @@ function marstek_mqtt_senden(array $werte, $prefix)
         return false;
     }
     foreach ($werte as $k => $v) {
-        @fwrite($s, 'publish ' . $prefix . '/' . $k . ' ' . marstek_mqtt_wert_saeubern($v));
+        @fwrite($s, (marstek_mqtt_retain($k) ? 'retain ' : 'publish ')
+                  . $prefix . '/' . $k . ' ' . marstek_mqtt_wert_saeubern($v));
     }
     fclose($s);
     return true;
@@ -2710,63 +2789,63 @@ function marstek_e($s) {
 function marstek_felder($satz) {
     if ($satz === 'energy') {
         return array(
-            'OK'    => array('quelle' => 'ok',   'analog' => 0, 'min' => 0, 'max' => 1,       'einheit' => '',    'form' => '%d',   'kurz' => 'Zaehler gueltig', 'text' => '1 = Werte gueltig'),
-            'CHGT'  => array('quelle' => 'chgt', 'analog' => 1, 'min' => 0, 'max' => 1000000, 'einheit' => 'kWh', 'form' => '%.2f', 'kurz' => 'geladen gesamt', 'text' => 'geladen gesamt'),
-            'DIST'  => array('quelle' => 'dist', 'analog' => 1, 'min' => 0, 'max' => 1000000, 'einheit' => 'kWh', 'form' => '%.2f', 'kurz' => 'abgegeben gesamt', 'text' => 'abgegeben gesamt'),
-            'CHGD'  => array('quelle' => 'chgd', 'analog' => 1, 'min' => 0, 'max' => 1000,    'einheit' => 'kWh', 'form' => '%.2f', 'kurz' => 'geladen heute', 'text' => 'geladen heute'),
-            'DISD'  => array('quelle' => 'disd', 'analog' => 1, 'min' => 0, 'max' => 1000,    'einheit' => 'kWh', 'form' => '%.2f', 'kurz' => 'abgegeben heute', 'text' => 'abgegeben heute'),
-            'CHGM'  => array('quelle' => 'chgm', 'analog' => 1, 'min' => 0, 'max' => 100000,  'einheit' => 'kWh', 'form' => '%.2f', 'kurz' => 'geladen diesen Monat', 'text' => 'geladen diesen Monat'),
-            'DISM'  => array('quelle' => 'dism', 'analog' => 1, 'min' => 0, 'max' => 100000,  'einheit' => 'kWh', 'form' => '%.2f', 'kurz' => 'abgegeben diesen Monat', 'text' => 'abgegeben diesen Monat'),
-            'CYC'   => array('quelle' => 'cyc',  'analog' => 1, 'min' => 0, 'max' => 100000,  'einheit' => '',    'form' => '%d',   'kurz' => 'Vollzyklen', 'text' => 'Vollzyklen'),
-            'EFF'   => array('quelle' => 'eff',  'analog' => 1, 'min' => 0, 'max' => 100,     'einheit' => '%',   'form' => '%.1f', 'kurz' => 'Wirkungsgrad', 'text' => 'Wirkungsgrad gesamt'),
-            'ALTER' => array('quelle' => '_alter', 'analog' => 1, 'min' => -1, 'max' => 86400, 'einheit' => 's',  'form' => '%d',   'kurz' => 'Alter der Zaehlerstaende', 'text' => 'Alter der Zaehlerstaende in Sekunden; -1 = noch nie gemessen'),
+            'OK'    => array('quelle' => 'ok',   'analog' => 0, 'min' => 0, 'max' => 1,       'einheit' => '',    'form' => '%d',   'retain' => 1, 'kurz' => 'Zähler gültig', 'text' => '1 = Werte gültig'),
+            'CHGT'  => array('quelle' => 'chgt', 'analog' => 1, 'min' => 0, 'max' => 1000000, 'einheit' => 'kWh', 'form' => '%.2f', 'retain' => 1, 'kurz' => 'geladen gesamt', 'text' => 'geladen gesamt'),
+            'DIST'  => array('quelle' => 'dist', 'analog' => 1, 'min' => 0, 'max' => 1000000, 'einheit' => 'kWh', 'form' => '%.2f', 'retain' => 1, 'kurz' => 'abgegeben gesamt', 'text' => 'abgegeben gesamt'),
+            'CHGD'  => array('quelle' => 'chgd', 'analog' => 1, 'min' => 0, 'max' => 1000,    'einheit' => 'kWh', 'form' => '%.2f', 'retain' => 1, 'kurz' => 'geladen heute', 'text' => 'geladen heute'),
+            'DISD'  => array('quelle' => 'disd', 'analog' => 1, 'min' => 0, 'max' => 1000,    'einheit' => 'kWh', 'form' => '%.2f', 'retain' => 1, 'kurz' => 'abgegeben heute', 'text' => 'abgegeben heute'),
+            'CHGM'  => array('quelle' => 'chgm', 'analog' => 1, 'min' => 0, 'max' => 100000,  'einheit' => 'kWh', 'form' => '%.2f', 'retain' => 1, 'kurz' => 'geladen diesen Monat', 'text' => 'geladen diesen Monat'),
+            'DISM'  => array('quelle' => 'dism', 'analog' => 1, 'min' => 0, 'max' => 100000,  'einheit' => 'kWh', 'form' => '%.2f', 'retain' => 1, 'kurz' => 'abgegeben diesen Monat', 'text' => 'abgegeben diesen Monat'),
+            'CYC'   => array('quelle' => 'cyc',  'analog' => 1, 'min' => 0, 'max' => 100000,  'einheit' => '',    'form' => '%d',   'retain' => 1, 'kurz' => 'Vollzyklen', 'text' => 'Vollzyklen'),
+            'EFF'   => array('quelle' => 'eff',  'analog' => 1, 'min' => -1, 'max' => 100,     'einheit' => '%',   'form' => '%.1f', 'retain' => 1, 'kurz' => 'Wirkungsgrad', 'text' => 'Wirkungsgrad gesamt (abgegeben je geladener kWh); -1 = noch zu wenige Zyklen'),
+            'ALTER' => array('quelle' => '_alter', 'analog' => 1, 'min' => -1, 'max' => 86400, 'einheit' => 's',  'form' => '%d',   'retain' => 0, 'kurz' => 'Alter der Zählerstände', 'text' => 'Alter der Zählerstände in Sekunden; -1 = noch nie gemessen'),
         );
     }
     if ($satz === 'ranks') {
         return array(
-            'OK'      => array('quelle' => 'ok',      'analog' => 0, 'min' => 0,  'max' => 1,  'einheit' => '',        'form' => '%d',   'kurz' => 'Preisdaten gueltig', 'text' => '1 = Preisdaten gueltig'),
-            'N'       => array('quelle' => 'n',       'analog' => 1, 'min' => 0,  'max' => 48, 'einheit' => '',        'form' => '%d',   'kurz' => 'bewertete Stunden', 'text' => 'Anzahl bewerteter Stunden im Fenster'),
-            'RANK'    => array('quelle' => 'rank',    'analog' => 1, 'min' => 0,  'max' => 99, 'einheit' => '',        'form' => '%d',   'kurz' => 'Rang guenstig', 'text' => 'Rang der laufenden Stunde im 24-Stunden-Fenster (1 = guenstigste); 99 = keine Daten'),
-            'RANKD'   => array('quelle' => 'rankd',   'analog' => 1, 'min' => 0,  'max' => 99, 'einheit' => '',        'form' => '%d',   'kurz' => 'Rang teuer', 'text' => 'derselbe Rang absteigend (1 = teuerste Stunde); 99 = keine Daten'),
-            'CURP'    => array('quelle' => 'curp',    'analog' => 1, 'min' => -1, 'max' => 10, 'einheit' => 'EUR/kWh', 'form' => '%.5f', 'kurz' => 'Preis dieser Stunde', 'text' => 'Preis der laufenden Stunde inkl. Aufschlag und USt'),
-            'NEG'     => array('quelle' => 'neg',     'analog' => 0, 'min' => 0,  'max' => 1,  'einheit' => '',        'form' => '%d',   'kurz' => 'Preis negativ', 'text' => '1 = der Preis der laufenden Stunde ist negativ'),
-            'MINP'    => array('quelle' => 'minp',    'analog' => 1, 'min' => -1, 'max' => 10, 'einheit' => 'EUR/kWh', 'form' => '%.5f', 'kurz' => 'guenstigste Stunde', 'text' => 'guenstigste Stunde im Fenster'),
-            'MAXP'    => array('quelle' => 'maxp',    'analog' => 1, 'min' => -1, 'max' => 10, 'einheit' => 'EUR/kWh', 'form' => '%.5f', 'kurz' => 'teuerste Stunde', 'text' => 'teuerste Stunde im Fenster'),
-            'SPREAD'  => array('quelle' => 'spread',  'analog' => 1, 'min' => 0,  'max' => 10, 'einheit' => 'EUR/kWh', 'form' => '%.5f', 'kurz' => 'Preisspanne', 'text' => 'Abstand teuerste zu guenstigster Stunde - lohnt sich der Umschlag heute?'),
-            'NEXTP'   => array('quelle' => 'nextp',   'analog' => 1, 'min' => -1, 'max' => 10, 'einheit' => 'EUR/kWh', 'form' => '%.5f', 'kurz' => 'Preis naechste Stunde', 'text' => 'Preis der naechsten Stunde'),
-            'HBIS'    => array('quelle' => 'hbis',    'analog' => 1, 'min' => -1, 'max' => 24, 'einheit' => 'h',       'form' => '%d',   'kurz' => 'Stunden bis guenstigste', 'text' => 'Stunden bis zur guenstigsten Stunde (0 = jetzt); -1 = unbekannt'),
-            'HBISMAX' => array('quelle' => 'hbismax', 'analog' => 1, 'min' => -1, 'max' => 24, 'einheit' => 'h',       'form' => '%d',   'kurz' => 'Stunden bis teuerste', 'text' => 'Stunden bis zur teuersten Stunde (0 = jetzt); -1 = unbekannt'),
-            'ERRC'    => array('quelle' => 'errc',    'analog' => 1, 'min' => 0,  'max' => 9,  'einheit' => '',        'form' => '%d',   'kurz' => 'Grund fuer OK=0', 'text' => 'Grund fuer OK=0: 0 in Ordnung, 1 keine Preise geholt, 2 Fenster zu kurz, 3 keine Preise fuer die laufende Stunde'),
+            'OK'      => array('quelle' => 'ok',      'analog' => 0, 'min' => 0,  'max' => 1,  'einheit' => '',        'form' => '%d',   'retain' => 1, 'kurz' => 'Preisdaten gültig', 'text' => '1 = Preisdaten gültig'),
+            'N'       => array('quelle' => 'n',       'analog' => 1, 'min' => 0,  'max' => 48, 'einheit' => '',        'form' => '%d',   'retain' => 1, 'kurz' => 'bewertete Stunden', 'text' => 'Anzahl bewerteter Stunden im Fenster'),
+            'RANK'    => array('quelle' => 'rank',    'analog' => 1, 'min' => 0,  'max' => 99, 'einheit' => '',        'form' => '%d',   'retain' => 0, 'kurz' => 'Rang günstig', 'text' => 'Rang der laufenden Stunde im 24-Stunden-Fenster (1 = günstigste); 99 = keine Daten'),
+            'RANKD'   => array('quelle' => 'rankd',   'analog' => 1, 'min' => 0,  'max' => 99, 'einheit' => '',        'form' => '%d',   'retain' => 0, 'kurz' => 'Rang teuer', 'text' => 'derselbe Rang absteigend (1 = teuerste Stunde); 99 = keine Daten'),
+            'CURP'    => array('quelle' => 'curp',    'analog' => 1, 'min' => -1, 'max' => 10, 'einheit' => 'EUR/kWh', 'form' => '%.5f', 'retain' => 0, 'kurz' => 'Preis dieser Stunde', 'text' => 'Preis der laufenden Stunde inkl. Aufschlag und USt'),
+            'NEG'     => array('quelle' => 'neg',     'analog' => 0, 'min' => 0,  'max' => 1,  'einheit' => '',        'form' => '%d',   'retain' => 0, 'kurz' => 'Preis negativ', 'text' => '1 = der Preis der laufenden Stunde ist negativ'),
+            'MINP'    => array('quelle' => 'minp',    'analog' => 1, 'min' => -1, 'max' => 10, 'einheit' => 'EUR/kWh', 'form' => '%.5f', 'retain' => 0, 'kurz' => 'günstigste Stunde', 'text' => 'günstigste Stunde im Fenster'),
+            'MAXP'    => array('quelle' => 'maxp',    'analog' => 1, 'min' => -1, 'max' => 10, 'einheit' => 'EUR/kWh', 'form' => '%.5f', 'retain' => 0, 'kurz' => 'teuerste Stunde', 'text' => 'teuerste Stunde im Fenster'),
+            'SPREAD'  => array('quelle' => 'spread',  'analog' => 1, 'min' => 0,  'max' => 10, 'einheit' => 'EUR/kWh', 'form' => '%.5f', 'retain' => 0, 'kurz' => 'Preisspanne', 'text' => 'Abstand teuerste zu günstigster Stunde - lohnt sich der Umschlag heute?'),
+            'NEXTP'   => array('quelle' => 'nextp',   'analog' => 1, 'min' => -1, 'max' => 10, 'einheit' => 'EUR/kWh', 'form' => '%.5f', 'retain' => 0, 'kurz' => 'Preis nächste Stunde', 'text' => 'Preis der nächsten Stunde'),
+            'HBIS'    => array('quelle' => 'hbis',    'analog' => 1, 'min' => -1, 'max' => 24, 'einheit' => 'h',       'form' => '%d',   'retain' => 0, 'kurz' => 'Stunden bis günstigste', 'text' => 'Stunden bis zur günstigsten Stunde (0 = jetzt); -1 = unbekannt'),
+            'HBISMAX' => array('quelle' => 'hbismax', 'analog' => 1, 'min' => -1, 'max' => 24, 'einheit' => 'h',       'form' => '%d',   'retain' => 0, 'kurz' => 'Stunden bis teuerste', 'text' => 'Stunden bis zur teuersten Stunde (0 = jetzt); -1 = unbekannt'),
+            'ERRC'    => array('quelle' => 'errc',    'analog' => 1, 'min' => 0,  'max' => 9,  'einheit' => '',        'form' => '%d',   'retain' => 1, 'kurz' => 'Grund für OK=0', 'text' => 'Grund für OK=0: 0 in Ordnung, 1 keine Preise geholt, 2 Fenster zu kurz, 3 keine Preise für die laufende Stunde'),
         );
     }
     if ($satz === 'summe') {
         return array(
-            'OK'      => array('quelle' => 'ok',      'analog' => 0, 'min' => 0,      'max' => 1,     'einheit' => '',    'form' => '%d',   'kurz' => 'alle Speicher erreichbar', 'text' => '1 = ALLE Speicher haben geantwortet'),
-            'N'       => array('quelle' => 'n',       'analog' => 1, 'min' => 0,      'max' => 9,     'einheit' => '',    'form' => '%d',   'kurz' => 'Anzahl Speicher', 'text' => 'Anzahl eingetragener Speicher'),
-            'NOK'     => array('quelle' => 'nok',     'analog' => 1, 'min' => 0,      'max' => 9,     'einheit' => '',    'form' => '%d',   'kurz' => 'Speicher ohne Antwort', 'text' => 'Anzahl Speicher ohne Antwort'),
-            'SOC'     => array('quelle' => 'soc',     'analog' => 1, 'min' => -1,     'max' => 100,   'einheit' => '%',   'form' => '%.1f', 'kurz' => 'Ladezustand gewichtet', 'text' => 'nach Kapazitaet gewichteter Ladezustand; -1 = nicht bildbar'),
-            'KAPAZ'   => array('quelle' => 'kapaz',   'analog' => 1, 'min' => -1,     'max' => 1000,  'einheit' => 'kWh', 'form' => '%.2f', 'kurz' => 'Gesamtkapazitaet', 'text' => 'Gesamtkapazitaet; -1 = bei mindestens einem Speicher nicht eingetragen'),
-            'RESTKWH' => array('quelle' => 'restkwh', 'analog' => 1, 'min' => -1,     'max' => 1000,  'einheit' => 'kWh', 'form' => '%.2f', 'kurz' => 'gespeicherte Menge', 'text' => 'noch gespeicherte Menge; -1 = nicht bildbar'),
-            'BATP'    => array('quelle' => 'batp',    'analog' => 1, 'min' => -40000, 'max' => 40000, 'einheit' => 'W',   'form' => '%d',   'kurz' => 'Batterieleistung gesamt', 'text' => 'Summe der Batterieleistungen (+ laedt / - entlaedt)'),
-            'ALTER'   => array('quelle' => 'alter',   'analog' => 1, 'min' => -1,     'max' => 86400, 'einheit' => 's',   'form' => '%d',   'kurz' => 'Alter der Teilmessungen', 'text' => 'Alter der aeltesten Teilmessung; -1 = nicht bildbar'),
+            'OK'      => array('quelle' => 'ok',      'analog' => 0, 'min' => 0,      'max' => 1,     'einheit' => '',    'form' => '%d',   'retain' => 1, 'kurz' => 'alle Speicher erreichbar', 'text' => '1 = ALLE Speicher haben geantwortet'),
+            'N'       => array('quelle' => 'n',       'analog' => 1, 'min' => 0,      'max' => 9,     'einheit' => '',    'form' => '%d',   'retain' => 1, 'kurz' => 'Anzahl Speicher', 'text' => 'Anzahl eingetragener Speicher'),
+            'NOK'     => array('quelle' => 'nok',     'analog' => 1, 'min' => 0,      'max' => 9,     'einheit' => '',    'form' => '%d',   'retain' => 1, 'kurz' => 'Speicher ohne Antwort', 'text' => 'Anzahl Speicher ohne Antwort'),
+            'SOC'     => array('quelle' => 'soc',     'analog' => 1, 'min' => -1,     'max' => 100,   'einheit' => '%',   'form' => '%.1f', 'retain' => 1, 'kurz' => 'Ladezustand gewichtet', 'text' => 'nach Kapazität gewichteter Ladezustand; -1 = nicht bildbar'),
+            'KAPAZ'   => array('quelle' => 'kapaz',   'analog' => 1, 'min' => -1,     'max' => 1000,  'einheit' => 'kWh', 'form' => '%.2f', 'retain' => 1, 'kurz' => 'Gesamtkapazität', 'text' => 'Gesamtkapazität; -1 = bei mindestens einem Speicher nicht eingetragen'),
+            'RESTKWH' => array('quelle' => 'restkwh', 'analog' => 1, 'min' => -1,     'max' => 1000,  'einheit' => 'kWh', 'form' => '%.2f', 'retain' => 1, 'kurz' => 'gespeicherte Menge', 'text' => 'noch gespeicherte Menge; -1 = nicht bildbar'),
+            'BATP'    => array('quelle' => 'batp',    'analog' => 1, 'min' => -40000, 'max' => 40000, 'einheit' => 'W',   'form' => '%d',   'retain' => 0, 'kurz' => 'Batterieleistung gesamt', 'text' => 'Summe der Batterieleistungen (+ lädt / - entlädt)'),
+            'ALTER'   => array('quelle' => 'alter',   'analog' => 1, 'min' => -1,     'max' => 86400, 'einheit' => 's',   'form' => '%d',   'retain' => 0, 'kurz' => 'Alter der Teilmessungen', 'text' => 'Alter der ältesten Teilmessung; -1 = nicht bildbar'),
         );
     }
     return array(
-        'OK'        => array('quelle' => 'ok',    'analog' => 0, 'min' => 0,      'max' => 1,      'einheit' => '',   'form' => '%d',   'kurz' => 'Speicher erreichbar', 'text' => '1 = Speicher erreichbar'),
-        'SOC'       => array('quelle' => 'soc',   'analog' => 1, 'min' => 0,      'max' => 100,    'einheit' => '%',  'form' => '%.1f', 'kurz' => 'Ladezustand', 'text' => 'Ladezustand'),
-        'BATP'      => array('quelle' => 'batp',  'analog' => 1, 'min' => -10000, 'max' => 10000,  'einheit' => 'W',  'form' => '%d',   'kurz' => 'Batterieleistung', 'text' => 'Batterieleistung (+ laedt / - entlaedt)'),
-        'TEMP'      => array('quelle' => 'temp',  'analog' => 1, 'min' => -20,    'max' => 80,     'einheit' => '°C', 'form' => '%.1f', 'kurz' => 'Batterietemperatur', 'text' => 'Batterietemperatur'),
-        'GRIDP'     => array('quelle' => 'gridp', 'analog' => 1, 'min' => -20000, 'max' => 20000,  'einheit' => 'W',  'form' => '%d',   'kurz' => 'Netzleistung', 'text' => 'Netzleistung am Speicher'),
-        'FW'        => array('quelle' => 'fw',    'analog' => 1, 'min' => 0,      'max' => 100000, 'einheit' => '',   'form' => '%d',   'kurz' => 'Firmwarestand', 'text' => 'Firmwarestand des Geraets'),
+        'OK'        => array('quelle' => 'ok',    'analog' => 0, 'min' => 0,      'max' => 1,      'einheit' => '',   'form' => '%d',   'retain' => 1, 'kurz' => 'Speicher erreichbar', 'text' => '1 = Speicher erreichbar'),
+        'SOC'       => array('quelle' => 'soc',   'analog' => 1, 'min' => 0,      'max' => 100,    'einheit' => '%',  'form' => '%.1f', 'retain' => 1, 'kurz' => 'Ladezustand', 'text' => 'Ladezustand'),
+        'BATP'      => array('quelle' => 'batp',  'analog' => 1, 'min' => -10000, 'max' => 10000,  'einheit' => 'W',  'form' => '%d',   'retain' => 0, 'kurz' => 'Batterieleistung', 'text' => 'Batterieleistung (+ lädt / - entlädt)'),
+        'TEMP'      => array('quelle' => 'temp',  'analog' => 1, 'min' => -20,    'max' => 80,     'einheit' => '°C', 'form' => '%.1f', 'retain' => 0, 'kurz' => 'Batterietemperatur', 'text' => 'Batterietemperatur'),
+        'GRIDP'     => array('quelle' => 'gridp', 'analog' => 1, 'min' => -20000, 'max' => 20000,  'einheit' => 'W',  'form' => '%d',   'retain' => 0, 'kurz' => 'Netzleistung', 'text' => 'Netzleistung am Speicher'),
+        'FW'        => array('quelle' => 'fw',    'analog' => 1, 'min' => 0,      'max' => 100000, 'einheit' => '',   'form' => '%d',   'retain' => 1, 'kurz' => 'Firmwarestand', 'text' => 'Firmwarestand des Geräts'),
         // BERICHTIGT 24.08.2026: hiess "Betriebsmodus des Geraets" mit Bereich
         // 0..10 und ist in Wahrheit die Antwortzeit. Die eigene Ausfuhr aus
         // Loxone Config fuehrt dasselbe Feld mit 0..10000 und "ms".
-        'MS'        => array('quelle' => 'ms',    'analog' => 1, 'min' => 0,      'max' => 10000,  'einheit' => 'ms', 'form' => '%d',   'kurz' => 'Antwortzeit', 'text' => 'Antwortzeit des Geraets'),
-        'ALTER'     => array('quelle' => '_alter',     'analog' => 1, 'min' => -1,     'max' => 86400, 'einheit' => 's', 'form' => '%d', 'kurz' => 'Alter der Messung', 'text' => 'Alter der letzten echten Messung in Sekunden; -1 = noch nie gemessen'),
-        'ZAEHLER'   => array('quelle' => '_zaehler',   'analog' => 1, 'min' => -1,     'max' => 999,   'einheit' => '',  'form' => '%d', 'kurz' => 'Herzschlag des Takts', 'text' => 'Herzschlag des Minutentakts, zaehlt 0..999 um; -1 = der Takt laeuft nicht'),
-        'SOLL'      => array('quelle' => '_soll',      'analog' => 1, 'min' => -32768, 'max' => 10000, 'einheit' => 'W', 'form' => '%d', 'kurz' => 'angenommener Sollwert', 'text' => 'zuletzt vom Geraet ANGENOMMENER Sollwert (+ laden); -32768 = keiner'),
-        'SOLLALTER' => array('quelle' => '_sollalter', 'analog' => 1, 'min' => -1,     'max' => 86400, 'einheit' => 's', 'form' => '%d', 'kurz' => 'Alter des Sollwerts', 'text' => 'Sekunden seit dem letzten angenommenen Sollwert; -1 = keiner'),
-        'FBREST'    => array('quelle' => '_fbrest',    'analog' => 1, 'min' => -2,     'max' => 86400, 'einheit' => 's', 'form' => '%d', 'kurz' => 'Rest bis Auto-Fallback', 'text' => 'Sekunden bis zum Auto-Fallback; -1 = abgeschaltet, -2 = kein Passivbetrieb'),
+        'MS'        => array('quelle' => 'ms',    'analog' => 1, 'min' => 0,      'max' => 10000,  'einheit' => 'ms', 'form' => '%d',   'retain' => 0, 'kurz' => 'Antwortzeit', 'text' => 'Antwortzeit des Geräts'),
+        'ALTER'     => array('quelle' => '_alter',     'analog' => 1, 'min' => -1,     'max' => 86400, 'einheit' => 's', 'form' => '%d', 'retain' => 0, 'kurz' => 'Alter der Messung', 'text' => 'Alter der letzten echten Messung in Sekunden; -1 = noch nie gemessen'),
+        'ZAEHLER'   => array('quelle' => '_zaehler',   'analog' => 1, 'min' => -1,     'max' => 999,   'einheit' => '',  'form' => '%d', 'retain' => 0, 'kurz' => 'Herzschlag des Takts', 'text' => 'Herzschlag des Minutentakts, zählt 0..999 um; -1 = der Takt läuft nicht'),
+        'SOLL'      => array('quelle' => '_soll',      'analog' => 1, 'min' => -32768, 'max' => 10000, 'einheit' => 'W', 'form' => '%d', 'retain' => 1, 'kurz' => 'angenommener Sollwert', 'text' => 'zuletzt vom Gerät ANGENOMMENER Sollwert (+ laden); -32768 = keiner'),
+        'SOLLALTER' => array('quelle' => '_sollalter', 'analog' => 1, 'min' => -1,     'max' => 86400, 'einheit' => 's', 'form' => '%d', 'retain' => 0, 'kurz' => 'Alter des Sollwerts', 'text' => 'Sekunden seit dem letzten angenommenen Sollwert; -1 = keiner'),
+        'FBREST'    => array('quelle' => '_fbrest',    'analog' => 1, 'min' => -2,     'max' => 86400, 'einheit' => 's', 'form' => '%d', 'retain' => 0, 'kurz' => 'Rest bis Auto-Fallback', 'text' => 'Sekunden bis zum Auto-Fallback; -1 = abgeschaltet, -2 = kein Passivbetrieb'),
     );
 }
 
@@ -2922,7 +3001,27 @@ function marstek_vorlage($satz = 'status', $dev = 1) {
     $cmds = array();
     foreach (marstek_felder($satz) as $name => $f) {
         $cmds[] = array(
-            'title' => 'MARSTEK_' . strtoupper($satz) . '_' . $name . ($je_geraet && $dev > 1 ? '_' . $dev : ''),
+            // Der Title wird in Loxone Config zur BEZEICHNUNG.
+            //
+            // BERICHTIGT 06.09.2026. Bis 1.1.6 stand hier der technische
+            // Schluessel - MARSTEK_RANKS_HBIS, MARSTEK_STATUS_MS -, und der
+            // Anwender musste 43 Eingaenge von Hand umbenennen: genau die
+            // Arbeit, die die Vorlage ihm abnehmen soll. Es gab dafuer auch
+            // keinen Grund. Regeln/07 sagt es ausdruecklich:
+            // "Virtueller HTTP-Eingang: Zuordnung im Suchtext, Titel frei".
+            // Die Zuordnung leistet die
+            // Befehlserkennung ('check' weiter unten), der Titel ist davon
+            // unabhaengig. Der Zwang, den technischen Namen zu fuehren, gilt
+            // ausdruecklich nur fuer GATEWAY-Eingaenge; dort benennt das
+            // Gateway nach dem Thema, und wer den Titel verschoenert, bekommt
+            // beim naechsten Empfang einen zweiten Eingang.
+            //
+            // 'kurz' ist ueber alle vier Saetze eindeutig (43 Felder, 43
+            // verschiedene Werte, laengster 28 Zeichen - nachgemessen). Das
+            // Kuerzel "Marstek" davor haelt die Bezeichnung im ganzen
+            // Loxone-Projekt auseinander, so wie es die von Hand gepflegten
+            // Eingaenge dieser Anlage seit jeher mit "Speicher " tun.
+            'title' => 'Marstek ' . $f['kurz'] . ($je_geraet && $dev > 1 ? $gname : ''),
             // Der Comment wird in Loxone Config zum ANZEIGENAMEN der Kachel,
             // nicht zur Dokumentation. BERICHTIGT 04.09.2026: bis 1.1.4 stand
             // hier der ganze Erklaertext - gemessen bis 112 Zeichen, und die
@@ -2977,20 +3076,28 @@ function marstek_vo_vorlage($dev = 1) {
                          : ($dev > 1 ? ' ' . $dev : '');
     $crlf = "\r\n";
     $o = '<?xml version="1.0" encoding="utf-8"?>' . $crlf;
+    // Die Befehle tragen Schluessel, keine blanken Listenwerte: nur so sieht
+    // umschrift_pruefen.py ihren Text. Bis 1.1.6 standen hier vier
+    // Umschriften ("ueber", "enthaelt", "laedt", "entlaedt"), die in Loxone
+    // Config als Anzeige- und Befehlsname auf dem Bildschirm standen - und
+    // kein Werkzeug hat sie gefunden.
     $o .= '<VirtualOut HintText="" Title="' . marstek_x('Marstek steuern' . $gname) . '" Comment="'
-        . marstek_x('Steuerbefehle ueber das Plugin ' . $ordner . ' - enthaelt das Aktionstoken.')
+        . marstek_x('Steuerbefehle über das Plugin ' . $ordner . ' — enthält das Aktionstoken.')
         . '" Address="http://' . marstek_x($host) . '" CmdInit="" CloseAfterSend="true" CmdSep="">' . $crlf;
     $o .= "\t" . '<Info templateType="3" minVersion="17010727"/>' . $crlf;
     foreach (array(
-        array('Sollwert setzen (W, + laedt / - entlaedt)', '/marstek.php?p=<v>&t=240' . $q, true),
-        array('Handbetrieb: Modus Auto', '/marstek.php?mode=auto' . $q, false),
-        array('Handbetrieb: Modus AI', '/marstek.php?mode=ai' . $q, false),
+        array('title' => 'Sollwert setzen (W, + lädt / - entlädt)',
+              'adresse' => '/marstek.php?p=<v>&t=240' . $q, 'analog' => true),
+        array('title' => 'Handbetrieb: Modus Auto',
+              'adresse' => '/marstek.php?mode=auto' . $q, 'analog' => false),
+        array('title' => 'Handbetrieb: Modus AI',
+              'adresse' => '/marstek.php?mode=ai' . $q, 'analog' => false),
     ) as $c) {
-        $o .= "\t" . '<VirtualOutCmd Title="' . marstek_x($c[0]) . '" Comment="" CmdOnMethod="GET" CmdOffMethod="GET" ';
-        $o .= 'CmdOn="' . marstek_x('/plugins/' . $ordner . $c[1] . '&token=' . $tok) . '" ';
+        $o .= "\t" . '<VirtualOutCmd Title="' . marstek_x($c['title']) . '" Comment="" CmdOnMethod="GET" CmdOffMethod="GET" ';
+        $o .= 'CmdOn="' . marstek_x('/plugins/' . $ordner . $c['adresse'] . '&token=' . $tok) . '" ';
         $o .= 'CmdOnHTTP="" CmdOnPost="" CmdOff="" CmdOffHTTP="" CmdOffPost="" CmdAnswer="" ';
-        $o .= 'Analog="' . (!empty($c[2]) ? 'true' : 'false') . '" Repeat="0" RepeatRate="0" ';
-        if (!empty($c[2])) {
+        $o .= 'Analog="' . (!empty($c['analog']) ? 'true' : 'false') . '" Repeat="0" RepeatRate="0" ';
+        if (!empty($c['analog'])) {
             $o .= 'SourceValLow="0" DestValLow="0" SourceValHigh="10" DestValHigh="10" ';
         }
         $o .= 'HintText=""/>' . $crlf;
@@ -3090,6 +3197,12 @@ function marstek_selbsttest()
             // vierzig Zeichen ist es ein Satz, kein Name.
             $pruefe($satz . '.' . $name . ' Kurzform hoechstens 40 Zeichen',
                 strlen((string) $f['kurz']) <= 40, true);
+            // NEU 06.09.2026: ohne diese Zeile koennte ein neues Feld
+            // stillschweigend als "nicht retained" hinausgehen, weil
+            // marstek_mqtt_retain() im Zweifel false liefert. Wer ein Feld
+            // anlegt, soll sich entscheiden muessen.
+            $pruefe($satz . '.' . $name . ' Retain eingeteilt',
+                isset($f['retain']) && ($f['retain'] === 0 || $f['retain'] === 1), true);
             // Traegt MinVal jeden Fehlwert, den der Text nennt?
             if (preg_match_all('/(-\d+) = /', $f['text'], $m)) {
                 foreach ($m[1] as $fehlwert) {
@@ -3113,6 +3226,39 @@ function marstek_selbsttest()
     list($nur_liste, $nur_code) = marstek_themen_abgleich();
     $pruefe('Themen: in der Liste, aber nicht im Sendecode', $nur_liste, array());
     $pruefe('Themen: im Sendecode, aber nicht in der Liste', $nur_code, array());
+
+    /* --- Retain: die Einteilung des Hausstandards, in beide Richtungen ---
+     *
+     * Regeln/07, Abschnitt 3: Zustaende retained, Messwerte mit Zeitbezug
+     * nicht, das Lebenszeichen nie. Die Liste steht hier ein zweites Mal,
+     * getrennt von der Feldtabelle - eine Zeile, die dort versehentlich
+     * umspringt, faellt hier auf. */
+    foreach (array('ok', 'soc', 'fw', 'soll', 'energie_chgt', 'energie_cyc',
+                   'rang_ok', 'rang_n') as $t) {
+        $pruefe('Retain JA: ' . $t, marstek_mqtt_retain($t), true);
+    }
+    foreach (array('batp', 'temp', 'gridp', 'ms', 'alter', 'zaehler', 'sollalter',
+                   'fbrest', 'rang_curp', 'rang_rank', 'energie_alter',
+                   'ts', 'takt_zaehler', 'takt_ts', 'gibtsnicht') as $t) {
+        $pruefe('Retain NEIN: ' . $t, marstek_mqtt_retain($t), false);
+    }
+
+    /* --- Die Bezeichnung der Vorlagen ist lesbar und eindeutig ---
+     *
+     * Bis 1.1.6 trug sie den technischen Schluessel. Beides wird geprueft:
+     * kein Grossbuchstaben-Schluessel mehr, und ueber alle vier Saetze
+     * keine Doppelung - sonst stehen in Loxone Config zwei Eingaenge unter
+     * demselben Namen. */
+    $bez = array();
+    foreach (array('status', 'energy', 'ranks', 'summe') as $satz) {
+        foreach (marstek_felder($satz) as $name => $f) {
+            $pruefe($satz . '.' . $name . ' Bezeichnung nicht der Schluessel',
+                (bool) preg_match('/^MARSTEK_[A-Z]+_/', (string) $f['kurz']), false);
+            $bez[] = $f['kurz'];
+        }
+    }
+    $pruefe('Bezeichnungen ueber alle Saetze eindeutig',
+        count(array_unique($bez)), count($bez));
 
     /* --- 4. Der Abfragetakt: eine Quelle --- */
     foreach (array('status' => 60, 'summe' => 60, 'ranks' => 300, 'energy' => 300) as $s => $t) {

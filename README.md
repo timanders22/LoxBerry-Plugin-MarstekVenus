@@ -13,6 +13,69 @@ den Auto-Modus des Geräts zurück.
 
 Kompatibel mit LoxBerry 3.x und **LoxBerry 4** (reines PHP, läuft mit PHP 7.4 und 8.x).
 
+## Neu in 1.1.7
+
+Die erste Fassung dieser Linie, die **am Gerät** geprüft wurde. Fünf Befunde,
+alle aus der Messung an der laufenden Anlage vom 05.09.2026.
+
+**1. Das Plugin sendet jetzt Zustände mit Retain.** Bis 1.1.6 ging alles ohne;
+am laufenden Broker gemessen lag unter `marstek/#` **nichts** gespeichert,
+obwohl gesendet wurde. Nach einem Neustart des Miniservers oder des Gateways
+stand damit kein einziger Wert an. Zusammen mit der Änderungssperre aus 1.1.5
+war das eine echte Lücke: was sich selten ändert, geht selten hinaus — im
+Mitschnitt über 150 s ging `marstek/rang_*` kein einziges Mal hinaus und wäre
+nach einem Neustart beliebig lange gar nicht dagewesen.
+
+Der Hausstandard teilt in drei, und das Plugin folgt ihm jetzt je Thema:
+
+| Sorte | Retain | Beispiele |
+|---|---|---|
+| Zustände | ja | `ok`, `soll`, `fw`, `soc`, die kWh-Zähler, `cyc` |
+| Messwerte mit Zeitbezug | nein | `batp`, `temp`, `gridp`, `ms`, die Preise |
+| Lebenszeichen | nie | `takt_zaehler`, `takt_ts`, `ts`, `alter`, `fbrest` |
+
+Von 38 Themen sind 22 retained. Welches, steht jetzt in der Namenstabelle im
+Reiter MQTT. (Dass der Weg das überhaupt kann, ist gemessen: das
+LoxBerry-Gateway kennt neben `publish` auch `retain` auf demselben UDP-Tor.)
+
+**2. Die erzeugten Loxone-Vorlagen tragen lesbare Bezeichnungen.** Bis 1.1.6
+hieß ein Eingang in Loxone Config `MARSTEK_RANKS_HBIS` oder
+`MARSTEK_STATUS_MS` — 43 Stück, die der Anwender von Hand umbenennen musste.
+Jetzt steht dort „Marstek Stunden bis günstigste" und „Marstek Antwortzeit".
+Die Zuordnung leistet weiterhin die Befehlserkennung, nicht der Name; an den
+ankommenden Werten ändert sich nichts.
+
+**3. Vier Wörter in ASCII-Umschrift standen in Loxone Config auf dem
+Bildschirm** — „Steuerbefehle **ueber** das Plugin", „Sollwert setzen (W, +
+**laedt** / − **entlaedt**)". Sie sind berichtigt, zusammen mit 32 weiteren in
+den Feldtexten. Das Hauswerkzeug hat sie nicht gefunden, weil es nur die
+Sprachdateien liest; es sieht jetzt auch die Texte, aus denen die Vorlagen
+gebaut werden.
+
+**4. `EFF` hieß „Wirkungsgrad gesamt" und war keiner.** Gerechnet wird
+abgegeben durch geladen, beides Lebensdauerzähler. Gemessen am 05.09.2026:
+35,34 kWh geladen, 7,80 abgegeben, **4 Vollzyklen** — macht 22,1 %, während
+eine LiFePO4 bei rund 90 % liegt. Nach vier Zyklen steckt der größte Teil der
+geladenen Energie noch im Speicher; der Quotient beantwortete eine andere
+Frage. Der Wert wird jetzt erst ab zehn Vollzyklen gemeldet, davor der
+Fehlwert −1.
+
+**5. Der Rechenkern-Selbsttest** (`php bin/cron.php --selbsttest`) prüft
+340 statt 229 Fälle: die Retain-Einteilung in beide Richtungen, dass jedes
+Feld überhaupt eingeteilt ist, und dass keine zwei Felder dieselbe
+Bezeichnung tragen.
+
+### Am Gerät bestätigt
+
+Diese Fassung ist die erste, hinter der eine Messung an der laufenden Anlage
+steht. Bestätigt wurden dabei: der Rückfall auf die letzten Messwerte aus
+1.1.5 (im Protokoll: `OK=0 (keine Antwort) - letzte Messung 05.09. 21:06:08`),
+die echten Antwortzeiten (`ms` 64 und 102 statt der Zeitgrenze), der
+Doppelt-senden-Filter (Statusblock zweimal, Energieblock einmal, Ränge gar
+nicht in 150 s), die Rechte 0600 auf Konfiguration und Zweitschrift, der
+Herzschlag (5 Takte in 5 Minuten, kein ausgelassener Durchgang), und die
+Deutung der Modbus-Register 33000..33011 und 34002.
+
 ## Neu in 1.1.6
 
 **Auf Anlagen, die mit 1.0.4 oder früher begonnen haben, lief der

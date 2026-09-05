@@ -874,13 +874,17 @@ if ($mv_gwf >= 2) { ?>
 <div class="sm-hinweis"><?= marstek_t('MQTT.THEMEN_ERKLAERUNG') ?></div>
 <div class="sm-breit">
 <table class="sm-tbl">
-<tr><th style="width:38%;"><?= marstek_e(marstek_t('MQTT.SP_THEMA')) ?></th><th><?= marstek_e(marstek_t('MQTT.SP_BEDEUTUNG')) ?></th></tr>
-<?php foreach (marstek_mqtt_themen(true) as $thema => $bedeutung) { ?>
-<tr><td><span class="sm-mono"><?= marstek_e($mv_cfg['mqtt_topic']) ?>/<?= marstek_e($thema) ?></span></td><td><?= marstek_e($bedeutung) ?></td></tr>
+<tr><th style="width:34%;"><?= marstek_e(marstek_t('MQTT.SP_THEMA')) ?></th><th style="width:11%;"><?= marstek_e(marstek_t('MQTT.SP_RETAIN')) ?></th><th><?= marstek_e(marstek_t('MQTT.SP_BEDEUTUNG')) ?></th></tr>
+<?php $mv_ret = 0; foreach (marstek_mqtt_themen(true) as $thema => $bedeutung) {
+    $mv_r = marstek_mqtt_retain(preg_replace('/_\d+$/', '', $thema));
+    if ($mv_r) { $mv_ret++; } ?>
+<tr><td><span class="sm-mono"><?= marstek_e($mv_cfg['mqtt_topic']) ?>/<?= marstek_e($thema) ?></span></td><td><?= $mv_r ? marstek_e(marstek_t('MQTT.RETAIN_JA')) : marstek_e(marstek_t('MQTT.RETAIN_NEIN')) ?></td><td><?= marstek_e($bedeutung) ?></td></tr>
 <?php } ?>
 </table>
 </div>
-<div class="sm-hilfe"><?= marstek_e(sprintf(marstek_t('MQTT.THEMEN_ANZAHL'), count(marstek_mqtt_themen(true)))) ?></div>
+<div class="sm-hilfe"><?= marstek_e(sprintf(marstek_t('MQTT.THEMEN_ANZAHL'), count(marstek_mqtt_themen(true)))) ?>
+ <?= marstek_e(sprintf(marstek_t('MQTT.RETAIN_ANZAHL'), $mv_ret, count(marstek_mqtt_themen(true)) - $mv_ret)) ?></div>
+<div class="sm-hinweis"><?= marstek_t('MQTT.RETAIN_ERKLAERUNG') ?></div>
 <?php if (count($mv_devices) > 1) { ?>
 <div class="sm-hilfe"><?= marstek_e(sprintf(marstek_t('MQTT.MEHRERE_GERAETE'), $mv_cfg['mqtt_topic'], $mv_cfg['mqtt_topic'])) ?></div>
 <?php } ?>
