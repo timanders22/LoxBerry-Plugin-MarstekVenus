@@ -13,6 +13,24 @@ den Auto-Modus des Geräts zurück.
 
 Kompatibel mit LoxBerry 3.x und **LoxBerry 4** (reines PHP, läuft mit PHP 7.4 und 8.x).
 
+## Neu in 1.1.6
+
+**Auf Anlagen, die mit 1.0.4 oder früher begonnen haben, lief der
+minütliche Cron seit dem Update auf 1.0.5 nicht mehr.** Bis 1.0.4 lag
+`cron/cron.01min` als Verzeichnis im Archiv, und LoxBerry legte es als
+Verzeichnis `system/cron/cron.01min/marstekvenus/` an. Seit 1.0.5 ist es eine
+Datei — aber der LoxBerry-Installer räumt beim Update nur die Datei ab, nie ein
+Verzeichnis, und kopiert die neue Cron-Datei *hinein*. LoxBerry ruft jeden
+Eintrag im Cron-Ordner direkt auf; ein Verzeichnis scheitert still. Gemessen
+am 05.09.2026: kein `cron.err`, kein `herzschlag.json`, kein SOC-Verlauf, keine
+kWh-Zähler, kein Auto-Fallback — seit dem 23.07.2026, bei jeder Fassung
+dazwischen. `preupgrade.sh` räumt das Verzeichnis seit 1.1.6 vor dem Kopieren weg
+(`<OK>`-Zeile im Installationsprotokoll), und `postinstall.sh` misst nach der
+Installation nach, ob an dieser Stelle eine Datei liegt, und warnt sonst mit
+`<WARNING>` und dem Handgriff für root. Wer nach dem Update in
+`log/plugins/marstekvenus/` ein leeres `cron.err` und ein frisches
+`herzschlag.json` sieht, hat den Beleg.
+
 ## Neu in 1.1.5
 
 Diese Fassung behebt einunddreißig Befunde aus einer erneuten Durchsicht der
