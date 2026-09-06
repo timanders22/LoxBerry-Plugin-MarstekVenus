@@ -185,6 +185,10 @@ foreach (marstek_devices() as $n => $d) {
                             // Tagesbilanz fort und meldet per MQTT
     }
 }
+// Erst nachholen, dann den Auto-Fallback pruefen: ein nachgeholter Sollwert
+// setzt 'passive_dev<N>.json' neu, und daran rechnet der Fallback seine Frist.
+// Umgekehrt schoebe der Fallback seinen eigenen Wert dazwischen.
+marstek_set_nachholen();
 marstek_fallback_check();
 
 // Der Herzschlag steht am ENDE: er sagt "ein Durchgang ist vollstaendig

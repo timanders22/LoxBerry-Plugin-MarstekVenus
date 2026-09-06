@@ -13,6 +13,71 @@ den Auto-Modus des Geräts zurück.
 
 Kompatibel mit LoxBerry 3.x und **LoxBerry 4** (reines PHP, läuft mit PHP 7.4 und 8.x).
 
+## Neu in 1.1.9
+
+Beides folgt aus derselben Messung an der Anlage: **der Venus E antwortet in
+unregelmäßigen Abständen 20 bis 45 Sekunden lang niemandem** — nicht dem
+Plugin, nicht einer fremden Abfrage. Gemessen am 05./06.09.2026: 6,6 % der
+Zeit über zehn Nachtstunden (7 318 Abfragen), 17,5 % in einer Stichprobe am
+Mittag (280 Abfragen). Es liegt nicht am Plugin; Modbus, der Sollwert und der
+Doppelaufruf aus dem Minutentakt sind einzeln gemessen und einzeln ausgeschlossen.
+
+**Ein verlorener Sollwert wird jetzt nachgeholt.** Von 23 Sollwerten
+scheiterten 11, weil sie in so ein Fenster fielen. Bis 1.1.8 war ein solcher
+Wert verloren: Loxone erfuhr es (`OK=0`), musste ihn aber selbst noch einmal
+senden. Jetzt merkt sich das Plugin den Wert und schickt ihn im nächsten
+Durchgang erneut, bis zu fünf Minuten lang.
+
+**Ausdrücklich nicht nachgeholt wird** ein Wert, den die Steuerungs-Einstellung
+oder eine Schutzschwelle abgelehnt hat — ihn eine Minute später doch zu
+schicken hieße, den Schutz zu umgehen. Ebenso wird der offene Wert verworfen,
+sobald der Anwender die Betriebsart wechselt: sonst schöbe der nächste
+Durchgang den alten Wunsch hinterher und stellte das Gerät zurück, das gerade
+umgestellt wurde. Der Zeitstempel altert dabei mit — ein Wunsch aus einer
+vergangenen Lage kann nicht beliebig lange nachwirken.
+
+**Der Healthcheck schlägt keinen falschen Alarm mehr.** Bis 1.1.8 sah er nur
+auf den *letzten* Abruf. Fiel der in ein Schweigefenster, stand dort
+„Kein Speicher antwortet. Lokale API aktiviert? Gerät im Standby?" — obwohl
+das Gerät Sekunden später wieder auf jede Abfrage antwortete (am 06.09.2026
+gemessen: ein roter Lauf, unmittelbar danach zehn grüne). Maßgeblich ist jetzt,
+wie alt die letzte **echte** Messung ist. Bis drei Minuten bleibt es grün, mit
+einem Satz dazu, dass der letzte Abruf ins Leere ging; danach ist es eine
+Störung.
+
+Der Selbsttest prüft 350 statt 340 Fälle.
+
+## Neu in 1.1.8
+
+Drei Kleinigkeiten aus der Nachschau zu 1.1.7.
+
+**Die drei Steuerbefehle haben einen Anzeigenamen.** Bis 1.1.7 stand dort
+nichts, und Loxone Config zeigte ersatzweise die Bezeichnung — lesbar, aber
+ohne Hinweis auf das Gerät: „Handbetrieb: Modus Auto" stand in der
+Bausteinsuche, ohne dass jemand sah, dass der Speicher gemeint ist. Jetzt
+heißt die Kachel „Marstek Venus E Keller: Handbetrieb Auto". Die
+**Bezeichnungen und die Adressen sind unverändert** — ein geänderter Titel
+legte beim erneuten Import neue Ausgänge neben die alten.
+
+**`marstek/zaehler` und `marstek/takt_zaehler` sind auseinandergehalten.**
+Beide sahen wie das Lebenszeichen aus und unterschieden sich um eins: der
+Statusblock geht hinaus, bevor der Herzschlag am Ende des Durchgangs
+hochzählt (im Broker gemessen: `zaehler 202`, `takt_zaehler 203`, in derselben
+Sekunde). Die Namenstabelle sagt das jetzt, und sie nennt `takt_zaehler` als
+den maßgeblichen.
+
+**Ein Wort in den Eingangsvorlagen:** „ueberschreibt“ heißt jetzt
+„überschreibt“. Es steht im Anzeigenamen, den Loxone Config für die Vorlage
+zeigt, und war der Umschrift-Prüfung entgangen, weil der Text über drei
+Zeilen zusammengesetzt ist — das Muster sieht nur das erste Stück. Gefunden
+hat es `vorlagen_pruefen.py`, das die fertige Vorlage misst statt des
+Quelltextes.
+
+**Die Aussage über das Protokoll ist vollständig.** Sie stimmte — das
+Protokoll übersteht ein Update —, verschwieg aber, dass `log/plugins/` auf
+einer RAM-Platte liegt und LoxBerrys Protokollpflege dort regelmäßig aufräumt.
+Am 06.09.2026 gemessen, drei Stunden nach einem geglückten Update.
+
 ## Neu in 1.1.7
 
 Die erste Fassung dieser Linie, die **am Gerät** geprüft wurde. Fünf Befunde,
@@ -293,9 +358,16 @@ Rundruf und Gerätesuche aus, und der Reiter Test sagt das ausdrücklich.
 - Anschluss an den LoxBerry-Healthcheck und an das Benachrichtigungszentrum
 - Die **Konfiguration** übersteht Plugin-Updates und eine Neuinstallation
   (Zweitschrift außerhalb des Plugin-Ordners, `postinstall.sh` holt sie
-  zurück). Das **Protokoll** übersteht ein Update — es wird von
-  `preupgrade.sh` gesichert und von `postupgrade.sh` zurückgespielt —, eine
-  Neuinstallation aber nicht; bis 1.1.4 stand hier beides in einem Satz
+  zurück).
+- Das **Protokoll** übersteht ein Update — `preupgrade.sh` sichert es,
+  `postupgrade.sh` spielt es zurück —, eine Neuinstallation aber nicht.
+  **Dauerhaft ist es trotzdem nicht:** `log/plugins/` liegt auf einer
+  RAM-Platte (auf dem Prüfgerät `/dev/zram0`), und LoxBerrys eigene
+  Protokollpflege räumt dort auf. Am 06.09.2026 gemessen: drei Stunden nach
+  einem geglückten Update war `marstek.log` fort, im Systemprotokoll steht
+  dazu `Loxberry Log Maintenance cleaned up logfile 06.09.2026 06:13:06`. Wer
+  einen Verlauf über Tage braucht, nimmt die Tagesbilanz unter
+  `data/plugins/<ordner>.verlauf/` — die liegt auf der Speicherkarte
 
 ## Voraussetzungen
 

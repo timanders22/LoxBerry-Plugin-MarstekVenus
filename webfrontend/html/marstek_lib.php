@@ -43,6 +43,18 @@ if (!defined('MARSTEK_TAKT_SCHRANKE')) {
  */
 define('MARSTEK_EFF_ZYKLEN', 10);
 
+/**
+ * Wie lange ein gescheiterter Sollwert nachgeholt werden darf (Sekunden).
+ *
+ * Gemessen am 06.09.2026: der Venus E antwortet in unregelmaessigen Abstaenden
+ * 20 bis 45 s lang NIEMANDEM - 6,6 % der Zeit ueber zehn Nachtstunden, 17,5 %
+ * in einer Stichprobe am Mittag. Von 23 Sollwerten scheiterten 11. Ein
+ * Schweigefenster ist nach spaetestens 45 s vorbei, ein Durchgang kommt jede
+ * Minute: fuenf Minuten sind reichlich Zeit fuer einen zweiten Versuch und
+ * kurz genug, dass kein alter Wunsch aus einer anderen Lage nachwirkt.
+ */
+define('MARSTEK_SET_NACHHOLEN_S', 300);
+
 define('MARSTEK_TAKT_SCHRANKE', 180);
 }
 
@@ -1446,17 +1458,44 @@ function marstek_befund() {
             . (int) round((time() - $h['ts']) / 60) . ' Minuten. Der Cron-Eintrag fehlt, '
             . 'oder cron.php bricht ab - der Grund steht in log/plugins/<ordner>/cron.err.');
     }
+    /* BERICHTIGT 06.09.2026 - der Fehlalarm.
+     *
+     * Bis 1.1.8 wurde hier allein das Feld 'ok' des LETZTEN Durchgangs
+     * angesehen. Der Venus E antwortet aber in unregelmaessigen Abstaenden
+     * 20 bis 45 s lang niemandem (gemessen: 6,6 % der Zeit ueber zehn
+     * Nachtstunden, 17,5 % in einer Mittagsstichprobe). Faellt ein Durchgang
+     * in so ein Fenster, stand der Healthcheck auf ROT - "Kein Speicher
+     * antwortet. Lokale API aktiviert? Geraet im Standby?" -, obwohl das
+     * Geraet Sekunden spaeter wieder auf jede Abfrage antwortete. Am
+     * 06.09.2026 gemessen: ein roter Lauf, unmittelbar danach zehn gruene.
+     *
+     * Massgeblich ist deshalb, wie alt die letzte ECHTE Messung ist, nicht
+     * ob der letzte Versuch geglueckt ist - dieselbe Unterscheidung, die
+     * marstek_status() seit 1.1.5 je Feld trifft. Die Schranke ist dieselbe
+     * wie fuer den Takt: bis 180 s ist ein Ausfall ein Ausfall, danach ist
+     * es eine Stoerung.
+     */
     $stumm = array();
+    $wackelig = array();
     foreach ($devs as $n => $d) {
         $c = marstek_tmpdir() . '/status_dev' . $n . '.json';
         $st = is_file($c) ? json_decode((string) @file_get_contents($c), true) : null;
-        if (!is_array($st) || empty($st['ok'])) {
-            $stumm[] = $d['name'];
+        $mess = (is_array($st) && isset($st['mess'])) ? (int) $st['mess'] : 0;
+        $alter = $mess > 0 ? time() - $mess : -1;
+        if ($alter < 0 || $alter > MARSTEK_TAKT_SCHRANKE) {
+            $stumm[] = $d['name'] . ($alter < 0 ? '' : ' (seit ' . $alter . ' s)');
+        } elseif (!is_array($st) || empty($st['ok'])) {
+            $wackelig[] = $d['name'] . ' (letzte Messung vor ' . $alter . ' s)';
         }
     }
     if ($stumm) {
         return array('schwere' => 3, 'text' => (count($stumm) === count($devs) ? 'Kein Speicher antwortet' : 'Nicht erreichbar')
             . ': ' . implode(', ', $stumm) . '. Lokale API aktiviert? Geraet im Standby?');
+    }
+    if ($wackelig) {
+        return array('schwere' => 5, 'text' => count($devs) . ' Speicher erreichbar, Minutentakt laeuft. '
+            . 'Der letzte Abruf ging ins Leere, die Werte sind aber frisch: ' . implode(', ', $wackelig)
+            . '. Der Speicher antwortet zeitweise fuer einige Sekunden niemandem.');
     }
     return array('schwere' => 5, 'text' => count($devs) . ' Speicher erreichbar, Minutentakt laeuft.');
 }
@@ -1635,6 +1674,83 @@ function marstek_schutz_pruefen($p, $dev = 1) {
     return '';
 }
 
+/* ---------------- Der nachgeholte Sollwert (neu in 1.1.9) ----------------
+ *
+ * WARUM. Am 06.09.2026 an der Anlage gemessen: von 23 Sollwerten scheiterten
+ * 11, und jeder Fehlschlag fiel in ein Fenster, in dem der Venus E niemandem
+ * antwortete - auch nicht einer fremden Abfrage. Bis 1.1.8 blieb ein so
+ * verlorener Sollwert einfach verloren: der naechste Durchgang schickte nur
+ * das, was der Auto-Fallback gerade wollte, und ein Wert, den Loxone ueber
+ * ?p= geschickt hatte, war fort. Loxone erfuhr es (OK=0), musste ihn aber
+ * selbst noch einmal senden.
+ *
+ * WAS NICHT NACHGEHOLT WIRD - und das ist der wichtigere Teil:
+ *   - ein Wert, den die Steuerungs-Einstellung abgelehnt hat (keine Stoerung),
+ *   - ein Wert, den eine Schutzschwelle abgelehnt hat (ihn spaeter doch zu
+ *     schicken hiesse, den Schutz zu umgehen),
+ *   - ein Wert, nachdem der Anwender die Betriebsart gewechselt hat,
+ *   - ein Wert, der aelter ist als MARSTEK_SET_NACHHOLEN_S.
+ *
+ * Der Zeitstempel 'seit' ueberlebt jeden weiteren Fehlschlag. Ohne das
+ * verlaengerte sich der Merker bei jedem Versuch selbst und ein Wunsch aus
+ * einer laengst vergangenen Lage koennte Stunden spaeter noch wirken.
+ */
+
+/** Pfad des Merkers fuer den offenen Sollwert. */
+function marstek_set_offen_datei($dev) {
+    return marstek_tmpdir() . '/set_offen_dev' . (int) $dev . '.json';
+}
+
+/** Einen gescheiterten Sollwert vormerken. 'seit' bleibt beim ersten Mal stehen. */
+function marstek_set_offen_merken($p, $t, $dev) {
+    $f = marstek_set_offen_datei($dev);
+    $alt = is_file($f) ? json_decode((string) @file_get_contents($f), true) : null;
+    $seit = (is_array($alt) && isset($alt['seit'])) ? (int) $alt['seit'] : time();
+    marstek_write_json($f, array('p' => (int) $p, 't' => (int) $t,
+                                 'seit' => $seit, 'letzter' => time()));
+}
+
+/** Den Merker entfernen. */
+function marstek_set_offen_loeschen($dev) {
+    @unlink(marstek_set_offen_datei($dev));
+}
+
+/** Was offen ist, oder null. Ein zu alter Merker wird dabei entfernt. */
+function marstek_set_offen($dev) {
+    $f = marstek_set_offen_datei($dev);
+    if (!is_file($f)) { return null; }
+    $o = json_decode((string) @file_get_contents($f), true);
+    if (!is_array($o) || !isset($o['seit'])) { @unlink($f); return null; }
+    if (time() - (int) $o['seit'] > MARSTEK_SET_NACHHOLEN_S) {
+        @unlink($f);
+        marstek_log('Offener Sollwert fuer Geraet ' . (int) $dev . ' verworfen: p=' . (int) $o['p']
+                  . ' t=' . (int) $o['t'] . ', seit ' . (time() - (int) $o['seit']) . ' s nicht angekommen.');
+        return null;
+    }
+    return $o;
+}
+
+/**
+ * Einen offenen Sollwert nachholen. Nur aus dem Minutentakt aufrufen.
+ *
+ * Rueckgabe: Zahl der nachgeholten Geraete.
+ */
+function marstek_set_nachholen() {
+    if (empty($GLOBALS['marstek_ist_takt'])) {
+        return 0;   // der Endpunkt liest, der Takt schickt
+    }
+    $n = 0;
+    foreach (marstek_devices() as $dev => $d) {
+        $o = marstek_set_offen($dev);
+        if ($o === null) { continue; }
+        marstek_log('Sollwert wird nachgeholt (Geraet ' . (int) $dev . '): p=' . (int) $o['p']
+                  . ' t=' . (int) $o['t'] . ', offen seit ' . (time() - (int) $o['seit']) . ' s.');
+        list($ok, , , ) = marstek_set_passive((int) $o['p'], (int) $o['t'], $dev);
+        if ($ok) { $n++; }
+    }
+    return $n;
+}
+
 /**
  * Passiv-Sollwert setzen. $p: Loxone-Konvention + = LADEN (API-intern gedreht).
  *
@@ -1658,11 +1774,17 @@ function marstek_set_passive($p, $t, $dev = 1, $trocken = false) {
     if ($t > 3600) { $t = 3600; }
 
     if (empty($cfg['steuerung_ein'])) {
+        // Kein Nachholen: das ist keine Stoerung, sondern eine Einstellung.
+        marstek_set_offen_loeschen($dev);
         marstek_log_if_changed('set_dev' . (int) $dev, 'p=' . $p . ' t=' . $t . ' - Steuerung ist abgeschaltet', 'aus');
         return array(0, $p, $t, 'STEUERUNG_AUS');
     }
     $sperre = marstek_schutz_pruefen($p, $dev);
     if ($sperre !== '') {
+        // Auch hier NICHT nachholen. Eine Schutzschwelle hat den Wert
+        // abgelehnt; ihn eine Minute spaeter noch einmal zu schicken hiesse,
+        // den Schutz zu umgehen.
+        marstek_set_offen_loeschen($dev);
         marstek_log_if_changed('set_dev' . (int) $dev, 'p=' . $p . ' t=' . $t . ' - gesperrt (' . $sperre . ')', 'sperre:' . $sperre);
         return array(0, $p, $t, $sperre);
     }
@@ -1679,11 +1801,15 @@ function marstek_set_passive($p, $t, $dev = 1, $trocken = false) {
         marstek_write_json(marstek_tmpdir() . '/passive_dev' . (int) $dev . '.json',
             array('p' => $p, 't' => $t, 'ts' => time()));
         @unlink(marstek_tmpdir() . '/passive_dev' . (int) $dev);   // Altlast bis 1.0.16
+        marstek_set_offen_loeschen($dev);
+    } else {
+        marstek_set_offen_merken($p, $t, $dev);
     }
     marstek_log_if_changed('set_dev' . (int) $dev, 'p=' . $p . ' t=' . $t . ' ok=' . $ok, 'ok=' . $ok);
     if (!$ok) {
         marstek_log('SET fehlgeschlagen (Geraet ' . (int) $dev . '): p=' . $p . ' t=' . $t
-            . (is_array($res) && isset($res['_error']) ? ' (' . $res['_error'] . ')' : ''));
+            . (is_array($res) && isset($res['_error']) ? ' (' . $res['_error'] . ')' : '')
+            . ' - wird im naechsten Durchgang nachgeholt.');
     }
     return array($ok, $p, $t, '');
 }
@@ -1751,6 +1877,11 @@ function marstek_set_mode($m, $dev = 1, $trocken = false) {
         return array(1, $m, 'TROCKEN');
     }
     $cfgkey = $m === 'AI' ? 'ai_cfg' : 'auto_cfg';
+    // Der Anwender waehlt eine andere Betriebsart - ein noch offener
+    // Passiv-Sollwert ist damit hinfaellig. Ohne diese Zeile schoebe der
+    // naechste Durchgang den alten Wunsch hinterher und schaltete das Geraet
+    // zurueck, das der Anwender gerade umgestellt hat.
+    marstek_set_offen_loeschen($dev);
     $res = marstek_rpc('ES.SetMode', array('id' => 0, 'config' => array('mode' => $m, $cfgkey => array('enable' => 1))), $dev);
     $ok = (is_array($res) && !empty($res['set_result'])) ? 1 : 0;
     if ($ok) {
@@ -2589,8 +2720,13 @@ function marstek_mqtt_themen($mit_geraet = true)
     foreach (marstek_felder('ranks') as $name => $f) {
         $t['rang_' . strtolower($name)] = $f['text'];
     }
-    $t['takt_zaehler'] = 'Herzschlag des Minutentakts (0..999, umlaufend)';
-    $t['takt_ts'] = 'Zeitpunkt des letzten Minutentakts (Unixzeit)';
+    // Zwei Themen sehen wie das Lebenszeichen aus und unterscheiden sich um
+    // eins: der Statusblock geht hinaus, BEVOR marstek_herzschlag() am Ende
+    // des Durchgangs hochzaehlt. Gemessen am 05.09.2026 im Broker: zaehler
+    // 202, takt_zaehler 203 - in derselben Sekunde. Wer auf den Takt schaut,
+    // nimmt takt_zaehler.
+    $t['takt_zaehler'] = 'Herzschlag des Minutentakts, Stand nach dem Durchgang (0..999, umlaufend) - massgeblich; marstek/zaehler liegt um eins zurück';
+    $t['takt_ts'] = 'Zeitpunkt des letzten vollständig durchgelaufenen Minutentakts (Unixzeit)';
     return $t;
 }
 
@@ -2842,7 +2978,7 @@ function marstek_felder($satz) {
         // Loxone Config fuehrt dasselbe Feld mit 0..10000 und "ms".
         'MS'        => array('quelle' => 'ms',    'analog' => 1, 'min' => 0,      'max' => 10000,  'einheit' => 'ms', 'form' => '%d',   'retain' => 0, 'kurz' => 'Antwortzeit', 'text' => 'Antwortzeit des Geräts'),
         'ALTER'     => array('quelle' => '_alter',     'analog' => 1, 'min' => -1,     'max' => 86400, 'einheit' => 's', 'form' => '%d', 'retain' => 0, 'kurz' => 'Alter der Messung', 'text' => 'Alter der letzten echten Messung in Sekunden; -1 = noch nie gemessen'),
-        'ZAEHLER'   => array('quelle' => '_zaehler',   'analog' => 1, 'min' => -1,     'max' => 999,   'einheit' => '',  'form' => '%d', 'retain' => 0, 'kurz' => 'Herzschlag des Takts', 'text' => 'Herzschlag des Minutentakts, zählt 0..999 um; -1 = der Takt läuft nicht'),
+        'ZAEHLER'   => array('quelle' => '_zaehler',   'analog' => 1, 'min' => -1,     'max' => 999,   'einheit' => '',  'form' => '%d', 'retain' => 0, 'kurz' => 'Herzschlag (vorige Runde)', 'text' => 'Herzschlag des Minutentakts beim VORIGEN Durchgang, zählt 0..999 um; das Thema takt_zaehler trägt den aktuellen Stand; -1 = der Takt läuft nicht'),
         'SOLL'      => array('quelle' => '_soll',      'analog' => 1, 'min' => -32768, 'max' => 10000, 'einheit' => 'W', 'form' => '%d', 'retain' => 1, 'kurz' => 'angenommener Sollwert', 'text' => 'zuletzt vom Gerät ANGENOMMENER Sollwert (+ laden); -32768 = keiner'),
         'SOLLALTER' => array('quelle' => '_sollalter', 'analog' => 1, 'min' => -1,     'max' => 86400, 'einheit' => 's', 'form' => '%d', 'retain' => 0, 'kurz' => 'Alter des Sollwerts', 'text' => 'Sekunden seit dem letzten angenommenen Sollwert; -1 = keiner'),
         'FBREST'    => array('quelle' => '_fbrest',    'analog' => 1, 'min' => -2,     'max' => 86400, 'einheit' => 's', 'form' => '%d', 'retain' => 0, 'kurz' => 'Rest bis Auto-Fallback', 'text' => 'Sekunden bis zum Auto-Fallback; -1 = abgeschaltet, -2 = kein Passivbetrieb'),
@@ -3046,7 +3182,7 @@ function marstek_vorlage($satz = 'status', $dev = 1) {
         'address' => 'http://' . $host . '/plugins/' . $ordner . '/marstek.php' . $q,
         'polling' => (string) marstek_satz_takt($satz),
         'comment' => 'Erzeugt vom LoxBerry-Plugin Marstek Venus E (' . date('d.m.Y') . '). '
-                   . 'Loxone Config legt beim Import neu an und ueberschreibt nichts - '
+                   . 'Loxone Config legt beim Import neu an und überschreibt nichts — '
                    . 'zweimal eingelesen ergibt doppelte Bausteine.',
     ), $cmds));
 }
@@ -3085,15 +3221,32 @@ function marstek_vo_vorlage($dev = 1) {
         . marstek_x('Steuerbefehle über das Plugin ' . $ordner . ' — enthält das Aktionstoken.')
         . '" Address="http://' . marstek_x($host) . '" CmdInit="" CloseAfterSend="true" CmdSep="">' . $crlf;
     $o .= "\t" . '<Info templateType="3" minVersion="17010727"/>' . $crlf;
+    // 'anzeige' ist NEU in 1.1.8 und nicht dasselbe wie 'title'.
+    //
+    // Der Comment wird in Loxone Config zum Anzeigenamen, der Title zur
+    // Bezeichnung. Bis 1.1.7 stand hier Comment="" - dann zeigt Config den
+    // Titel, was lesbar ist, aber ohne Hinweis auf das Geraet: "Handbetrieb:
+    // Modus Auto" steht in der Bausteinsuche, ohne dass jemand sieht, dass
+    // der Speicher gemeint ist.
+    //
+    // Warum nicht einfach der Titel als Anzeigename: mit dem Vorsatz kaeme
+    // der erste auf 48 Zeichen, und ueber etwa 40 ist es ein Satz und kein
+    // Name (Regeln/07). Der Kachelname sagt deshalb nur "Sollwert setzen
+    // (W)"; das Vorzeichen erklaert die Bezeichnung daneben.
     foreach (array(
         array('title' => 'Sollwert setzen (W, + lädt / - entlädt)',
+              'anzeige' => 'Sollwert setzen (W)',
               'adresse' => '/marstek.php?p=<v>&t=240' . $q, 'analog' => true),
         array('title' => 'Handbetrieb: Modus Auto',
+              'anzeige' => 'Handbetrieb Auto',
               'adresse' => '/marstek.php?mode=auto' . $q, 'analog' => false),
         array('title' => 'Handbetrieb: Modus AI',
+              'anzeige' => 'Handbetrieb AI',
               'adresse' => '/marstek.php?mode=ai' . $q, 'analog' => false),
     ) as $c) {
-        $o .= "\t" . '<VirtualOutCmd Title="' . marstek_x($c['title']) . '" Comment="" CmdOnMethod="GET" CmdOffMethod="GET" ';
+        $o .= "\t" . '<VirtualOutCmd Title="' . marstek_x($c['title']) . '" Comment="'
+            . marstek_x('Marstek' . $gname . ': ' . $c['anzeige'])
+            . '" CmdOnMethod="GET" CmdOffMethod="GET" ';
         $o .= 'CmdOn="' . marstek_x('/plugins/' . $ordner . $c['adresse'] . '&token=' . $tok) . '" ';
         $o .= 'CmdOnHTTP="" CmdOnPost="" CmdOff="" CmdOffHTTP="" CmdOffPost="" CmdAnswer="" ';
         $o .= 'Analog="' . (!empty($c['analog']) ? 'true' : 'false') . '" Repeat="0" RepeatRate="0" ';
@@ -3259,6 +3412,64 @@ function marstek_selbsttest()
     }
     $pruefe('Bezeichnungen ueber alle Saetze eindeutig',
         count(array_unique($bez)), count($bez));
+
+    /* --- Der Merker fuer den offenen Sollwert (neu in 1.1.9) ---
+     *
+     * Kein Geraet noetig: gemessen wird nur, was der Merker mit sich selbst
+     * tut. Jede Gruppe hat einen Fall, der durchgehen, und einen, der
+     * abgewiesen werden muss.
+     */
+    $mv_t = 99;                       // eine Geraetenummer, die keine Anlage hat
+    marstek_set_offen_loeschen($mv_t);
+    $pruefe('offener Sollwert: nichts gemerkt', marstek_set_offen($mv_t), null);
+
+    marstek_set_offen_merken(800, 240, $mv_t);
+    $o = marstek_set_offen($mv_t);
+    $pruefe('offener Sollwert: gemerkt', is_array($o), true);
+    $pruefe('offener Sollwert: p erhalten', is_array($o) ? (int) $o['p'] : null, 800);
+    $pruefe('offener Sollwert: t erhalten', is_array($o) ? (int) $o['t'] : null, 240);
+    $mv_seit = is_array($o) ? (int) $o['seit'] : 0;
+
+    // Ein zweiter Fehlschlag darf den Merker NICHT verjuengen - sonst lebt ein
+    // Wunsch aus einer laengst vergangenen Lage beliebig lange weiter.
+    //
+    // Der Merker wird dafuer von Hand auf 100 s zurueckdatiert. Ein zweiter
+    // Aufruf im selben Atemzug taugt NICHT: beide faenden dieselbe Sekunde
+    // vor, und die Pruefung ginge auch mit dem Fehler durch. Genau daran ist
+    // sie bei der Eichung am 06.09.2026 gescheitert.
+    $mv_alt = time() - 100;
+    marstek_write_json(marstek_set_offen_datei($mv_t),
+        array('p' => 800, 't' => 240, 'seit' => $mv_alt, 'letzter' => $mv_alt));
+    marstek_set_offen_merken(800, 240, $mv_t);
+    $o2 = marstek_set_offen($mv_t);
+    $pruefe('offener Sollwert: seit bleibt stehen',
+        is_array($o2) ? (int) $o2['seit'] : -1, $mv_alt);
+    $pruefe('offener Sollwert: letzter wird fortgeschrieben',
+        is_array($o2) && (int) $o2['letzter'] > $mv_alt, true);
+
+    // Zu alt: muss verschwinden.
+    marstek_write_json(marstek_set_offen_datei($mv_t),
+        array('p' => 800, 't' => 240, 'seit' => time() - MARSTEK_SET_NACHHOLEN_S - 1,
+              'letzter' => time()));
+    $pruefe('offener Sollwert: zu alt wird verworfen', marstek_set_offen($mv_t), null);
+
+    // Kaputter Inhalt: fail closed, und die Datei ist danach fort.
+    @file_put_contents(marstek_set_offen_datei($mv_t), 'kein json');
+    $pruefe('offener Sollwert: unlesbar wird verworfen', marstek_set_offen($mv_t), null);
+    $pruefe('offener Sollwert: Datei danach fort', is_file(marstek_set_offen_datei($mv_t)), false);
+
+    // Loeschen wirkt.
+    marstek_set_offen_merken(-500, 60, $mv_t);
+    marstek_set_offen_loeschen($mv_t);
+    $pruefe('offener Sollwert: geloescht', marstek_set_offen($mv_t), null);
+
+    // Dass ausserhalb des Takts nichts nachgeholt wird, steht NICHT hier.
+    // marstek_set_nachholen() geht ueber marstek_devices(); ohne
+    // eingetragenes Geraet laeuft die Schleife nie, und die Pruefung ginge
+    // mit und ohne Wache durch - sie maesse ihr eigenes Schweigen. Gemessen
+    // wird das im Pruefstand (nachholen.py), wo ein Geraet eingetragen
+    // werden kann.
+    marstek_set_offen_loeschen($mv_t);
 
     /* --- 4. Der Abfragetakt: eine Quelle --- */
     foreach (array('status' => 60, 'summe' => 60, 'ranks' => 300, 'energy' => 300) as $s => $t) {
