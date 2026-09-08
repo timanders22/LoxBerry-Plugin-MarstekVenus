@@ -13,6 +13,77 @@ den Auto-Modus des Geräts zurück.
 
 Kompatibel mit LoxBerry 3.x und **LoxBerry 4** (reines PHP, läuft mit PHP 7.4 und 8.x).
 
+## Neu in 1.1.12
+
+**Was schiefging, steht jetzt auf der Speicherkarte.** Das Protokoll unter
+`log/plugins/marstekvenus/` liegt auf einer RAM-Platte, und LoxBerrys eigene
+Protokollpflege räumt dort auf — am 06.09.2026 um 06:13:06 und am 07.09.2026
+um 07:13 gemessen, beide Male war `marstek.log` danach fort. `preupgrade.sh`
+und `postupgrade.sh` sichern es zwar über ein Update hinweg; gegen die
+Protokollpflege und gegen einen Neustart hilft das nicht. Genau die Zeilen,
+die einen Vorfall vom Vorabend erklären, fehlten am nächsten Morgen.
+
+Deshalb gibt es jetzt eine zweite, kurze Liste in
+`data/plugins/marstekvenus.verlauf/ereignisse.log` — auf der Karte, **neben**
+dem Ordner, den der Installer bei jedem Update abräumt, an derselben Stelle
+wie Herzschlag und SOC-Verlauf. Sie steht im Reiter *Logdateien* ganz oben.
+
+**Was hineinkommt, ist absichtlich wenig:** ein Sollwert, der nicht ankam; ein
+nachgeholter, der angenommen wurde; ein verworfener; eine aus der Zweitschrift
+wiederhergestellte Konfiguration. Sonst nichts. Es ist kein zweites Protokoll
+— der laufende Betrieb steht weiter in `marstek.log`. Zustandswechsel, Abrufe
+und Messwerte gehören nicht hinein: jede Zeile hier ist ein Schreibvorgang auf
+die Speicherkarte.
+
+Die Liste wird bei 128 KB auf die letzten 400 Zeilen gekappt — bei der
+gemessenen Häufigkeit (im schlechtesten Fall elf gescheiterte Sollwerte in
+zweieinhalb Stunden) reicht das für mehrere Tage. Der Knopf *Protokoll leeren*
+fasst sie nicht an.
+
+Der Rechenkern-Selbsttest zählt 358 statt 355 Fälle. Er schreibt dabei
+**nicht** in die Liste: er läuft auch auf dem Gerät, und die dauerhafte
+Aufzeichnung mit Prüfzeilen zu füllen wäre genau der Fehler, den sie
+verhindern soll. Das Schreiben und das Kappen misst der Prüfstand.
+
+## Neu in 1.1.11
+
+**Der Healthcheck meldete ein gesundes Gerät als stumm.** Seit 1.1.9 urteilt
+er nach dem Alter der letzten echten Messung — richtig, aber mit der falschen
+Schranke: er nahm die des Minutentakts (180 s). Das sind zwei verschiedene
+Fragen an derselben Zahl. „Läuft der Minutentakt?" ist nach drei ausgelassenen
+Minuten mit Ja oder Nein zu beantworten. „Hat das Gerät geantwortet?" nicht:
+der Venus E schweigt bis zu 60 Sekunden am Stück, und ein Durchgang kommt jede
+Minute — drei unglücklich fallende Durchgänge reichen. Am 08.09.2026
+beobachtet: „Kein Speicher antwortet (seit 228 s)", während das Gerät
+unmittelbar danach 6 von 6 Abfragen in 100 ms beantwortete.
+
+Die Schranke für die Erreichbarkeit steht jetzt eigenständig auf **300
+Sekunden**. Das kostet keine Empfindlichkeit: über eine halbe Stunde im
+Zehnsekundentakt gemessen lag das Alter der letzten Messung im Mittel bei
+16 s, zu 90 % unter 30 s und im Höchstfall bei 117 s. Ein wirklich stummes
+Gerät fällt weiterhin nach fünf Minuten auf.
+
+**Drei Konstanten standen in der falschen Klammer.** `MARSTEK_EFF_ZYKLEN` und
+`MARSTEK_SET_NACHHOLEN_S` lagen seit 1.1.9 innerhalb der Wache von
+`MARSTEK_TAKT_SCHRANKE`; wer die Taktschranke von außen definierte, bekam die
+anderen beiden gar nicht. Getroffen hat es niemanden — das tut sonst niemand —,
+aber die Wache war damit wirkungslos. Jede Konstante trägt jetzt ihre eigene,
+und der Selbsttest prüft alle vier.
+
+Der Rechenkern-Selbsttest zählt 355 statt 350 Fälle.
+
+## Neu in 1.1.10
+
+**Auf einer Installation meldete das Plugin keine Fassungsnummer.**
+`marstek_fassung()` suchte sie in Dateien — und die `plugin.cfg` gibt es dort
+nicht: `plugininstall.pl` liest sie aus dem Auspackordner und löscht sie
+danach. Im Arbeitsordner fiel das nie auf, weil dort der Archivfall der
+Kandidatenliste immer trifft.
+
+Gefragt wird jetzt zuerst LoxBerry selbst — `LBSystem::pluginversion()` liest
+die Plugin-Datenbank. Die Dateikandidaten bleiben darunter stehen; sie tragen
+den Auspackordner und werden für den Prüfstand gebraucht.
+
 ## Neu in 1.1.9
 
 Beides folgt aus derselben Messung an der Anlage: **der Venus E antwortet in

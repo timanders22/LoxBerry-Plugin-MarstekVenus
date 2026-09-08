@@ -433,6 +433,7 @@ foreach ($mv_devices as $n => $d) {
 // Vom ENDE lesen, nicht die ganze Datei einlesen. file() zieht sie
 // vollstaendig in den Speicher; cron.err hatte bis 1.1.4 ausserdem keine
 // Kappung und konnte auf der Ramdisk beliebig wachsen.
+$mv_ereignisse = array_reverse(marstek_ereignisse(200));
 $mv_log_lines = array_reverse(marstek_log_ende($mv_log_file, 300));
 $mv_err_lines = array_reverse(marstek_log_ende($mv_err_file, 50));
 
@@ -1156,6 +1157,16 @@ if (function_exists('mv_test_seite')) {
 <?php if ($mv_use_frame && method_exists('LBWeb', 'loglist_html')) { ?>
 <div style="margin-bottom:12px;"><?php echo LBWeb::loglist_html(); ?></div>
 <?php } ?>
+<h3 class="sm-h3"><?= marstek_e(marstek_t('LOG.H_EREIGNISSE')) ?></h3>
+<div class="sm-hilfe"><?= marstek_t('LOG.EREIGNISSE_ERKLAERUNG') ?><br>
+<?= marstek_e(marstek_t('LOG.DATEI')) ?> <span class="sm-mono"><?= marstek_e(marstek_ereignis_datei()) ?></span></div>
+<?php if ($mv_ereignisse) { ?>
+<div class="sm-log"><?= marstek_e(implode("\n", $mv_ereignisse)) ?></div>
+<?php } else { ?>
+<div class="sm-alert sm-ok"><?= marstek_e(marstek_t('LOG.EREIGNISSE_LEER')) ?></div>
+<?php } ?>
+
+<h3 class="sm-h3"><?= marstek_e(marstek_t('LOG.H_LAUFEND')) ?></h3>
 <div class="sm-hilfe" style="margin-bottom:8px;"><?= marstek_e(marstek_t('LOG.ERKLAERUNG')) ?><br>
 <?= marstek_e(marstek_t('LOG.DATEI')) ?> <span class="sm-mono"><?= marstek_e($mv_log_file) ?></span></div>
 <div class="sm-warnung"><?= marstek_e(marstek_t('LOG.RAMDISK')) ?></div>

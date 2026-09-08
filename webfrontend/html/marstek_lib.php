@@ -33,30 +33,64 @@ $GLOBALS['marstek_last_ms'] = 0; // Antwortzeit des letzten RPC in Millisekunden
  * 180 s ist der Wert, mit dem auch der empfohlene Baustein #40 arbeitet.
  */
 if (!defined('MARSTEK_TAKT_SCHRANKE')) {
-    /**
+    define('MARSTEK_TAKT_SCHRANKE', 180);
+}
+
+/**
+ * Wie alt die letzte ECHTE Messung eines Speichers werden darf, bevor er als
+ * nicht erreichbar gilt (Sekunden).
+ *
+ * BERICHTIGT 08.09.2026 - bis 1.1.10 nahm der Healthcheck dafuer
+ * MARSTEK_TAKT_SCHRANKE. Das sind aber zwei verschiedene Fragen an derselben
+ * Zahl: "laeuft der Minutentakt?" (Herzschlag, 180 s - drei ausgelassene
+ * Minuten heissen, der Cron ist tot) und "hat das Geraet geantwortet?".
+ * Fuer die zweite ist 180 s zu eng: der Venus E schweigt bis zu 60 s am
+ * Stueck, und ein Durchgang kommt jede Minute - drei ungluecklich fallende
+ * Durchgaenge reichen. Am 08.09.2026 beobachtet: der Healthcheck meldete
+ * "Kein Speicher antwortet (seit 228 s)", waehrend das Geraet unmittelbar
+ * danach 6 von 6 Abfragen in 100 ms beantwortete.
+ *
+ * 300 s kosten keine Empfindlichkeit. Ueber eine halbe Stunde im Sekundentakt
+ * gemessen: das Alter der letzten Messung lag im Mittel bei 16 s, zu 90 %
+ * unter 30 s, im Hoechstfall bei 117 s - nie ueber 120 s. Ein wirklich
+ * stummes Geraet faellt weiterhin nach fuenf Minuten auf.
+ */
+if (!defined('MARSTEK_MESS_SCHRANKE')) {
+    define('MARSTEK_MESS_SCHRANKE', 300);
+}
+
+/**
  * Ab wie vielen Vollzyklen der Wirkungsgrad ueberhaupt einer ist.
  *
  * Zehn ist keine gemessene Grenze, sondern eine bewusst gesetzte: bei zehn
  * Zyklen ist rund das Zehnfache der Kapazitaet durch den Speicher gelaufen,
  * und was gerade darin steht, verzerrt den Quotienten nicht mehr wesentlich.
- * Wer sie aendert, aendert sie hier - EINE Quelle, wie bei MARSTEK_TAKT_SCHRANKE.
+ * Wer sie aendert, aendert sie hier - EINE Quelle.
  */
-define('MARSTEK_EFF_ZYKLEN', 10);
+if (!defined('MARSTEK_EFF_ZYKLEN')) {
+    define('MARSTEK_EFF_ZYKLEN', 10);
+}
 
 /**
  * Wie lange ein gescheiterter Sollwert nachgeholt werden darf (Sekunden).
  *
  * Gemessen am 06.09.2026: der Venus E antwortet in unregelmaessigen Abstaenden
- * 20 bis 45 s lang NIEMANDEM - 6,6 % der Zeit ueber zehn Nachtstunden, 17,5 %
+ * 20 bis 60 s lang NIEMANDEM - 6,6 % der Zeit ueber zehn Nachtstunden, 17,5 %
  * in einer Stichprobe am Mittag. Von 23 Sollwerten scheiterten 11. Ein
- * Schweigefenster ist nach spaetestens 45 s vorbei, ein Durchgang kommt jede
+ * Schweigefenster ist nach spaetestens 60 s vorbei, ein Durchgang kommt jede
  * Minute: fuenf Minuten sind reichlich Zeit fuer einen zweiten Versuch und
  * kurz genug, dass kein alter Wunsch aus einer anderen Lage nachwirkt.
  */
-define('MARSTEK_SET_NACHHOLEN_S', 300);
-
-define('MARSTEK_TAKT_SCHRANKE', 180);
+if (!defined('MARSTEK_SET_NACHHOLEN_S')) {
+    define('MARSTEK_SET_NACHHOLEN_S', 300);
 }
+
+/* BERICHTIGT 08.09.2026: die drei Konstanten oben standen bis 1.1.10 INNERHALB
+ * der Wache von MARSTEK_TAKT_SCHRANKE. Wer die Taktschranke vorher definierte,
+ * bekam die anderen beiden gar nicht - gemessen: "MARSTEK_EFF_ZYKLEN NICHT
+ * DEFINIERT", und der naechste Zaehlerabruf waere daran gestorben. Getroffen
+ * hat es nie jemanden, weil niemand sie vorher definiert; die Wache war
+ * trotzdem wirkungslos. Jede Konstante traegt ihre eigene. */
 
 
 /* Den LoxBerry-Wurzelordner ohne festen Systempfad bestimmen.
@@ -228,6 +262,9 @@ function marstek_config($erzeugen = true) {
         @copy($p['backup'], $p['config']);
         @chmod($p['config'], 0600);
         marstek_log('Konfiguration war leer - aus der Zweitschrift wiederhergestellt.');
+        // Dauerhaft festhalten: eine verlorene Konfiguration ist genau die Art
+        // Vorfall, die am naechsten Morgen noch erklaerbar sein muss.
+        marstek_ereignis('Konfiguration war leer und ist aus der Zweitschrift wiederhergestellt worden.');
         $roh = is_file($p['config']) ? trim((string) @file_get_contents($p['config'])) : '';
     }
     $cfg = $roh !== '' ? json_decode($roh, true) : array();
@@ -1502,7 +1539,7 @@ function marstek_befund() {
         $st = is_file($c) ? json_decode((string) @file_get_contents($c), true) : null;
         $mess = (is_array($st) && isset($st['mess'])) ? (int) $st['mess'] : 0;
         $alter = $mess > 0 ? time() - $mess : -1;
-        if ($alter < 0 || $alter > MARSTEK_TAKT_SCHRANKE) {
+        if ($alter < 0 || $alter > MARSTEK_MESS_SCHRANKE) {
             $stumm[] = $d['name'] . ($alter < 0 ? '' : ' (seit ' . $alter . ' s)');
         } elseif (!is_array($st) || empty($st['ok'])) {
             $wackelig[] = $d['name'] . ' (letzte Messung vor ' . $alter . ' s)';
@@ -1694,6 +1731,74 @@ function marstek_schutz_pruefen($p, $dev = 1) {
     return '';
 }
 
+/* ---------------- Dauerhafte Ereignisse (neu in 1.1.12) ----------------
+ *
+ * WARUM ES DAS GIBT. Das Protokoll unter log/plugins/<ordner>/ liegt auf einer
+ * RAM-Platte (auf dem Pruefgeraet /dev/zram0), und LoxBerrys eigene
+ * Protokollpflege raeumt dort auf - am 06.09.2026 um 06:13:06 und am
+ * 07.09.2026 um 07:13 gemessen, beide Male war marstek.log danach fort.
+ * preupgrade.sh und postupgrade.sh sichern es zwar ueber ein Update hinweg;
+ * gegen die Protokollpflege und gegen einen Neustart hilft das nicht.
+ *
+ * Folge: was am naechsten Morgen noch nachvollziehbar sein muss, darf nicht
+ * dort stehen. Diese Datei liegt in data/plugins/<ordner>.verlauf/ - auf der
+ * Speicherkarte, NEBEN dem Ordner, den purge_installation bei jedem Upgrade
+ * abraeumt, und damit an derselben Stelle wie Herzschlag und SOC-Verlauf.
+ *
+ * Was hier hineingehoert, ist ABSICHTLICH wenig: was schiefging und was das
+ * Plugin von selbst dagegen getan hat. Kein zweites Protokoll - der laufende
+ * Betrieb steht weiter in marstek.log. Zustandswechsel, Abrufe, Messwerte
+ * gehoeren NICHT hierher; jede Zeile hier ist ein Schreibvorgang auf die
+ * Karte.
+ */
+
+/** Pfad der dauerhaften Ereignisliste. */
+function marstek_ereignis_datei() {
+    $p = marstek_paths();
+    return $p['datadir'] . '/ereignisse.log';
+}
+
+/**
+ * Ein Ereignis dauerhaft festhalten. Nur fuer Seltenes.
+ *
+ * Gekappt wird bei 128 KB auf die letzten 400 Zeilen - das sind bei der
+ * gemessenen Haeufigkeit (11 gescheiterte Sollwerte in zweieinhalb Stunden im
+ * schlechtesten Fall) mehrere Tage.
+ */
+function marstek_ereignis($text) {
+    /* Waehrend des Selbsttests wird NICHTS festgehalten.
+     *
+     * Am 08.09.2026 im Reiter Logdateien entdeckt: dort stand "Offener
+     * Sollwert fuer Geraet 99 verworfen" - 99 ist die Pruefnummer des
+     * Selbsttests. Der laeuft auch auf dem Geraet (cron.php --selbsttest, und
+     * das Freigabetor ruft ihn), und jeder Lauf haette eine erfundene Zeile in
+     * die Aufzeichnung geschrieben, die echte Vorfaelle festhalten soll. Der
+     * Merker wird ausschliesslich von marstek_selbsttest() gesetzt. */
+    if (!empty($GLOBALS['marstek_selbsttest_laeuft'])) {
+        return false;
+    }
+    $f = marstek_ereignis_datei();
+    $ordner = dirname($f);
+    if (!is_dir($ordner)) { @mkdir($ordner, 0755, true); }
+    $zeile = '[' . date('Y-m-d H:i:s') . '] ' . trim((string) $text) . "\n";
+    if (@file_put_contents($f, $zeile, FILE_APPEND | LOCK_EX) === false) {
+        return false;
+    }
+    if (@filesize($f) > 131072) {
+        $alle = @file($f, FILE_IGNORE_NEW_LINES);
+        if (is_array($alle) && count($alle) > 400) {
+            marstek_write_atomic($f, implode("\n", array_slice($alle, -400)) . "\n", 0644);
+        }
+    }
+    return true;
+}
+
+/** Die letzten $n Ereignisse, aelteste zuerst. */
+function marstek_ereignisse($n = 200) {
+    $f = marstek_ereignis_datei();
+    return is_file($f) ? marstek_log_ende($f, $n) : array();
+}
+
 /* ---------------- Der nachgeholte Sollwert (neu in 1.1.9) ----------------
  *
  * WARUM. Am 06.09.2026 an der Anlage gemessen: von 23 Sollwerten scheiterten
@@ -1743,8 +1848,10 @@ function marstek_set_offen($dev) {
     if (!is_array($o) || !isset($o['seit'])) { @unlink($f); return null; }
     if (time() - (int) $o['seit'] > MARSTEK_SET_NACHHOLEN_S) {
         @unlink($f);
-        marstek_log('Offener Sollwert fuer Geraet ' . (int) $dev . ' verworfen: p=' . (int) $o['p']
-                  . ' t=' . (int) $o['t'] . ', seit ' . (time() - (int) $o['seit']) . ' s nicht angekommen.');
+        $mv_weg = 'Offener Sollwert fuer Geraet ' . (int) $dev . ' verworfen: p=' . (int) $o['p']
+                . ' t=' . (int) $o['t'] . ', seit ' . (time() - (int) $o['seit']) . ' s nicht angekommen.';
+        marstek_log($mv_weg);
+        marstek_ereignis($mv_weg);
         return null;
     }
     return $o;
@@ -1763,10 +1870,19 @@ function marstek_set_nachholen() {
     foreach (marstek_devices() as $dev => $d) {
         $o = marstek_set_offen($dev);
         if ($o === null) { continue; }
+        $mv_seit = time() - (int) $o['seit'];
         marstek_log('Sollwert wird nachgeholt (Geraet ' . (int) $dev . '): p=' . (int) $o['p']
-                  . ' t=' . (int) $o['t'] . ', offen seit ' . (time() - (int) $o['seit']) . ' s.');
+                  . ' t=' . (int) $o['t'] . ', offen seit ' . $mv_seit . ' s.');
         list($ok, , , ) = marstek_set_passive((int) $o['p'], (int) $o['t'], $dev);
-        if ($ok) { $n++; }
+        if ($ok) {
+            $n++;
+            // Nur der GEGLUECKTE Nachholversuch kommt in die Ereignisse. Der
+            // gescheiterte steht schon dort - marstek_set_passive() hat ihn
+            // eben geschrieben.
+            marstek_ereignis('Sollwert nachgeholt und angenommen (Geraet ' . (int) $dev
+                           . '): p=' . (int) $o['p'] . ' t=' . (int) $o['t']
+                           . ', offen gewesen ' . $mv_seit . ' s.');
+        }
     }
     return $n;
 }
@@ -1827,9 +1943,11 @@ function marstek_set_passive($p, $t, $dev = 1, $trocken = false) {
     }
     marstek_log_if_changed('set_dev' . (int) $dev, 'p=' . $p . ' t=' . $t . ' ok=' . $ok, 'ok=' . $ok);
     if (!$ok) {
-        marstek_log('SET fehlgeschlagen (Geraet ' . (int) $dev . '): p=' . $p . ' t=' . $t
+        $mv_grund = 'SET fehlgeschlagen (Geraet ' . (int) $dev . '): p=' . $p . ' t=' . $t
             . (is_array($res) && isset($res['_error']) ? ' (' . $res['_error'] . ')' : '')
-            . ' - wird im naechsten Durchgang nachgeholt.');
+            . ' - wird im naechsten Durchgang nachgeholt.';
+        marstek_log($mv_grund);
+        marstek_ereignis($mv_grund);
     }
     return array($ok, $p, $t, '');
 }
@@ -3352,6 +3470,8 @@ function marstek_selbsttest()
 {
     $faelle = 0;
     $fehl = array();
+    // Solange dieser Merker steht, haelt marstek_ereignis() still.
+    $GLOBALS['marstek_selbsttest_laeuft'] = true;
     $pruefe = function ($name, $ist, $soll) use (&$faelle, &$fehl) {
         $faelle++;
         if ($ist !== $soll) {
@@ -3564,6 +3684,46 @@ function marstek_selbsttest()
     $pruefe('Sicherung enthaelt nichts, was die Einfuhr nicht kennt', $fremd, array());
 
     /* --- 11. Die Schranke fuer den Takt steht an einer Stelle --- */
+    // NEU 08.09.2026: alle vier Konstanten muessen stehen, auch wenn eine
+    // von ihnen schon von aussen gesetzt wurde. Bis 1.1.10 hingen drei an der
+    // Wache der ersten und fehlten dann.
+    foreach (array('MARSTEK_TAKT_SCHRANKE', 'MARSTEK_MESS_SCHRANKE',
+                   'MARSTEK_EFF_ZYKLEN', 'MARSTEK_SET_NACHHOLEN_S') as $mv_k) {
+        $pruefe('Konstante ' . $mv_k . ' definiert', defined($mv_k), true);
+    }
+    // Die Messschranke muss GROESSER sein als die Taktschranke: sonst meldet
+    // der Healthcheck ein gesundes Geraet als stumm, weil ein einzelner
+    // Durchgang ins Schweigen fiel.
+    $pruefe('Messschranke groesser als Taktschranke',
+        MARSTEK_MESS_SCHRANKE > MARSTEK_TAKT_SCHRANKE, true);
+
+    /* --- Die dauerhafte Ereignisliste liegt am richtigen Ort ---
+     *
+     * Hier wird ABSICHTLICH nichts geschrieben: der Selbsttest laeuft auch auf
+     * dem Geraet, und die Ereignisliste ist die dauerhafte Aufzeichnung - sie
+     * mit Pruefzeilen zu fuellen waere genau der Fehler, den sie verhindern
+     * soll. Geprueft wird der Ort; das Schreiben und das Kappen misst der
+     * Pruefstand (ereignisse.py).
+     */
+    // Der Merker muss WIRKEN, nicht nur gesetzt sein: hier wird ein Schreiben
+    // versucht und nachgesehen, dass die Datei sich nicht geruehrt hat.
+    $mv_evor = is_file(marstek_ereignis_datei()) ? filesize(marstek_ereignis_datei()) : -1;
+    marstek_ereignis('Diese Zeile darf NIE in der Liste stehen.');
+    $mv_enach = is_file(marstek_ereignis_datei()) ? filesize(marstek_ereignis_datei()) : -1;
+    $pruefe('Selbsttest schreibt keine Ereignisse', $mv_enach, $mv_evor);
+
+    $mv_ep = marstek_ereignis_datei();
+    $mv_pf = marstek_paths();
+    $pruefe('Ereignisliste liegt im Datenverzeichnis',
+        strpos($mv_ep, $mv_pf['datadir'] . '/') === 0, true);
+    // Das Datenverzeichnis endet auf '.verlauf' - NEBEN dem Ordner, den
+    // purge_installation bei jedem Upgrade abraeumt.
+    $pruefe('Datenverzeichnis liegt neben dem Plugin-Ordner',
+        (bool) preg_match('/\.verlauf$/', $mv_pf['datadir']), true);
+    // Und ausdruecklich NICHT im Protokollverzeichnis - das liegt auf einer
+    // RAM-Platte und wird von LoxBerry regelmaessig geraeumt.
+    $pruefe('Ereignisliste nicht im Protokollverzeichnis',
+        strpos($mv_ep, dirname($mv_pf['log'])) === 0, false);
     $pruefe('Taktschranke definiert', defined('MARSTEK_TAKT_SCHRANKE'), true);
 
     printf("Rechenkern Marstek Venus E: %d Faelle geprueft, %d Fehlschlaege.\n",
@@ -3571,6 +3731,10 @@ function marstek_selbsttest()
     foreach ($fehl as $z) {
         printf("  FEHL %s\n", $z);
     }
+    // Der Merker geht wieder weg. Heute ruft nur cron.php --selbsttest, und
+    // das beendet sich danach - aber ein Aufrufer, der weiterlaeuft, wuerde
+    // sonst fuer den Rest seines Durchgangs keine Ereignisse mehr festhalten.
+    unset($GLOBALS['marstek_selbsttest_laeuft']);
     return count($fehl) === 0 ? 0 : 1;
 }
 
