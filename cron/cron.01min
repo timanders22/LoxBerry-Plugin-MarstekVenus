@@ -16,6 +16,6 @@
 # Die regulaere Ausgabe bleibt still, sonst schreibt der Cron jede Minute
 # eine Zeile in den Systemlogger.
 #
-# REPLACELBPBINDIR wird bei der Installation durch den bin-Pfad des Plugins
-# ersetzt, REPLACELBPLOGDIR durch das Protokollverzeichnis.
+# Den bin-Pfad des Plugins setzt der Installer in der Befehlszeile ein,
+# ebenso den Pfad des Protokollordners.
 php "REPLACELBPBINDIR/cron.php" >/dev/null 2>>"REPLACELBPLOGDIR/cron.err"
