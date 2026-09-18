@@ -17,8 +17,44 @@ if [ -f "$SICHER/marstek.json" ]; then
 fi
 BK="$BASE/config/plugins/$PFOLDER.backup.json"
 CF="$BASE/config/plugins/$PFOLDER/marstek.json"
-if [ -f "$BK" ] && { [ ! -s "$CF" ] || [ "$(cat "$CF" 2>/dev/null)" = "{}" ]; }; then
+# Entschieden wird nach INHALT, nicht nach Form.
+#
+# BERICHTIGT 18.09.2026. Bis 1.1.14 stand hier
+#     if [ -f "$BK" ] && { [ ! -s "$CF" ] || [ "$(cat "$CF")" = "{}" ]; }
+# also dieselbe Formfrage wie in marstek_lib.php - "nicht leer" und "nicht {}".
+# Eine ABGESCHNITTENE marstek.json ist weder das eine noch das andere und blieb
+# stehen. Gemessen in WSL (Pruefung-MarstekVenus-1.1.14, Fall I "hook_kaputt"):
+#     M1 Konfiguration traegt altes Token: NEIN (erwartet JA)
+# Die Frage lautet: steht in der Datei ein Aktionstoken, das sich auch lesen
+# laesst? Genau das kann nur die Zweitschrift zurueckbringen; alles andere
+# traegt der Bediener in der Oberflaeche noch einmal ein.
+# Gefragt wird nach LESBARKEIT, nicht nach einer Zeichenkette: eine
+# abgeschnittene Datei ENTHAELT das alte Token und ist trotzdem unbrauchbar.
+# Ein grep-Muster faerbte die Messung am 18.09.2026 zunaechst gruen, obwohl
+# nichts wiederhergestellt wurde. Deshalb antwortet PHP - es liegt auf jedem
+# LoxBerry, und genau dieser Leser entscheidet spaeter auch im Plugin.
+MV_PHP="$(command -v php 2>/dev/null)"
+mv_hat_token() {
+    [ -f "$1" ] || return 1
+    if [ -n "$MV_PHP" ]; then
+        "$MV_PHP" -r '$d = json_decode((string) @file_get_contents($argv[1]), true); exit(is_array($d) && isset($d["aktionstoken"]) && trim((string) $d["aktionstoken"]) !== "" ? 0 : 1);' "$1" >/dev/null 2>&1
+        return $?
+    fi
+    # Ohne PHP bleibt nur die Form. Das ist schwaecher - und der Grund, warum
+    # die Entscheidung im Plugin selbst noch einmal faellt.
+    [ -s "$1" ] && [ "$(cat "$1" 2>/dev/null)" != "{}" ]
+}
+if mv_hat_token "$BK" && ! mv_hat_token "$CF"; then
+    # Der verdraengte Stand bleibt lesbar - es kann etwas darin stehen, das
+    # nur der Bediener wiederherstellen kann.
+    if [ -s "$CF" ]; then
+        cp -p "$CF" "$CF.kaputt" 2>/dev/null
+        chmod 600 "$CF.kaputt" 2>/dev/null
+        echo "<INFO> Der vorherige Inhalt der Konfiguration liegt unter $CF.kaputt."
+    fi
     cp -p "$BK" "$CF"
+    chmod 600 "$CF" 2>/dev/null
+    echo "<OK> Die Konfiguration trug kein lesbares Aktionstoken und wurde aus der Zweitschrift wiederhergestellt."
 fi
 if [ -f "$SICHER/marstek.log" ]; then
     mkdir -p "$BASE/log/plugins/$PFOLDER"

@@ -13,6 +13,60 @@ den Auto-Modus des Geräts zurück.
 
 Kompatibel mit LoxBerry 3.x und **LoxBerry 4** (reines PHP, läuft mit PHP 7.4 und 8.x).
 
+## Neu in 1.1.14
+
+**Eine abgeschnittene Konfigurationsdatei kostete das Aktionstoken — und damit
+jede Loxone-Adresse.** Die Selbstheilung entschied nach der *Form* der Datei
+(„ist sie leer oder `{}`?"), nicht nach ihrem *Inhalt*. Eine halb geschriebene
+`marstek.json` — nach einem Stromausfall, bei voller Speicherkarte oder nach
+einer Handbearbeitung — ist aber weder leer noch `{}`: sie ging an der Heilung
+vorbei, `json_decode()` gab `null`, die Oberfläche würfelte ein **neues**
+Aktionstoken und legte es über die Zweitschrift. Danach beantwortet der
+Endpunkt jeden Sollwert aus Loxone mit HTTP 403 — und ein virtueller Ausgang
+wertet die Antwort nicht aus: der Speicher steht still, und in der
+Visualisierung sieht alles normal aus.
+
+Gemessen am 18.09.2026 in einer LoxBerry-Nachbildung, zwölf Lagen, unter
+PHP 8.3.6 und PHP 7.4.33 mit gleichem Ergebnis. Vorher 16 Abweichungen von der
+Erwartung, nachher keine.
+
+Was sich geändert hat:
+
+* **„Inhalt" heißt jetzt: lesbares JSON-Objekt *und* vorhandenes
+  Aktionstoken.** Geheilt wird nur aus einer Zweitschrift, die selbst Inhalt
+  trägt. Der verdrängte Stand wird nicht weggeworfen, sondern liegt als
+  `marstek.json.kaputt` daneben (Rechte 0600 — es kann das alte Token darin
+  stehen).
+* **Die Zweitschrift wird nicht mehr blind nachgezogen.** Ein Stand, der das
+  Aktionstoken nicht trägt, ersetzt sie nicht; gespeichert wird trotzdem, nur
+  der Rückweg bleibt stehen, und das Protokoll sagt es.
+* **Der Minutentakt schrieb mit.** `bin/cron.php` vervollständigt die
+  Konfiguration als Erstes und las die Datei dabei an der Heilung vorbei — bei
+  `marstek.json` = `{}` schrieb er die blanken Vorgaben samt leerem
+  Aktionstoken und zog die Zweitschrift nach, jede Minute, auf jeder
+  bestehenden Anlage. Das Vervollständigen tritt jetzt zurück, solange eine
+  Zweitschrift mit Inhalt danebenliegt.
+* **Ein neues Aktionstoken entsteht nur, wenn keine Zweitschrift mit Token
+  danebenliegt.** Ein frisch gewürfeltes Token ist ein gültiger Wert und käme
+  sonst durch jede Wache hindurch — gemessen an einer schreibgeschützten
+  Konfiguration, die sich nicht heilen ließ. Der Knopf *Neues Aktionstoken
+  erzeugen* ist davon nicht betroffen: er ist eine ausdrückliche Entscheidung
+  des Bedieners.
+* **`postupgrade.sh` fragt dieselbe Frage.** Der Rückholentscheid nach einem
+  Update prüfte ebenfalls nur die Form; er fragt jetzt, ob sich in der Datei
+  ein Aktionstoken *lesen* lässt.
+* **Der Reiter *Test* verschweigt den Schaden nicht mehr.** Bis 1.1.13 heilte
+  der Seitenaufbau die Datei, und die Selbstprüfung las danach eine heile
+  Datei und meldete „in Ordnung". Der zuerst gesehene Zustand überlebt jetzt
+  die Heilung.
+
+Der Zustandsbericht der Konfigurationsdatei und die Heilung entscheiden nicht
+mehr getrennt: beide fragen dieselben zwei Funktionen.
+
+**Für bestehende Anlagen ändert sich nichts an den Adressen, Einstellungen
+oder Themen.** Wer eine `marstek.json.kaputt` neben seiner Konfiguration
+findet, hatte einen solchen Vorfall; im Protokoll steht die Zeile dazu.
+
 ## Neu in 1.1.12
 
 **Was schiefging, steht jetzt auf der Speicherkarte.** Das Protokoll unter

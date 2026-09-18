@@ -415,9 +415,27 @@ $mv_fehlten = marstek_cfg_vervollstaendigen();
 
 // Beim ersten Aufruf ein Token erzeugen, damit der Endpunkt fuer Loxone sofort
 // benutzbar ist (schuetzt ?p= und ?mode= im unangemeldeten marstek.php).
+//
+// BERICHTIGT 18.09.2026 - der dritte Weg. Ein frisch gewuerfeltes Token ist ein
+// gueltiger Wert und kaeme deshalb durch die Zweitschrift-Wache in
+// marstek_cfg_schreiben() hindurch. Gemessen (Fall F "ui_dritter_weg", WSL):
+// marstek.json abgeschnitten und schreibgeschuetzt, Zweitschrift heil - die
+// Heilung konnte nicht schreiben, diese Zeile wuerfelte ein neues Token, und
+// das Speichern legte es ueber die Zweitschrift:
+//     M2 Zweitschrift traegt altes Token: NEIN (erwartet JA)
+// Ein neues Token entsteht deshalb nur, wenn keine Zweitschrift mit Token
+// danebenliegt (marstek_token_darf_entstehen()). Der Knopf "Neues Aktionstoken
+// erzeugen" weiter oben bleibt davon unberuehrt - er ist eine ausdrueckliche
+// Entscheidung des Bedieners.
 if (empty($mv_cfg['aktionstoken'])) {
-    $mv_cfg['aktionstoken'] = marstek_token_erzeugen();
-    marstek_cfg_schreiben($mv_cfg);
+    if (marstek_token_darf_entstehen()) {
+        $mv_cfg['aktionstoken'] = marstek_token_erzeugen();
+        marstek_cfg_schreiben($mv_cfg);
+    } else {
+        marstek_log('Es wurde KEIN neues Aktionstoken erzeugt: die Konfiguration traegt '
+            . 'keines, aber die Zweitschrift neben dem Plugin-Ordner tut es. Sonst waeren '
+            . 'alle Loxone-Adressen still auf HTTP 403 gelaufen.');
+    }
 }
 
 // Letzter Status je Geraet (Zwischenspeicher - KEIN Live-Aufruf, damit die

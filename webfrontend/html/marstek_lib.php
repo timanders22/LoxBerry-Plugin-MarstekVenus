@@ -207,19 +207,120 @@ function marstek_vorgaben() {
     );
 }
 
+/**
+ * Welche Schluessel dieser Datei sind Geheimnisse?
+ *
+ * Nur sie entscheiden darueber, ob eine Datei "Inhalt" hat und ob die
+ * Zweitschrift nachgezogen werden darf. Alles andere laesst sich in der
+ * Oberflaeche noch einmal eintragen; das Aktionstoken nicht - es steht in
+ * JEDER Loxone-Adresse dieses Plugins, und es gibt keinen Weg, es
+ * zurueckzurechnen.
+ *
+ * Als LISTE, obwohl heute genau ein Eintrag darin steht: bei AudiConnect
+ * 0.9.18 (gemessen 18.09.2026) fuehrt die Linie drei Geheimnisse, und die
+ * Luecke wird je Geheimnis einzeln bestimmt - sonst rettet eine aeltere
+ * Zweitschrift das Aktionstoken nicht mehr, weil ein anderes Feld fehlt.
+ * Wer hier einen zweiten Schluessel eintraegt, bekommt dieselbe Behandlung
+ * ohne weitere Aenderung.
+ */
+function marstek_geheimnisse() {
+    return array('aktionstoken');
+}
+
+/**
+ * Traegt diese Datei ueberhaupt etwas?
+ *
+ * Nicht "ist sie leer?", sondern "laesst sie sich als JSON-Objekt mit
+ * mindestens einem Schluessel lesen?". Der Unterschied ist gemessen
+ * (18.09.2026, WSL, Pruefung-MarstekVenus-1.1.14/Messungen): eine
+ * ABGESCHNITTENE marstek.json - nicht leer, nicht "{}", aber fuer
+ * json_decode() unbrauchbar - ging bis 1.1.14 an der Selbstheilung vorbei.
+ *
+ * Rueckgabe: die gelesenen Daten oder null, wenn die Datei nichts traegt.
+ * Bauart: sp_inhalt_oder_null() aus Sprachsteuerung 0.11.7.
+ */
+function marstek_inhalt_oder_null($pfad) {
+    if (!is_file($pfad)) { return null; }
+    $roh = trim((string) @file_get_contents($pfad));
+    if ($roh === '') { return null; }
+    $d = json_decode($roh, true);
+    if (!is_array($d) || $d === array()) { return null; }
+    return $d;
+}
+
+/**
+ * Traegt diese Konfiguration das, was nur sie tragen kann?
+ *
+ * Eine Konfiguration OHNE Aktionstoken gibt es auf keinem Weg der
+ * Oberflaeche: index.php fuellt es beim ersten Seitenaufbau. Steht dort
+ * keines, ist die Datei nicht aus einem gespeicherten Stand hervorgegangen -
+ * dann wird aus der Zweitschrift geheilt, statt ein NEUES Token zu wuerfeln
+ * und damit jede Loxone-Adresse auf HTTP 403 laufen zu lassen.
+ */
+function marstek_config_hat_inhalt($c) {
+    if (!is_array($c) || $c === array()) { return false; }
+    foreach (marstek_geheimnisse() as $feld) {
+        if (trim((string) (isset($c[$feld]) ? $c[$feld] : '')) !== '') {
+            return true;
+        }
+    }
+    return false;
+}
+
+/**
+ * Der zuerst gesehene Zustand ueberlebt die Selbstheilung.
+ *
+ * Ein geheilter Schaden ist kein Nicht-Schaden: die Zweitschrift kann aelter
+ * sein als das, was verlorenging, und die Ursache (volles Dateisystem,
+ * Stromausfall beim Schreiben) besteht fort. Bis 1.1.14 heilte
+ * marstek_config() beim Seitenaufbau (index.php:412), und der Reiter Test
+ * las danach eine heile Datei und meldete "in Ordnung" - der Bediener
+ * erfuhr nie, dass etwas war. Regeln/05, Abschnitt "Eine Zeile, die den
+ * Zustand der Konfiguration meldet, merkt ihn sich".
+ */
+function marstek_zustand_merken($z) {
+    if (!isset($GLOBALS['marstek_zustand_erst'])) {
+        $GLOBALS['marstek_zustand_erst'] = $z;
+    }
+    return $z;
+}
+
 /** Zustand der Konfigurationsdatei - fuer die Selbstpruefung im Reiter Test.
  *  Jeder Zustand, den der Code erzeugen kann, braucht seinen Satz:
- *  ok | leer | zweitschrift | kaputt | fehlt */
+ *  ok | leer | zweitschrift | kaputt | fehlt
+ *
+ *  BERICHTIGT 18.09.2026: diese Funktion traf bis 1.1.14 dieselbe
+ *  Entscheidung wie marstek_config() ein zweites Mal, und zwar wortgleich
+ *  ($roh === '' || $roh === '{}'). Zwei Stellen, die dasselbe entscheiden,
+ *  sind eine zu viel; beide fragen jetzt marstek_inhalt_oder_null() und
+ *  marstek_config_hat_inhalt(). */
 function marstek_config_zustand() {
+    if (isset($GLOBALS['marstek_zustand_erst'])) {
+        return (string) $GLOBALS['marstek_zustand_erst'];
+    }
     $p = marstek_paths();
+    $zweit = marstek_config_hat_inhalt(marstek_inhalt_oder_null($p['backup']));
     if (!is_file($p['config'])) {
-        return is_file($p['backup']) ? 'zweitschrift' : 'fehlt';
+        return $zweit ? 'zweitschrift' : 'fehlt';
     }
     $roh = trim((string) @file_get_contents($p['config']));
-    if ($roh === '' || $roh === '{}') {
-        return is_file($p['backup']) ? 'zweitschrift' : 'leer';
+    $d = marstek_inhalt_oder_null($p['config']);
+    if ($d === null) {
+        // Leer oder "{}" ist etwas anderes als abgeschnitten: das eine ist
+        // eine noch nicht eingerichtete Anlage, das andere ein Schaden.
+        if ($roh === '' || $roh === '{}' || $roh === '[]') {
+            return $zweit ? 'zweitschrift' : 'leer';
+        }
+        // Beschaedigt bleibt beschaedigt, auch wenn eine Zweitschrift
+        // danebenliegt: gemeldet wird, was gemessen ist, nicht was gleich
+        // geschehen wird. Sobald marstek_config() geheilt hat, sagt der
+        // Merker oben 'zweitschrift'.
+        return 'kaputt';
     }
-    return json_decode($roh, true) === null ? 'kaputt' : 'ok';
+    if (!marstek_config_hat_inhalt($d)) {
+        return $zweit ? 'zweitschrift' : 'leer';
+    }
+    return 'ok';
 }
 
 /**
@@ -253,18 +354,63 @@ function marstek_config($erzeugen = true) {
         $erzeugen = false;
     }
     $p = marstek_paths();
-    // Selbstheilung: fehlende/leere Konfiguration aus Sicherung wiederherstellen.
-    // Entschieden wird nach INHALT, nicht nach Form - eine Datei mit "{}" ist
-    // so leer wie keine.
+    /* Selbstheilung: eine Konfiguration ohne INHALT aus der Zweitschrift
+     * wiederherstellen.
+     *
+     * BERICHTIGT 18.09.2026. Bis 1.1.14 fragte diese Zeile nach der FORM:
+     *     if ($erzeugen && ($roh === '' || $roh === '{}') && is_file($p['backup']))
+     * Der Kommentar sagte "nach INHALT", der Code tat es nicht. Gemessen in
+     * WSL (Pruefung-MarstekVenus-1.1.14, Fall A "ui_kaputt"): eine
+     * ABGESCHNITTENE marstek.json - weder leer noch "{}" - ging daran vorbei,
+     * json_decode() gab null, marstek_config() lieferte die blanken Vorgaben,
+     * index.php wuerfelte ein NEUES Aktionstoken und marstek_cfg_schreiben()
+     * kopierte es ueber die Zweitschrift. Wortlaut der Messung:
+     *     M1 Konfiguration traegt altes Token: NEIN (erwartet JA)
+     *     M2 Zweitschrift traegt altes Token:  NEIN (erwartet JA)
+     * Danach beantwortet der Endpunkt jeden Sollwert aus Loxone mit HTTP 403,
+     * und ein virtueller Ausgang wertet die Antwort nicht aus.
+     *
+     * "Inhalt" heisst: lesbares JSON-Objekt UND mindestens ein Geheimnis aus
+     * marstek_geheimnisse(). Geheilt wird nur aus einer Zweitschrift, die
+     * selbst Inhalt traegt - ein Stand ohne Inhalt darf keinen anderen
+     * ersetzen, in keine der beiden Richtungen. Was vorher in der Datei
+     * stand, wird nicht weggeworfen, sondern liegt als <datei>.kaputt daneben
+     * (0600 - es steht ein Aktionstoken darin).
+     * Bauart: sp_config() aus Sprachsteuerung 0.11.7.
+     */
     $roh = is_file($p['config']) ? trim((string) @file_get_contents($p['config'])) : '';
-    if ($erzeugen && ($roh === '' || $roh === '{}') && is_file($p['backup'])) {
+    if ($erzeugen && !marstek_config_hat_inhalt(marstek_inhalt_oder_null($p['config']))
+            && marstek_config_hat_inhalt(marstek_inhalt_oder_null($p['backup']))) {
         if (!is_dir(dirname($p['config']))) { @mkdir(dirname($p['config']), 0775, true); }
-        @copy($p['backup'], $p['config']);
-        @chmod($p['config'], 0600);
-        marstek_log('Konfiguration war leer - aus der Zweitschrift wiederhergestellt.');
-        // Dauerhaft festhalten: eine verlorene Konfiguration ist genau die Art
-        // Vorfall, die am naechsten Morgen noch erklaerbar sein muss.
-        marstek_ereignis('Konfiguration war leer und ist aus der Zweitschrift wiederhergestellt worden.');
+        // Nur ein Stand, der ueberhaupt etwas enthaelt, wird beiseitegelegt -
+        // eine leere oder "{}"-Datei ist nichts, was jemand retten wollte.
+        $rest = preg_replace('/\s+/', '', $roh);
+        $beiseite = ($rest !== '' && $rest !== '{}' && $rest !== '[]');
+        if ($beiseite) {
+            @copy($p['config'], $p['config'] . '.kaputt');
+            @chmod($p['config'] . '.kaputt', 0600);
+        }
+        if (@copy($p['backup'], $p['config'])) {
+            @chmod($p['config'], 0600);
+            marstek_zustand_merken('zweitschrift');
+            $wohin = $beiseite
+                   ? ' (der vorherige Inhalt liegt unter ' . $p['config'] . '.kaputt)' : '';
+            marstek_log('Die Konfiguration trug kein Aktionstoken und wurde aus der '
+                . 'Zweitschrift wiederhergestellt: ' . $p['backup'] . $wohin . '.');
+            // Dauerhaft festhalten: eine verlorene Konfiguration ist genau die Art
+            // Vorfall, die am naechsten Morgen noch erklaerbar sein muss.
+            marstek_ereignis('Die Konfiguration trug kein Aktionstoken und ist aus der '
+                . 'Zweitschrift wiederhergestellt worden.' . $wohin);
+        } else {
+            // Fail closed und sagen, warum: wenn hier nicht geschrieben werden
+            // kann, darf erst recht kein neues Token entstehen.
+            marstek_zustand_merken('kaputt');
+            marstek_log_if_changed('heilung',
+                'Die Konfiguration traegt kein Aktionstoken und liess sich NICHT aus der '
+                . 'Zweitschrift wiederherstellen: ' . $p['config']
+                . ' - bis dahin bleibt das Aktionstoken nur in ' . $p['backup'] . '.',
+                'heilung:nein');
+        }
         $roh = is_file($p['config']) ? trim((string) @file_get_contents($p['config'])) : '';
     }
     $cfg = $roh !== '' ? json_decode($roh, true) : array();
@@ -311,12 +457,110 @@ function marstek_cfg_schreiben(array $cfg) {
     // 0644, waehrend die Zweitschrift (unten), die Update-Sicherung
     // (preupgrade.sh) und die Wiederherstellung alle 0600 trugen. Die Kopie
     // war strenger als das Original.
+    /* Ein UNLESBARER Stand wird nicht stillschweigend ueberschrieben.
+     *
+     * NEU 18.09.2026. Gemessen (Faelle D "ui_ohne_zweitschrift" und E
+     * "ui_zweitschrift_ohne_tok"): liegt keine Zweitschrift MIT Inhalt daneben,
+     * gibt es nichts zu heilen - und bis 1.1.14 hat der naechste Schreibvorgang
+     * die abgeschnittene Datei restlos ueberschrieben. Damit war auch das alte
+     * Aktionstoken fort, das ein Mensch aus den Bruchstuecken noch haette
+     * ablesen und in die Oberflaeche zurueckschreiben koennen.
+     *
+     * Gefragt wird nach LESBARKEIT, nicht nach Inhalt: eine Datei, die sich
+     * lesen laesst und nur kein Token traegt (frische Anlage), ist nicht
+     * beschaedigt und wird nicht beiseitegelegt - sonst entstuende bei jedem
+     * Schreibvorgang eine neue .kaputt-Datei ohne Anlass.
+     */
+    $alt = is_file($p['config']) ? trim((string) @file_get_contents($p['config'])) : '';
+    $rest = preg_replace('/\s+/', '', $alt);
+    if ($rest !== '' && $rest !== '{}' && $rest !== '[]'
+            && marstek_inhalt_oder_null($p['config']) === null) {
+        @copy($p['config'], $p['config'] . '.kaputt');
+        @chmod($p['config'] . '.kaputt', 0600);
+        marstek_zustand_merken('kaputt');
+        marstek_log_if_changed('kaputt_beiseite',
+            'Der bisherige Inhalt der Konfiguration war nicht lesbar und liegt jetzt unter '
+            . $p['config'] . '.kaputt - dort steht moeglicherweise das alte Aktionstoken.',
+            'beiseite:' . strlen($alt));
+    }
     if (!marstek_write_atomic($p['config'], $json, 0600)) {
         return false;
     }
-    @copy($p['config'], $p['backup']);   // Sicherung ausserhalb des Plugin-Ordners
-    @chmod($p['backup'], 0600);
+    // Sicherung ausserhalb des Plugin-Ordners - aber nur, wenn der neue Stand
+    // traegt, was dort schon steht. Gespeichert wird immer; nur der einzige
+    // Rueckweg wird nicht zerstoert.
+    marstek_zweitschrift_ziehen($p['config'], $p['backup'], $cfg,
+                                marstek_geheimnisse(), 0600);
     return true;
+}
+
+/**
+ * Was die Zweitschrift traegt und der neue Stand nicht.
+ *
+ * Leere Rueckgabe heisst: die Zweitschrift darf erneuert werden. Gefragt wird
+ * JE GEHEIMNIS einzeln (AudiConnect 0.9.18, gemessen 18.09.2026): fehlt eines,
+ * bleibt die Zweitschrift stehen - sonst nimmt ein Stand, der nur ein Feld
+ * verloren hat, den ganzen Rueckweg mit.
+ *
+ * Verglichen wird, ob ein Geheimnis fehlt oder leer ist, nicht ob sich ein
+ * beliebiger Wert geaendert hat: eine geleerte Geraeteliste ist ein gewolltes
+ * Loeschen und wird nachgezogen.
+ */
+function marstek_zweitschrift_fehlt($sicherung, array $neu, array $felder) {
+    $z = marstek_inhalt_oder_null($sicherung);
+    if ($z === null) { return array(); }
+    $fehlt = array();
+    foreach ($felder as $feld) {
+        if (!array_key_exists($feld, $z)) { continue; }
+        if (trim((string) $z[$feld]) === '') { continue; }
+        if (!array_key_exists($feld, $neu) || trim((string) $neu[$feld]) === '') {
+            $fehlt[] = $feld;
+        }
+    }
+    return $fehlt;
+}
+
+/**
+ * Die Zweitschrift erneuern - oder begruendet nicht.
+ *
+ * NEU 18.09.2026. Bis 1.1.14 stand hier ein nacktes @copy(), und jeder
+ * Schreibvorgang zog die Zweitschrift mit - auch einer, der das Aktionstoken
+ * gar nicht mehr hatte. Gemessen (Fall G "takt_leer"): der Minutentakt schrieb
+ * ueber marstek_cfg_vervollstaendigen() die blanken Vorgaben in die
+ * Konfiguration, und diese Zeile legte sie ueber die Zweitschrift - danach war
+ * das Aktionstoken auf BEIDEN Seiten fort.
+ * Bauart: sp_zweitschrift_ziehen() aus Sprachsteuerung 0.11.7.
+ */
+function marstek_zweitschrift_ziehen($quelle, $ziel, array $neu, array $felder, $rechte = null) {
+    $fehlt = marstek_zweitschrift_fehlt($ziel, $neu, $felder);
+    if ($fehlt) {
+        marstek_log('WARNUNG: Die Zweitschrift bleibt unveraendert - der gespeicherte Stand '
+            . 'traegt nicht, was dort steht (' . implode(', ', $fehlt) . '): ' . $ziel);
+        return false;
+    }
+    if (!@copy($quelle, $ziel)) { return false; }
+    if ($rechte !== null) { @chmod($ziel, $rechte); }
+    return true;
+}
+
+/**
+ * Darf ueberhaupt ein NEUES Aktionstoken entstehen?
+ *
+ * Der dritte Weg, gemessen am 18.09.2026 (Fall F "ui_dritter_weg", und bei
+ * FerienFeiertage 1.2.13 dieselbe Bauart): ein frisch gewuerfeltes Token ist
+ * ein gueltiger Wert und kommt deshalb durch JEDE Zweitschrift-Wache. Wenn die
+ * Heilung nicht schreiben konnte - Konfiguration schreibgeschuetzt, Platte
+ * voll -, wuerde die Oberflaeche beim naechsten Aufbau ein neues Token
+ * wuerfeln, es speichern und damit die Zweitschrift ueberschreiben, in der das
+ * richtige noch steht. Deshalb: ein neues Token entsteht nur, wenn KEINE
+ * Zweitschrift mit Token danebenliegt.
+ *
+ * Der Knopf "Neues Aktionstoken erzeugen" ist davon nicht betroffen - er ist
+ * eine ausdrueckliche Entscheidung des Bedieners, kein Nebeneffekt.
+ */
+function marstek_token_darf_entstehen() {
+    $p = marstek_paths();
+    return !marstek_config_hat_inhalt(marstek_inhalt_oder_null($p['backup']));
 }
 
 /**
@@ -338,6 +582,27 @@ function marstek_cfg_vervollstaendigen() {
     $cfg = $roh !== '' ? json_decode($roh, true) : array();
     if (!is_array($cfg)) {
         return array();   // kaputt - das ist ein Fehler, kein Ergaenzungsfall
+    }
+    /* NEU 18.09.2026: Solange die Datei kein Geheimnis traegt und eine
+     * Zweitschrift MIT Inhalt danebenliegt, ist das Sache der Selbstheilung,
+     * nicht des Vervollstaendigens.
+     *
+     * Diese Funktion liest die Datei ROH, an marstek_config() vorbei - und
+     * bin/cron.php:170 ruft sie als ERSTES, vor jedem anderen Zugriff.
+     * Gemessen (Fall G "takt_leer", WSL, PHP 8.3.6): bei marstek.json = "{}"
+     * schrieb der Minutentakt hier die blanken Vorgaben samt leerem
+     * Aktionstoken und zog die Zweitschrift nach -
+     *     M1 Konfiguration traegt altes Token: NEIN (erwartet JA)
+     *     M2 Zweitschrift traegt altes Token:  NEIN (erwartet JA)
+     * und das jede Minute, auf jeder bestehenden Anlage, ohne dass jemand
+     * die Oberflaeche geoeffnet haette.
+     *
+     * Ohne Zweitschrift mit Inhalt bleibt es beim Vervollstaendigen: dann ist
+     * nichts zu retten, und eine frisch eingerichtete Anlage soll ihre
+     * Schluessel bekommen. */
+    if (!marstek_config_hat_inhalt($cfg)
+            && marstek_config_hat_inhalt(marstek_inhalt_oder_null($p['backup']))) {
+        return array();
     }
     $fehlten = array();
     foreach (marstek_vorgaben() as $k => $v) {
