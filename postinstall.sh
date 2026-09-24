@@ -40,5 +40,32 @@ if [ -d "$CRON" ]; then
 elif [ ! -f "$CRON" ]; then
     echo "<WARNING> Cron-Datei $CRON fehlt - der minuetliche Cron (Verlauf, Zaehler, Auto-Fallback, Herzschlag) laeuft NICHT."
 fi
-echo "<OK> Installation abgeschlossen. Bitte Plugin-Oberflaeche oeffnen und konfigurieren."
+# Die Erstanleitung nur, wenn keine eingerichtete Konfiguration vorliegt.
+# postinstall.sh laeuft auch bei jedem Upgrade (Regeln/06); danach war der
+# Rat falsch und legte nahe, die Einstellungen seien verloren.
+# "Eingerichtet" heisst: mindestens ein Speicher mit Adresse (devices[].ip,
+# oder ip auf oberster Ebene aus der Ein-Geraete-Zeit) - dieselbe Frage wie
+# marstek_devices(). Das Aktionstoken allein reicht nicht; es entsteht beim
+# ersten Oeffnen der Oberflaeche ohne jeden Speicher. Gleichlautend in
+# postupgrade.sh. Ohne php gilt die Konfiguration als nicht eingerichtet,
+# und die Anleitung erscheint wie bisher.
+mv_eingerichtet() {
+    [ -s "$1" ] || return 1
+    php -r '$d = json_decode((string) @file_get_contents($argv[1]), true);
+        if (!is_array($d)) { exit(1); }
+        if (isset($d["ip"]) && is_string($d["ip"]) && trim($d["ip"]) !== "") { exit(0); }
+        foreach ((isset($d["devices"]) && is_array($d["devices"])) ? $d["devices"] : array() as $g) {
+            if (is_array($g) && isset($g["ip"]) && is_string($g["ip"]) && trim($g["ip"]) !== "") { exit(0); }
+        }
+        exit(1);' "$1" 2>/dev/null
+}
+if mv_eingerichtet "$CF"; then
+    echo "<OK> Installation abgeschlossen, Einstellungen uebernommen."
+elif mv_eingerichtet "$BASE/data/plugins/$PFOLDER.upgrade_sicherung/marstek.json"; then
+    # Ohne Zweitschrift holt erst postupgrade.sh die Konfiguration aus der
+    # Update-Sicherung zurueck und meldet dort, ob es gelang.
+    echo "<OK> Installation abgeschlossen. Die Einstellungen holt postupgrade.sh gleich aus der Update-Sicherung zurueck."
+else
+    echo "<OK> Installation abgeschlossen. Bitte Plugin-Oberflaeche oeffnen und konfigurieren."
+fi
 exit 0

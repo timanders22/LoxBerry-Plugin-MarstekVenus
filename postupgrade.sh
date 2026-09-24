@@ -12,6 +12,19 @@ BASE="${ARGV5:-$LBHOMEDIR}"
 # Installer data/plugins/<x>/ zwischen beiden Skripten loescht.
 SICHER="$BASE/data/plugins/$PFOLDER.upgrade_sicherung"
 mkdir -p "$BASE/config/plugins/$PFOLDER" 2>/dev/null
+# Dieselbe Frage wie in postinstall.sh: mindestens ein Speicher mit Adresse.
+mv_eingerichtet() {
+    [ -s "$1" ] || return 1
+    php -r '$d = json_decode((string) @file_get_contents($argv[1]), true);
+        if (!is_array($d)) { exit(1); }
+        if (isset($d["ip"]) && is_string($d["ip"]) && trim($d["ip"]) !== "") { exit(0); }
+        foreach ((isset($d["devices"]) && is_array($d["devices"])) ? $d["devices"] : array() as $g) {
+            if (is_array($g) && isset($g["ip"]) && is_string($g["ip"]) && trim($g["ip"]) !== "") { exit(0); }
+        }
+        exit(1);' "$1" 2>/dev/null
+}
+MV_VORHER=0; mv_eingerichtet "$BASE/config/plugins/$PFOLDER/marstek.json" && MV_VORHER=1
+MV_GESICHERT=0; mv_eingerichtet "$SICHER/marstek.json" && MV_GESICHERT=1
 if [ -f "$SICHER/marstek.json" ]; then
     cp -p "$SICHER/marstek.json" "$BASE/config/plugins/$PFOLDER/marstek.json"
 fi
@@ -77,7 +90,32 @@ if [ -f "$ALT" ]; then
 fi
 
 
+# Das Schlusswort zur Konfiguration steht hier nur, wenn postinstall.sh es
+# hierher verwiesen hat: dort stand noch kein Speicher in marstek.json, in
+# der Update-Sicherung aber schon.
+if [ $MV_VORHER = 0 ] && [ $MV_GESICHERT = 1 ]; then
+    if mv_eingerichtet "$CF"; then
+        echo "<OK> Aktualisierung abgeschlossen, Einstellungen uebernommen."
+    else
+        echo "<WARNING> Die Einstellungen liessen sich nicht aus der Update-Sicherung zurueckholen."
+        echo "<WARNING> Bitte Plugin-Oberflaeche oeffnen und konfigurieren."
+    fi
+fi
+
 # Der Nachbar hat seinen Zweck erfuellt. Was neben dem Ordner liegt,
 # raeumt niemand sonst weg - und er traegt die Zugangsdaten mit.
-rm -rf "$SICHER" 2>/dev/null
+#
+# Aber nur, wenn die Rueckholung nach INHALT gelungen ist. Bis 1.1.14 fiel
+# er ohne Bedingung, auch wenn das Zurueckkopieren oben gescheitert war -
+# dann gab es weder Konfiguration noch Sicherung (Pruefung-MarstekVenus-1.1.15,
+# Fall e2). Liegen bleibt er, wenn seine marstek.json einen Speicher oder ein
+# Aktionstoken traegt, die im Konfigordner aber weder das eine noch das andere.
+mv_inhalt() { mv_eingerichtet "$1" || mv_hat_token "$1"; }
+if [ -d "$SICHER" ] && mv_inhalt "$SICHER/marstek.json" && ! cmp -s "$SICHER/marstek.json" "$CF" \
+   && ! mv_inhalt "$CF"; then
+    echo "<WARNING> Die Update-Sicherung bleibt liegen - ihre Konfiguration ist nicht angekommen:"
+    echo "<WARNING>   $SICHER"
+else
+    rm -rf "$SICHER" 2>/dev/null
+fi
 exit 0

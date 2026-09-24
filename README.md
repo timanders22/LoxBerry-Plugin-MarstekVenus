@@ -13,6 +13,22 @@ den Auto-Modus des Geräts zurück.
 
 Kompatibel mit LoxBerry 3.x und **LoxBerry 4** (reines PHP, läuft mit PHP 7.4 und 8.x).
 
+## Neu in 1.1.15
+
+**Nach einem Update fordert die Installation nicht mehr dazu auf, die Oberfläche zu
+öffnen und zu konfigurieren, wenn die Einstellungen übernommen sind.** Bis 1.1.14
+stand dieser Rat am Ende jeder Installation. Jetzt meldet `postinstall.sh`
+„Einstellungen übernommen", sobald nach dem Zurückspielen mindestens ein Speicher
+mit Adresse eingetragen ist. Fehlt die Zweitschrift, holt erst `postupgrade.sh` die
+Einstellungen aus der Update-Sicherung zurück und meldet dort, ob es gelang; scheitert
+es, erscheint der Rat als Warnung.
+
+**Die Update-Sicherung bleibt liegen, wenn das Zurückholen scheitert.** `postupgrade.sh`
+räumte sie bisher ohne Bedingung ab; nach einem gescheiterten Zurückkopieren gab es dann
+weder Konfiguration noch Sicherung. Jetzt wird sie nur gelöscht, wenn die Konfiguration
+danach einen Speicher oder ein Aktionstoken trägt; sonst nennt eine Warnung ihren Pfad.
+In WSL nachgestellt (`Pruefung-MarstekVenus-1.1.15/`), nicht am Gerät.
+
 ## Neu in 1.1.14
 
 **Eine abgeschnittene Konfigurationsdatei kostete das Aktionstoken — und damit
