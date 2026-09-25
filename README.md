@@ -13,6 +13,76 @@ den Auto-Modus des Geräts zurück.
 
 Kompatibel mit LoxBerry 3.x und **LoxBerry 4** (reines PHP, läuft mit PHP 7.4 und 8.x).
 
+## Neu in 1.1.16
+
+**Ein nachgeholter Sollwert geht nicht mehr hinaus, wenn er zu alt ist oder Loxone inzwischen
+etwas Neueres geschickt hat.** Scheitert ein Sollwert, weil der Speicher gerade schweigt, holt
+der Minutentakt ihn bis fünf Minuten lang nach. Das Alter wurde bisher einmal vor dem Nachholen
+geprüft; die Übertragung versucht es danach aber bis zu viermal über zwölf Sekunden. Jetzt wird
+unmittelbar vor **jedem** Senden gefragt, ob der Wert noch gilt: nicht älter als fünf Minuten, und
+kein neuerer Sollwert aus Loxone unterwegs oder angenommen. Vorher in WSL gegen eine
+Speicher-Attrappe gemessen: ein Nachholen von +800 W lief, Loxone schickte −300 W, der Speicher nahm
+−300 W an — und zwei Sekunden später vom Nachholen wieder +800 W. Das Protokoll sagt jetzt
+„Nachholen abgebrochen … Der Wert ging nicht mehr an den Speicher.“
+
+**Kein Nachhol-Versprechen mehr, wenn der Minutentakt steht.** Nur der Minutentakt holt nach. Lief
+er nicht (Herzschlag älter als drei Minuten), merkte sich der Endpunkt einen gescheiterten Sollwert
+trotzdem vor und schrieb „wird im nächsten Durchgang nachgeholt“. Jetzt heißt es „wird NICHT
+nachgeholt: der Minutentakt läuft nicht (zuletzt …)“, und es bleibt nichts liegen. Läuft der Takt
+nach langer Pause wieder an, verwirft er ältere Merker wie bisher.
+
+**MQTT: was das Plugin über sich selbst sagt, geht nicht mehr zurückbehalten hinaus.** `ok`
+(„der Speicher hat geantwortet“), `energie_ok`, `rang_ok` und `rang_errc` sind Aussagen des
+Plugins über die eigene Abfrage; stirbt der Minutentakt, stünde sonst „in Ordnung“ für immer im
+Broker. Ebenso nicht mehr zurückbehalten: die Tages- und Monatszähler (`energie_chgd`,
+`energie_disd`, `energie_chgm`, `energie_dism`) und `rang_n` — sie werden allein durch die Uhr
+falsch. Zurückbehalten bleiben `soc`, `fw`, `soll`, `energie_chgt`, `energie_dist`,
+`energie_cyc`, `energie_eff`. Wer die Themen in Loxone benutzt, muss nichts ändern; nach einem
+Neustart von Broker oder Gateway fehlen die flüchtigen Werte bis zum nächsten Takt (Status jede
+Minute, Zähler und Ränge bei Änderung, spätestens nach 30 Minuten).
+
+Alte zurückbehaltene Werte werden abgeräumt: der Minutentakt fragt den Broker (Anmeldung mit
+Brokeruser/Brokerpass aus der `general.json`, das Kennwort steht nur im Anmeldepaket), ob unter
+diesen Themen noch etwas steht; wenn ja, geht die leere Nutzlast unmittelbar vor dem gültigen Wert
+hinaus, und gefragt wird wieder, bis der Broker „leer“ meldet. Erst dann liegt der Merker
+`data/plugins/<ordner>.verlauf/retain_altlast_bestaetigt`. **Grenze:** lässt sich der Broker nicht
+befragen (falsche Zugangsdaten, anderer Rechner, Filter abgelehnt), gibt es keinen Merker; dann
+geht die leere Nutzlast in **jedem** Lauf vor diesen Themen hinaus, und der Takt versucht die
+Rückfrage jede Minute (höchstens wenige Sekunden). Der Endpunkt `?status` fragt den Broker nie.
+
+**Die Deinstallation leert die zurückbehaltenen Themen** (auch die eines längst ausgetragenen
+zweiten bis neunten Speichers), höchstens drei Runden, jede vom Broker nachgelesen. Lässt sich
+der Broker nicht befragen, sagt das Protokoll „nicht nachgelesen“; was dann stehen bleibt, löscht
+`mosquitto_pub -r -n -t <thema>`. Geleert wird nur unter dem eingestellten Präfix.
+
+**Ein ausgepacktes Archiv fasst die Anlage nicht mehr an.** Die LoxBerry-Wurzel wird nur noch
+anerkannt, wenn darunter `config/system/general.json` liegt; die Pfade der Anlage gelten nur, wenn
+die Bibliothek dort installiert liegt oder `LBHOMEDIR` **und** `LBPPLUGINDIR` gesetzt sind. Vorher
+gemessen: `cron.php` aus einem ausgepackten Archiv holte mit bloßem `LBHOMEDIR` (wie es am Gerät in
+`/etc/environment` steht) den offenen Sollwert der Anlage nach und schickte ihn an den Speicher,
+und der Endpunkt des Archivs schaltete mit dem Token der Anlage. Jetzt bricht `cron.php` dort mit
+Meldung ab, und ohne Wurzel liegt der Ersatz-Zwischenspeicher unter `<tmp>/marstekvenus-archiv`
+statt im Zwischenspeicher der Anlage. Sprachdateien, Bibliothekssuche (Oberfläche, Healthcheck,
+Minutentakt) und die Fassungsangabe greifen ohne Wurzel nicht mehr auf Pfade ab `/` oder auf
+`/home/loxberry/loxberry` zu. `preupgrade.sh`, `postinstall.sh`, `postupgrade.sh` und `uninstall`
+suchen die Wurzel nach derselben Regel und warnen ohne sie, statt ab `/` zu arbeiten — vorher
+löschte `uninstall` in einem fremden Baum dessen Zweitschrift und Verlauf.
+
+**Die Deinstallation beendet nur noch den eigenen Minutentakt**, argumentweise erkannt (`php` und
+genau `bin/plugins/<ordner>/cron.php`, kein weiteres Argument, Besitzer `loxberry`), und prüft vor
+dem harten Signal noch einmal. Vorher beendete sie auch `tail -f …/cron.php`, einen Einmallauf mit
+`--einmal` und — mit `kill -9` — einen Prozess, der die Nummer inzwischen gewechselt hatte.
+
+**Kleineres.** `postinstall.sh` spielt die Zweitschrift nur zurück, wenn sie Inhalt trägt (lesbares
+JSON mit Aktionstoken), und nur über eine Konfiguration ohne Inhalt; eine abgeschnittene
+`marstek.json` liegt danach als `.kaputt` daneben. Vorher wurde `{}` kopiert und als
+„wiederhergestellt“ gemeldet, und eine abgeschnittene Datei blieb stehen. Die Zahlen der
+Antwortzeile an Loxone (`?status`, `?energy`, `?ranks`, `?summe`) entstehen mit `%F`, unabhängig
+von der Locale (unter `de_DE.UTF-8` gemessen stand dort `SOC=73,5`).
+
+Alles in WSL gemessen (`Pruefung-MarstekVenus-1.1.16/`: 78 Fälle, vorher 55 rot, nachher 0; jede
+Korrektur einzeln zurückgebaut), nicht am Gerät.
+
 ## Neu in 1.1.15
 
 **Nach einem Update fordert die Installation nicht mehr dazu auf, die Oberfläche zu

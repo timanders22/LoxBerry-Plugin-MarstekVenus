@@ -21,70 +21,43 @@
 error_reporting(E_ALL & ~E_DEPRECATED & ~E_NOTICE);
 ini_set('display_errors', '1');
 
-/* Den LoxBerry-Wurzelordner ohne festen Systempfad bestimmen.
+/* Bibliothek finden: installiert im html-Zweig, im Archiv daneben.
  *
- * Vom eigenen Ablageort aufwaerts, bis ein Verzeichnis gefunden ist, das
- * config/plugins UND webfrontend enthaelt. Das trifft die uebliche
- * Installation genauso wie eine an einem anderen Ort - und es trifft auch
- * den Fall, dass das Plugin noch als entpacktes Archiv daliegt.
- *
- * DIESE DEFINITION MUSS VOR DEM ERSTEN AUFRUF STEHEN. Siehe Kopf.
+ * BERICHTIGT 25.09.2026. Bis 1.1.15 stand hier eine eigene Wurzelsuche (ohne
+ * general.json) und eine Kandidatenliste, deren erster Eintrag im
+ * ausgepackten Archiv ein Pfad ab der Laufwerkswurzel war - eine
+ * marstek_lib.php unter /html/plugins/htmlauth/ wurde VOR der eigenen geladen
+ * (in WSL gemessen, Pruefung-MarstekVenus-1.1.16, Fall C4). Welcher Fall
+ * vorliegt, sagt jetzt der Ablageort selbst; Wurzel, Ordner und Pfade kommen
+ * aus marstek_paths(), EINER Stelle fuer die Wurzelregel.
  */
-if (!function_exists('lb_wurzel_ermitteln')) {
-    function lb_wurzel_ermitteln()
-    {
-        $d = __DIR__;
-        for ($i = 0; $i < 8; $i++) {
-            if (is_dir($d . '/config/plugins') && is_dir($d . '/webfrontend')) {
-                return $d;
-            }
-            $eltern = dirname($d);
-            if ($eltern === $d) { break; }
-            $d = $eltern;
-        }
-        return '';
-    }
-}
-
-$mv_lbhomedir = getenv('LBHOMEDIR') ?: lb_wurzel_ermitteln();
-$mv_plugindir = getenv('LBPPLUGINDIR') ?: basename(__DIR__);
-if ($mv_lbhomedir && is_dir($mv_lbhomedir . '/config/plugins/' . $mv_plugindir) === false) {
-    $mv_plugindir = basename(dirname(__DIR__));
-    if (is_dir($mv_lbhomedir . '/config/plugins/' . $mv_plugindir) === false) {
-        $mv_plugindir = 'marstekvenus';
-    }
-}
-if ($mv_lbhomedir) {
-    $sdk_system = $mv_lbhomedir . '/libs/phplib/loxberry_system.php';
-    $sdk_web = $mv_lbhomedir . '/libs/phplib/loxberry_web.php';
-    if (file_exists($sdk_system)) {
-        require_once $sdk_system;
-        require_once $sdk_web;
-    }
-    $mv_log_file = $mv_lbhomedir . '/log/plugins/' . $mv_plugindir . '/marstek.log';
-    $mv_err_file = $mv_lbhomedir . '/log/plugins/' . $mv_plugindir . '/cron.err';
+$mv_ordner_hier = basename(__DIR__);
+if (basename(dirname(__DIR__)) === 'plugins' && basename(dirname(dirname(__DIR__))) === 'htmlauth') {
+    $libcand = dirname(dirname(dirname(__DIR__))) . '/html/plugins/' . $mv_ordner_hier . '/marstek_lib.php';
 } else {
-    $mv_log_file = sys_get_temp_dir() . '/marstekvenus/marstek.log';
-    $mv_err_file = sys_get_temp_dir() . '/marstekvenus/cron.err';
+    $libcand = dirname(__DIR__) . '/html/marstek_lib.php';
 }
-
-// Bibliothek einbinden (installiert unter .../html/plugins/<plugin>/, im Archiv unter ../html/).
-// Kandidatenliste statt einer gerechneten Zahl ".." - das ist der Fehler, an
-// dem Intercom und Heimkino gescheitert sind.
-foreach (array(
-    dirname(dirname(dirname(__DIR__))) . '/html/plugins/' . $mv_plugindir . '/marstek_lib.php',
-    dirname(__DIR__) . '/html/marstek_lib.php',
-) as $libcand) {
-    if (is_file($libcand)) {
-        require_once $libcand;
-        break;
-    }
+if (is_file($libcand)) {
+    require_once $libcand;
 }
 if (!function_exists('marstek_config')) {
     echo '<p style="font-family:sans-serif;color:#b00">marstek_lib.php wurde nicht gefunden - '
        . 'das Plugin ist unvollstaendig installiert.</p>';
     exit;
 }
+$mv_pfade = marstek_paths();
+$mv_lbhomedir = $mv_pfade['lbhome'];
+$mv_plugindir = $mv_pfade['plugin'];
+if ($mv_lbhomedir !== '') {
+    $sdk_system = $mv_lbhomedir . '/libs/phplib/loxberry_system.php';
+    $sdk_web = $mv_lbhomedir . '/libs/phplib/loxberry_web.php';
+    if (file_exists($sdk_system)) {
+        require_once $sdk_system;
+        require_once $sdk_web;
+    }
+}
+$mv_log_file = $mv_pfade['log'];
+$mv_err_file = dirname($mv_pfade['log']) . '/cron.err';
 
 // Die Selbstpruefung des Reiters Test liegt in einer eigenen Datei. Zwei
 // Dateien, ein Prozess: keine gleichnamigen Funktionen.

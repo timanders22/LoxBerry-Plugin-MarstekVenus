@@ -67,38 +67,25 @@
 $mv_htmldir = 'REPLACELBPHTMLDIR';
 $mv_gesucht = array();
 if (strpos($mv_htmldir, 'REPLACE') === 0 || !is_file($mv_htmldir . '/marstek_lib.php')) {
+    /* RUECKFALL nach dem Ablageort - NEU in 1.1.5, BERICHTIGT 25.09.2026.
+     *
+     * bin/ und webfrontend/html/ liegen installiert in GETRENNTEN Baeumen
+     * (<home>/bin/plugins/<ordner>/ und <home>/webfrontend/html/plugins/<ordner>/),
+     * im ausgepackten Archiv nebeneinander. Welcher Fall vorliegt, sagt der
+     * Ablageort selbst. Bis 1.1.15 stand hier zusaetzlich
+     * getenv('LBHOMEDIR') . '/webfrontend/html/plugins/...' - bei leerem
+     * LBHOMEDIR ein Pfad ab der Laufwerkswurzel, und er kam VOR dem Kandidaten
+     * aus dem Ablageort: eine marstek_lib.php dort wurde geladen (in WSL
+     * gemessen, Pruefung-MarstekVenus-1.1.16, Fall C5). */
     $mv_gesucht[] = $mv_htmldir;
-    $mv_htmldir = dirname(__DIR__) . '/webfrontend/html';   // ausgepacktes Archiv
-}
-if (!is_file($mv_htmldir . '/marstek_lib.php')) {
-    /* ZWEITER RUECKFALL - fuer die INSTALLIERTE Lage. NEU in 1.1.5.
-     *
-     * bin/ und webfrontend/html/ liegen installiert in GETRENNTEN Baeumen;
-     * der Rueckfall darueber trifft nur das ausgepackte Archiv. Wird der
-     * Platzhalter aus irgendeinem Grund nicht ersetzt, lief der Minutentakt
-     * bis 1.1.4 jede Minute ins Leere. Gemessen in der installierten Lage
-     * mit unersetztem Platzhalter, beide PHP-Fassungen:
-     *
-     *     cron.php     Rueckgabewert 1   "marstek_lib.php nicht gefunden"
-     *     healthcheck  Rueckgabewert 0   findet die Bibliothek
-     *
-     * bin/healthcheck fuehrt diese Kandidatenliste seit jeher; die
-     * Schwesterlinie Saugroboter 1.1.3 ebenfalls, mit derselben Begruendung.
-     * Von <home>/bin/plugins/<ordner>/ sind es drei Ebenen bis <home>.
-     */
-    $mv_gesucht[] = $mv_htmldir;
-    foreach (array(
-        (string) getenv('LBHOMEDIR') . '/webfrontend/html/plugins/' . basename(__DIR__),
-        dirname(dirname(dirname(__DIR__))) . '/webfrontend/html/plugins/' . basename(__DIR__),
-    ) as $mv_kandidat) {
-        $mv_gesucht[] = $mv_kandidat;
-        if (is_file($mv_kandidat . '/marstek_lib.php')) {
-            $mv_htmldir = $mv_kandidat;
-            break;
-        }
+    if (basename(dirname(__DIR__)) === 'plugins' && basename(dirname(dirname(__DIR__))) === 'bin') {
+        $mv_htmldir = dirname(dirname(dirname(__DIR__))) . '/webfrontend/html/plugins/' . basename(__DIR__);
+    } else {
+        $mv_htmldir = dirname(__DIR__) . '/webfrontend/html';   // ausgepacktes Archiv
     }
 }
 if (!is_file($mv_htmldir . '/marstek_lib.php')) {
+    $mv_gesucht[] = $mv_htmldir;
     fwrite(STDERR, "marstek_lib.php nicht gefunden (gesucht in "
         . implode(', ', $mv_gesucht) . ")\n");
     exit(1);
@@ -115,7 +102,7 @@ require_once $mv_htmldir . '/marstek_lib.php';
  * "--selftest" statt "--selbsttest" stillschweigend in der Dienstschleife
  * landete.
  */
-$mv_erlaubt = array('--selbsttest', '--einmal');
+$mv_erlaubt = array('--selbsttest', '--einmal', '--mqtt-leeren');
 foreach ($argv as $mv_i => $mv_a) {
     if ($mv_i === 0 || strncmp((string) $mv_a, '--', 2) !== 0) {
         continue;
@@ -134,6 +121,21 @@ foreach ($argv as $mv_i => $mv_a) {
 if (in_array('--selbsttest', $argv, true)) {
     exit(marstek_selbsttest());
 }
+
+/* --mqtt-leeren: aus uninstall/uninstall - die zurueckbehaltenen Themen der
+ * Linie leeren (marstek_mqtt_leeren()). Kein Abruf, keine Sperre, keine Datei.
+ * NEU 25.09.2026; bis 1.1.15 blieben sie nach der Deinstallation im Broker
+ * (gemessen, Fall U1). */
+if (in_array('--mqtt-leeren', $argv, true)) {
+    marstek_keine_wurzel_abbruch('cron.php');
+    exit(marstek_mqtt_leeren());
+}
+
+/* Ohne Wurzel oder aus einem ausgepackten Archiv: NICHTS tun. NEU 25.09.2026.
+ * Bis 1.1.15 holte ein Archiv-cron.php mit LBHOMEDIR (am Geraet in
+ * /etc/environment) den offenen Sollwert der Anlage nach und schickte ihn an
+ * den Speicher, und es schrieb deren Herzschlag (Faelle B1 bis B3, B7). */
+marstek_keine_wurzel_abbruch('cron.php');
 
 $sperre = marstek_tmpdir() . '/cron.lock';
 $fp = @fopen($sperre, 'c');

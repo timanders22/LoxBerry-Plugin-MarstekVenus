@@ -38,18 +38,23 @@ if ($mv_was === 'title') {
     exit(0);
 }
 
-// Installiert liegen bin/ und webfrontend/html/ in getrennten Baeumen. Die
-// Bibliothek wird deshalb ueber eine Kandidatenliste gesucht und nicht ueber
-// eine gerechnete Zahl ".." - das ist der Fehler, an dem andere Linien
-// gescheitert sind.
+// Installiert liegen bin/ und webfrontend/html/ in getrennten Baeumen
+// (<home>/bin/plugins/<ordner>/ und <home>/webfrontend/html/plugins/<ordner>/),
+// im ausgepackten Archiv nebeneinander. Welcher Fall vorliegt, sagt der
+// Ablageort selbst.
+//
+// BERICHTIGT 25.09.2026: bis 1.1.15 stand hier eine Kandidatenliste, deren
+// erste zwei Eintraege im ausgepackten Archiv Pfade ab der Laufwerkswurzel
+// ergaben - und sie kamen VOR der eigenen Bibliothek. Eine marstek_lib.php
+// unter /webfrontend/html/plugins/bin/ wurde geladen (in WSL gemessen,
+// Pruefung-MarstekVenus-1.1.16, Fall C3).
 $mv_lib = '';
-foreach (array(
-    dirname(dirname(dirname(__DIR__))) . '/webfrontend/html/plugins/' . basename(__DIR__) . '/marstek_lib.php',
-    dirname(dirname(__DIR__)) . '/webfrontend/html/plugins/' . basename(__DIR__) . '/marstek_lib.php',
-    dirname(__DIR__) . '/webfrontend/html/marstek_lib.php',
-) as $k) {
-    if (is_file($k)) { $mv_lib = $k; break; }
+if (basename(dirname(__DIR__)) === 'plugins' && basename(dirname(dirname(__DIR__))) === 'bin') {
+    $k = dirname(dirname(dirname(__DIR__))) . '/webfrontend/html/plugins/' . basename(__DIR__) . '/marstek_lib.php';
+} else {
+    $k = dirname(__DIR__) . '/webfrontend/html/marstek_lib.php';
 }
+if (is_file($k)) { $mv_lib = $k; }
 
 if ($mv_lib === '') {
     // Fail closed, und mit Begruendung. Ein grauer Punkt ohne Text laesst den

@@ -96,11 +96,16 @@ if (!defined('MARSTEK_SET_NACHHOLEN_S')) {
 /* Den LoxBerry-Wurzelordner ohne festen Systempfad bestimmen.
  *
  * Vom eigenen Ablageort aufwaerts, bis ein Verzeichnis gefunden ist, das
- * config/plugins UND webfrontend enthaelt. Das trifft die uebliche
- * Installation genauso wie eine an einem anderen Ort - und es trifft auch
- * den Fall, dass das Plugin noch als entpacktes Archiv daliegt (dann findet
- * es nichts und gibt einen Leerstring zurueck, was der Aufrufer ohnehin
- * abfangen muss).
+ * config/plugins, data/plugins UND config/system/general.json traegt. Findet
+ * sich keines, kommt ein Leerstring zurueck, und der Aufrufer muss das
+ * abfangen.
+ *
+ * BERICHTIGT 25.09.2026: bis 1.1.15 genuegten config/plugins und webfrontend -
+ * genau diese Ordner hinterlaesst ein Pruefstand auf einem Arbeitsrechner
+ * (Regeln/06, Raumklima-Vorfall). In WSL gemessen (Pruefung-MarstekVenus-
+ * 1.1.16, Faelle H1 und H2): ein ausgepacktes Archiv unter einem solchen
+ * fremden Baum nahm den Baum als Wurzel, und cron.php schrieb dort hinein.
+ * Ein LoxBerry hat general.json immer, ein Pruefstandsrest nie.
  *
  * Der Name traegt kein Plugin-Kuerzel und ist deshalb abgesichert: zwei
  * Bibliotheken landen nie im selben Prozess, aber die Pruefung kostet nichts.
@@ -110,7 +115,8 @@ if (!function_exists('lb_wurzel_ermitteln')) {
     {
         $d = __DIR__;
         for ($i = 0; $i < 8; $i++) {
-            if (is_dir($d . '/config/plugins') && is_dir($d . '/webfrontend')) {
+            if (is_dir($d . '/config/plugins') && is_dir($d . '/data/plugins')
+                && is_file($d . '/config/system/general.json')) {
                 return $d;
             }
             $eltern = dirname($d);
@@ -121,24 +127,99 @@ if (!function_exists('lb_wurzel_ermitteln')) {
     }
 }
 
-function marstek_paths() {
-    $lbhomedir = getenv('LBHOMEDIR') ?: lb_wurzel_ermitteln();
-    $plugindir = getenv('LBPPLUGINDIR') ?: basename(__DIR__);
-    // BERICHTIGT 04.09.2026: dieselben drei Kandidaten wie in index.php. Bis
-    // 1.1.4 kannte die Bibliothek nur zwei; existierte je ein Verzeichnis
-    // config/plugins/webfrontend/, arbeiteten Oberflaeche und Bibliothek auf
-    // VERSCHIEDENEN Konfigurationsdateien, ohne dass es eine Meldung gab.
-    if ($lbhomedir && is_dir($lbhomedir . '/config/plugins/' . $plugindir) === false) {
-        $plugindir = basename(dirname(__DIR__));
-        if (is_dir($lbhomedir . '/config/plugins/' . $plugindir) === false) {
-            $plugindir = 'marstekvenus';
-        }
+/* Die Wurzel in der Reihenfolge der Hausregel: erst die Umgebung, dann die
+ * Suche - und danach nichts mehr. Ein gesetztes LBHOMEDIR gilt mit
+ * config/plugins UND data/plugins darunter; general.json wird dort nicht
+ * verlangt, damit die Attrappen der Pruefwerkzeuge (Werkzeuge/lb) tragen.
+ * Rueckgabe '' heisst "keine Wurzel". Bauart awm_lbhome() (AWM-Abfuhr 1.4.13). */
+function marstek_lbhome()
+{
+    $h = getenv('LBHOMEDIR');
+    if ($h && is_dir($h . '/config/plugins') && is_dir($h . '/data/plugins')) {
+        return rtrim($h, '/');
     }
-    if ($lbhomedir) {
-        return array(
-            'config' => $lbhomedir . '/config/plugins/' . $plugindir . '/marstek.json',
-            'backup' => $lbhomedir . '/config/plugins/' . $plugindir . '.backup.json',
-            'log' => $lbhomedir . '/log/plugins/' . $plugindir . '/marstek.log',
+    return lb_wurzel_ermitteln();
+}
+
+/* Fuer cron.php: ohne Wurzel (oder aus einem ausgepackten Archiv) nichts tun,
+ * eine Meldung auf stderr, Rueckgabewert 1. Steht dort VOR der Sperre, denn
+ * schon die legt eine Datei an. Bauart awm_keine_wurzel_abbruch(). */
+function marstek_keine_wurzel_abbruch($programm)
+{
+    $p = marstek_paths();
+    if ($p['lbhome'] !== '') { return; }
+    if ($p['archiv'] !== '') {
+        fwrite(STDERR, $programm . ': Diese Datei liegt nicht in der Installation unter '
+            . $p['archiv'] . "\n"
+            . '(ausgepacktes Archiv oder Pruefordner). Damit nichts in die Anlage kommt,' . "\n"
+            . 'wurde kein Speicher angesprochen, nichts gesendet und nichts geschrieben.' . "\n"
+            . 'Abhilfe: das Programm aus ' . $p['archiv'] . '/bin/plugins/<ordner>' . "\n"
+            . 'aufrufen oder LBHOMEDIR und LBPPLUGINDIR ausdruecklich setzen.' . "\n");
+        exit(1);
+    }
+    fwrite(STDERR, $programm . ': Es wurde kein LoxBerry-Wurzelverzeichnis gefunden.' . "\n"
+        . '$LBHOMEDIR ist nicht gesetzt, und oberhalb von ' . __DIR__ . ' traegt kein' . "\n"
+        . 'Verzeichnis config/plugins, data/plugins und config/system/general.json.' . "\n"
+        . 'Es wurde kein Speicher angesprochen, nichts gesendet und nichts geschrieben.' . "\n");
+    exit(1);
+}
+
+/**
+ * Die Pfade - der Anlage, oder im Archivmodus die Ersatzpfade.
+ *
+ * Die Pfade DER ANLAGE gelten nur, wenn diese Bibliothek dort installiert
+ * liegt (<Wurzel>/webfrontend/html/plugins/<ordner>, physisch verglichen)
+ * oder der Aufrufer Wurzel UND Ordner ausdruecklich nennt ($LBHOMEDIR und
+ * $LBPPLUGINDIR - so arbeiten die Pruefwerkzeuge mit ihrer Attrappe). Sonst
+ * ist das ein ausgepacktes Archiv oder ein Pruefordner, und es gelten die
+ * Ersatzpfade unter dem Temp-Ordner, unter einem EIGENEN Namen.
+ *
+ * BERICHTIGT 25.09.2026. Bis 1.1.15 genuegte LBHOMEDIR allein (am Geraet steht
+ * es in /etc/environment), und der Ordner fiel auf 'marstekvenus'. In WSL
+ * gemessen (Pruefung-MarstekVenus-1.1.16): ein ausgepacktes Archiv holte mit
+ * cron.php den offenen Sollwert der Anlage nach und schickte ihn an den
+ * Speicher (Fall B1), schrieb ihren Herzschlag (B2, B3), schaltete ueber den
+ * Endpunkt mit dem Token der Anlage (B4), zeigte deren Token in der Oberflaeche
+ * (B5), und ohne jede Wurzel lag der Ersatz-Zwischenspeicher unter
+ * sys_get_temp_dir()/marstekvenus - dem Zwischenspeicher DER ANLAGE (B10).
+ * Bauart awm_paths() (AWM-Abfuhr 1.4.13).
+ *
+ * Gemerkt je Umgebung: marstek_tmpdir() und die Merker fragen je Aufruf.
+ */
+function marstek_paths() {
+    static $merk = array();
+    $schluessel = (string) getenv('LBHOMEDIR') . '|' . (string) getenv('LBPPLUGINDIR')
+                . '|' . sys_get_temp_dir();
+    if (isset($merk[$schluessel])) {
+        return $merk[$schluessel];
+    }
+    $home = marstek_lbhome();
+    $ordner = basename(__DIR__);        // installiert: .../html/plugins/<ordner>
+    /* LBPPLUGINDIR ist die Auskunft von LoxBerry SELBST und hat Vorrang; die
+     * Namen, die nachweislich kein Pluginordner sind, gelten auch dort nicht.
+     * Der feste Name greift nur, wo der abgeleitete kein Pluginordner sein
+     * KANN - aus dem ausgepackten Archiv heisst er 'html'. */
+    $nie = array('', '.', '/', 'html', 'htmlauth', 'bin', 'plugins', 'webfrontend');
+    $lbp = basename(rtrim((string) getenv('LBPPLUGINDIR'), '/'));
+    $lbp_gilt = !in_array($lbp, $nie, true);
+    if ($lbp_gilt) {
+        $ordner = $lbp;
+    } elseif (in_array($ordner, $nie, true)) {
+        $ordner = 'marstekvenus';
+    }
+    $gefunden = $home;
+    if ($home !== '') {
+        $soll = @realpath($home . '/webfrontend/html/plugins/' . basename(__DIR__));
+        $ist = @realpath(__DIR__);
+        $installiert = ($soll !== false && $ist !== false && $soll === $ist);
+        $ausdruecklich = $lbp_gilt && $home === rtrim((string) getenv('LBHOMEDIR'), '/');
+        if (!$installiert && !$ausdruecklich) { $home = ''; }
+    }
+    if ($home !== '') {
+        $merk[$schluessel] = array(
+            'config' => $home . '/config/plugins/' . $ordner . '/marstek.json',
+            'backup' => $home . '/config/plugins/' . $ordner . '.backup.json',
+            'log' => $home . '/log/plugins/' . $ordner . '/marstek.log',
             // Der Verlauf liegt NEBEN dem Ordner, nicht darin.
             // plugininstall.pl ruft bei JEDEM Update purge_installation, und
             // das entfernt data/plugins/<ordner>/ vollstaendig - ohne
@@ -148,21 +229,37 @@ function marstek_paths() {
             // im Namen ist kein Zufall: der Nachbar liegt im selben
             // Verzeichnis, wird aber von einem rm -rf <ordner>/ nicht
             // getroffen. uninstall/uninstall raeumt ihn selbst weg.
-            'datadir' => $lbhomedir . '/data/plugins/' . $plugindir . '.verlauf',
-            'data_alt' => $lbhomedir . '/data/plugins/' . $plugindir,
+            'datadir' => $home . '/data/plugins/' . $ordner . '.verlauf',
+            'data_alt' => $home . '/data/plugins/' . $ordner,
             'tmp' => '/tmp/marstekvenus',
-            'lbhome' => $lbhomedir,
+            'lbhome' => $home,
+            'plugin' => $ordner,
+            'archiv' => '',
         );
+        return $merk[$schluessel];
     }
-    return array(
-        'config' => dirname(dirname(__DIR__)) . '/config/marstek.json',
-        'backup' => dirname(dirname(__DIR__)) . '/config/marstek.backup.json',
-        'log' => sys_get_temp_dir() . '/marstekvenus/marstek.log',
-        'datadir' => sys_get_temp_dir() . '/marstekvenus/data',
+    /* Keine Wurzel (Entwicklung, Pruefstand, fremder Baum) oder Archivmodus:
+     * nie ein Pfad der Anlage, nie einer ab der Laufwerkswurzel und nie der
+     * Zwischenspeicher /tmp/marstekvenus der Anlage. cron.php steigt in beiden
+     * Faellen vorher aus (marstek_keine_wurzel_abbruch()); MQTT und Meldungen
+     * verlangen eine Wurzel. */
+    // Aufbau wie installiert (Konfiguration, Protokoll und Verlauf getrennt,
+    // Verlauf auf .verlauf), damit die Selbstpruefung hier dasselbe misst.
+    $tmp = rtrim(sys_get_temp_dir(), '/') . '/marstekvenus-archiv';
+    $merk[$schluessel] = array(
+        'config' => $tmp . '/config/marstek.json',
+        'backup' => $tmp . '/config.backup.json',
+        'log' => $tmp . '/log/marstek.log',
+        'datadir' => $tmp . '/data.verlauf',
         'data_alt' => '',
-        'tmp' => sys_get_temp_dir() . '/marstekvenus',
+        'tmp' => $tmp,
         'lbhome' => '',
+        'plugin' => $ordner,
+        // Die gefundene Wurzel, wenn diese Datei NICHT darin installiert
+        // liegt (Archivmodus) - fuer die Meldung; sonst leer.
+        'archiv' => $gefunden,
     );
+    return $merk[$schluessel];
 }
 
 /* ---------------- Konfiguration ---------------- */
@@ -866,11 +963,18 @@ function marstek_fassung()
             return trim((string) $aus);
         }
     }
+    /* BERICHTIGT 25.09.2026: der erste Kandidat entsteht nur mit Wurzel. Bis
+     * 1.1.15 stand er auch ohne da - aus '' . '/config/plugins/...' wurde ein
+     * Pfad ab der Laufwerkswurzel, und eine plugin.cfg dort bestimmte die
+     * Fassung (in WSL gemessen, Pruefung-MarstekVenus-1.1.16, Fall C6). */
     $p = marstek_paths();
-    foreach (array($p['lbhome'] . '/config/plugins/'
-                   . basename(dirname($p['config'])) . '/plugin.cfg',
-                   dirname(dirname(dirname(__DIR__))) . '/plugin.cfg',
-                   dirname(dirname(__DIR__)) . '/plugin.cfg') as $k) {
+    $kandidaten = array();
+    if ($p['lbhome'] !== '') {
+        $kandidaten[] = $p['lbhome'] . '/config/plugins/' . $p['plugin'] . '/plugin.cfg';
+    }
+    $kandidaten[] = dirname(dirname(dirname(__DIR__))) . '/plugin.cfg';
+    $kandidaten[] = dirname(dirname(__DIR__)) . '/plugin.cfg';
+    foreach ($kandidaten as $k) {
         if (is_file($k) && preg_match('/^VERSION\s*=\s*(\S+)/m',
                                       (string) @file_get_contents($k), $m)) {
             return trim($m[1]);
@@ -1373,7 +1477,7 @@ function marstek_rundruf_adressen() {
 
 /* ---------------- Lokale UDP-JSON-API ---------------- */
 
-function marstek_rpc($method, $params = null, $dev = 1, $tries = 2, $tmo = 3) {
+function marstek_rpc($method, $params = null, $dev = 1, $tries = 2, $tmo = 3, $vorher = null) {
     $d = marstek_dev($dev);
     if ($d === null) {
         return array('_error' => 'Geraet ' . (int) $dev . ' nicht konfiguriert (Plugin-Oberflaeche oeffnen).');
@@ -1400,6 +1504,19 @@ function marstek_rpc($method, $params = null, $dev = 1, $tries = 2, $tmo = 3) {
     $wege = $mode === 'bc' ? array('bc', 'uni') : array('uni', 'bc');
     for ($a = 0; $a < $tries; $a++) {
         foreach ($wege as $weg) {
+            /* NEU 25.09.2026: vor JEDEM Senden fragen, ob der Befehl noch gilt.
+             * Zwei Versuche ueber zwei Wege sind bis zu 12 s; ein nachgeholter
+             * Sollwert, dessen Alter nur einmal VOR dem Aufruf geprueft war,
+             * ging so noch nach seiner Frist hinaus (Fall N5), und einer, den
+             * Loxone inzwischen durch einen neueren ersetzt hatte, ueberschrieb
+             * diesen am Speicher (Fall N6). Bauart BatterieBMS 0.9.28: das Alter
+             * jedes Befehls unmittelbar vor der Ausfuehrung. */
+            if ($vorher !== null) {
+                $mv_hindernis = (string) call_user_func($vorher);
+                if ($mv_hindernis !== '') {
+                    return array('_error' => 'VERWORFEN: ' . $mv_hindernis);
+                }
+            }
             $tsend = microtime(true);
             $antworten = array();
             if ($weg === 'uni') {
@@ -1728,7 +1845,7 @@ function marstek_melden($schwere, $text) {
     if (!function_exists('notify_ext')) {
         return false;   // kein Bedienelement ohne Wirkung: es wird protokolliert, nicht behauptet
     }
-    $ordner = getenv('LBPPLUGINDIR') ?: 'marstekvenus';
+    $ordner = $p['plugin'];
     notify_ext(array(
         'PACKAGE'  => $ordner,
         'NAME'     => 'Marstek Venus E',
@@ -2096,13 +2213,88 @@ function marstek_set_offen_datei($dev) {
     return marstek_tmpdir() . '/set_offen_dev' . (int) $dev . '.json';
 }
 
-/** Einen gescheiterten Sollwert vormerken. 'seit' bleibt beim ersten Mal stehen. */
-function marstek_set_offen_merken($p, $t, $dev) {
+/** Einen gescheiterten Sollwert vormerken. 'seit' bleibt beim ersten Mal stehen.
+ *  'auftrag' ist die Kennung des Befehls aus Loxone, zu dem der Wert gehoert
+ *  (marstek_set_auftrag_neu()); ohne Angabe bleibt die bisherige stehen. */
+function marstek_set_offen_merken($p, $t, $dev, $auftrag = null) {
     $f = marstek_set_offen_datei($dev);
     $alt = is_file($f) ? json_decode((string) @file_get_contents($f), true) : null;
     $seit = (is_array($alt) && isset($alt['seit'])) ? (int) $alt['seit'] : time();
+    if ($auftrag === null) {
+        $auftrag = (is_array($alt) && isset($alt['auftrag'])) ? (string) $alt['auftrag'] : '';
+    }
     marstek_write_json($f, array('p' => (int) $p, 't' => (int) $t,
-                                 'seit' => $seit, 'letzter' => time()));
+                                 'seit' => $seit, 'letzter' => time(),
+                                 'auftrag' => (string) $auftrag));
+}
+
+/** Den Merker lesen, OHNE ihn anzufassen (marstek_set_offen() raeumt ab). */
+function marstek_set_offen_roh($dev) {
+    $f = marstek_set_offen_datei($dev);
+    if (!is_file($f)) { return null; }
+    $o = json_decode((string) @file_get_contents($f), true);
+    return is_array($o) ? $o : null;
+}
+
+/* ---------------- Welcher Sollwert ist der neueste? (neu 25.09.2026) ----------------
+ *
+ * Jeder Sollwert aus Loxone (Endpunkt ?p=) bekommt beim Absenden eine Kennung,
+ * die im Zwischenspeicher liegt. Ein nachgeholter Sollwert traegt die Kennung
+ * seines Befehls; steht dort inzwischen eine andere, hat Loxone etwas Neueres
+ * geschickt, und der alte Wert geht nicht mehr hinaus. Gemessen vorher (WSL,
+ * Pruefung-MarstekVenus-1.1.16, Fall N6): das Nachholen von p=800 lief, Loxone
+ * schickte p=-300, der Speicher nahm -300 an - und zwei Sekunden spaeter vom
+ * Nachholen wieder +800. */
+function marstek_set_auftrag_datei($dev) {
+    return marstek_tmpdir() . '/set_auftrag_dev' . (int) $dev;
+}
+
+function marstek_set_auftrag_neu($dev) {
+    $id = sprintf('%.6F-%d-%d', microtime(true), getmypid(), mt_rand(1000, 9999));
+    marstek_write_atomic(marstek_set_auftrag_datei($dev), $id);
+    return $id;
+}
+
+function marstek_set_auftrag_lesen($dev) {
+    $f = marstek_set_auftrag_datei($dev);
+    return is_file($f) ? trim((string) @file_get_contents($f)) : '';
+}
+
+/**
+ * Laeuft der Minutentakt? Er ist hier der Dienst: nur er holt einen
+ * gescheiterten Sollwert nach. Dieselbe Schranke wie im Befund und im Feld
+ * ZAEHLER (MARSTEK_TAKT_SCHRANKE). Ein Herzschlag aus der Zukunft (Uhr
+ * zurueckgesprungen) gilt bis 300 s als laufend, darueber nicht.
+ */
+function marstek_takt_laeuft() {
+    $h = marstek_herzstand();
+    if ($h['ts'] <= 0) { return false; }
+    $alter = time() - $h['ts'];
+    return $alter >= -300 && $alter <= MARSTEK_TAKT_SCHRANKE;
+}
+
+/**
+ * Darf der nachgeholte Sollwert $o JETZT noch hinaus? '' = ja, sonst der Grund.
+ * Gefragt unmittelbar vor jedem Senden (marstek_rpc(), Parameter $vorher).
+ */
+function marstek_set_nachhol_hindernis($dev, array $o, $auftrag) {
+    $jetzt = marstek_set_offen_roh($dev);
+    if ($jetzt === null) {
+        return 'der Merker ist fort (neuerer Sollwert angenommen oder Betriebsart gewechselt)';
+    }
+    if ((int) (isset($jetzt['seit']) ? $jetzt['seit'] : 0) !== (int) $o['seit']
+            || (int) (isset($jetzt['p']) ? $jetzt['p'] : 0) !== (int) $o['p']
+            || (int) (isset($jetzt['t']) ? $jetzt['t'] : 0) !== (int) $o['t']) {
+        return 'der Merker traegt inzwischen einen anderen Sollwert';
+    }
+    if (marstek_set_auftrag_lesen($dev) !== (string) $auftrag) {
+        return 'aus Loxone kam inzwischen ein neuerer Sollwert';
+    }
+    $alter = time() - (int) $o['seit'];
+    if ($alter > MARSTEK_SET_NACHHOLEN_S) {
+        return 'seit ' . $alter . ' s offen, aelter als ' . MARSTEK_SET_NACHHOLEN_S . ' s';
+    }
+    return '';
 }
 
 /** Den Merker entfernen. */
@@ -2143,7 +2335,7 @@ function marstek_set_nachholen() {
         $mv_seit = time() - (int) $o['seit'];
         marstek_log('Sollwert wird nachgeholt (Geraet ' . (int) $dev . '): p=' . (int) $o['p']
                   . ' t=' . (int) $o['t'] . ', offen seit ' . $mv_seit . ' s.');
-        list($ok, , , ) = marstek_set_passive((int) $o['p'], (int) $o['t'], $dev);
+        list($ok, , , ) = marstek_set_passive((int) $o['p'], (int) $o['t'], $dev, false, $o);
         if ($ok) {
             $n++;
             // Nur der GEGLUECKTE Nachholversuch kommt in die Ereignisse. Der
@@ -2164,9 +2356,12 @@ function marstek_set_nachholen() {
  * Code bis zur letzten Zeile - ein Trockenlauf, der eine eigene Kopie waere,
  * pruefte sich selbst und nicht den Ernstfall.
  *
+ * $nachhol ist der Merker des offenen Sollwerts, wenn der Minutentakt ihn
+ * nachholt (marstek_set_nachholen()); sonst null (Befehl aus Loxone).
+ *
  * Rueckgabe: array(ok, p, t, hinweis)
  */
-function marstek_set_passive($p, $t, $dev = 1, $trocken = false) {
+function marstek_set_passive($p, $t, $dev = 1, $trocken = false, $nachhol = null) {
     $cfg = marstek_config();
     $d = marstek_dev($dev);
     $p = (int) $p;
@@ -2198,24 +2393,64 @@ function marstek_set_passive($p, $t, $dev = 1, $trocken = false) {
         return array(1, $p, $t, 'TROCKEN');
     }
 
+    // Ein Befehl aus Loxone wird der neueste; ein nachgeholter fragt vor
+    // jedem Senden, ob er es noch ist (siehe marstek_set_nachhol_hindernis()).
+    if ($nachhol === null) {
+        $auftrag = marstek_set_auftrag_neu($dev);
+        $vorher = null;
+    } else {
+        $auftrag = isset($nachhol['auftrag']) ? (string) $nachhol['auftrag'] : '';
+        $vorher = function () use ($dev, $nachhol, $auftrag) {
+            return marstek_set_nachhol_hindernis($dev, $nachhol, $auftrag);
+        };
+    }
     $res = marstek_rpc('ES.SetMode', array('id' => 0, 'config' => array(
         'mode' => 'Passive',
         'passive_cfg' => array('power' => -$p, 'cd_time' => $t),
-    )), $dev);
+    )), $dev, 2, 3, $vorher);
     $ok = (is_array($res) && !empty($res['set_result'])) ? 1 : 0;
+    $verworfen = (!$ok && is_array($res) && isset($res['_error'])
+                  && strpos((string) $res['_error'], 'VERWORFEN: ') === 0);
+    /* NEU 25.09.2026: vorgemerkt wird nur, was jemand nachholen wird. Der
+     * Minutentakt ist hier der Dienst; steht er, bliebe der Merker liegen, bis
+     * er irgendwann wieder anlaeuft, und bis dahin versprach das Protokoll
+     * "wird im naechsten Durchgang nachgeholt" (gemessen vorher, Faelle N1 und
+     * N2: Herzschlag zehn Minuten alt, Merker angelegt, Zusage im Protokoll). */
+    $takt_steht = ($nachhol === null && !$ok && !$verworfen && !marstek_takt_laeuft());
     if ($ok) { // Auto-Fallback und Soll/Ist: Wert UND Zeitpunkt merken
         marstek_write_json(marstek_tmpdir() . '/passive_dev' . (int) $dev . '.json',
             array('p' => $p, 't' => $t, 'ts' => time()));
         @unlink(marstek_tmpdir() . '/passive_dev' . (int) $dev);   // Altlast bis 1.0.16
         marstek_set_offen_loeschen($dev);
+    } elseif ($verworfen) {
+        // Nur den EIGENEN Merker abraeumen - ein neuerer bleibt stehen.
+        $jetzt = marstek_set_offen_roh($dev);
+        if (is_array($jetzt) && (int) (isset($jetzt['seit']) ? $jetzt['seit'] : 0) === (int) $nachhol['seit']
+                && (string) (isset($jetzt['auftrag']) ? $jetzt['auftrag'] : '') === $auftrag) {
+            marstek_set_offen_loeschen($dev);
+        }
+    } elseif ($takt_steht) {
+        marstek_set_offen_loeschen($dev);
     } else {
-        marstek_set_offen_merken($p, $t, $dev);
+        marstek_set_offen_merken($p, $t, $dev, $auftrag);
     }
     marstek_log_if_changed('set_dev' . (int) $dev, 'p=' . $p . ' t=' . $t . ' ok=' . $ok, 'ok=' . $ok);
-    if (!$ok) {
-        $mv_grund = 'SET fehlgeschlagen (Geraet ' . (int) $dev . '): p=' . $p . ' t=' . $t
-            . (is_array($res) && isset($res['_error']) ? ' (' . $res['_error'] . ')' : '')
-            . ' - wird im naechsten Durchgang nachgeholt.';
+    if ($verworfen) {
+        $mv_grund = 'Nachholen abgebrochen (Geraet ' . (int) $dev . '): p=' . $p . ' t=' . $t
+            . ' - ' . substr((string) $res['_error'], 11) . '. Der Wert ging nicht mehr an den Speicher.';
+        marstek_log($mv_grund);
+        marstek_ereignis($mv_grund);
+    } elseif (!$ok) {
+        $mv_fehler = (is_array($res) && isset($res['_error']) ? ' (' . $res['_error'] . ')' : '');
+        if ($takt_steht) {
+            $h = marstek_herzstand();
+            $mv_grund = 'SET fehlgeschlagen (Geraet ' . (int) $dev . '): p=' . $p . ' t=' . $t . $mv_fehler
+                . ' - wird NICHT nachgeholt: der Minutentakt laeuft nicht ('
+                . ($h['ts'] > 0 ? 'zuletzt ' . date('d.m. H:i:s', $h['ts']) : 'noch nie gelaufen') . ').';
+        } else {
+            $mv_grund = 'SET fehlgeschlagen (Geraet ' . (int) $dev . '): p=' . $p . ' t=' . $t . $mv_fehler
+                . ' - wird im naechsten Durchgang nachgeholt.';
+        }
         marstek_log($mv_grund);
         marstek_ereignis($mv_grund);
     }
@@ -3019,17 +3254,408 @@ function marstek_mqtt_senden(array $werte, $prefix)
     if (!$udpport) {
         return false; // MQTT-Gateway nicht konfiguriert
     }
+    // Welche frueher zurueckbehaltenen Altwerte gehen in diesem Aufruf mit
+    // leerer Nutzlast voraus? (marstek_mqtt_raeumen_fuer(), neu 25.09.2026)
+    $raeumen = marstek_mqtt_raeumen_fuer($prefix, array_keys($werte));
     $nr = 0; $txt = '';
     $s = @stream_socket_client('udp://127.0.0.1:' . $udpport, $nr, $txt, 2);
     if ($s === false) {
         return false;
     }
     foreach ($werte as $k => $v) {
+        if (isset($raeumen[$k])) {
+            // Leere Nutzlast mit retain LOESCHT den Altwert im Broker
+            // (mqttgateway.pl:281/357, am Geraet 19.09.2026 belegt), und der
+            // gueltige Wert folgt unmittelbar - am Miniserver steht damit nie
+            // nur der leere Wert.
+            @fwrite($s, 'retain ' . $prefix . '/' . $k . ' ');
+        }
         @fwrite($s, (marstek_mqtt_retain($k) ? 'retain ' : 'publish ')
                   . $prefix . '/' . $k . ' ' . marstek_mqtt_wert_saeubern($v));
     }
     fclose($s);
     return true;
+}
+
+/* ================= Altwerte im Broker (neu 25.09.2026) =====================
+ *
+ * Bis 1.1.15 gingen ok, energie_ok, rang_ok, rang_errc und rang_n sowie die
+ * Tages- und Monatszaehler (energie_chgd/_disd/_chgm/_dism) retained hinaus.
+ * Nach Regeln/07, Abschnitt 3 (Entscheidungen 18./19. und 24.09.2026) ist eine
+ * Aussage des Dienstes ueber sich selbst nie retained (ok: "Speicher hat
+ * geantwortet", energie_ok: "meine Modbus-Abfrage glueckte", rang_ok/rang_errc:
+ * "meine Preisrechnung glueckte", rang_n: Zahl der Stunden im Fenster DIESER
+ * Rechnung), und ein Wert, der allein durch die Uhr falsch wird (Tages- und
+ * Monatswerte), ebensowenig. Stirbt der Takt, stuende sonst "ok 1" und
+ * "heute geladen 3,2 kWh" fuer immer im Broker. Die Aenderung steht in
+ * marstek_felder(); was eine veroeffentlichte Fassung zurueckbehalten hat,
+ * raeumen die Funktionen hier ab.
+ *
+ * Ueber das UDP-Tor des Gateways meldet fwrite() auch fuer ein verworfenes
+ * Datagramm Erfolg (Regeln/07, "Ein Absender merkt nichts davon", Nachtrag
+ * 19.09.2026). Belegt ist das Abraeumen deshalb erst, wenn der BROKER sagt,
+ * dass nichts mehr dasteht; erst dann entsteht der Merker. Ist er nicht zu
+ * fragen, geht die leere Nutzlast in JEDEM Lauf unmittelbar vor dem gueltigen
+ * Wert hinaus, ohne Merker. Bauart bw_mqtt_altlast() (Beschattungswaechter
+ * 0.9.21), awm_mqtt_altlast() (AWM-Abfuhr 1.4.13).
+ */
+
+/** Themen (ohne Praefix), die bis 1.1.15 retained gingen und es nicht mehr
+ *  tun. $basis = true: das Grundpraefix (Geraet 1 und die Raenge); sonst das
+ *  Praefix eines weiteren Geraets (<praefix>/<N>), dort gibt es keine Raenge.
+ *  Gemessen an den veroeffentlichten Archiven 1.1.7 bis 1.1.15 (vorher ging
+ *  nichts retained): dieselben 16 zurueckbehaltenen Themen in jeder Fassung. */
+function marstek_mqtt_altlast_liste($basis = true) {
+    $t = array('ok', 'energie_ok', 'energie_chgd', 'energie_disd', 'energie_chgm', 'energie_dism');
+    if ($basis) {
+        $t[] = 'rang_ok';
+        $t[] = 'rang_n';
+        $t[] = 'rang_errc';
+    }
+    return $t;
+}
+
+/**
+ * Den Broker fragen, welche der Themen $themen er zurueckbehaelt - in EINER
+ * Verbindung, ein SUBSCRIBE mit allen Filtern.
+ *
+ * Rueckgabe array('lage' => 'ok'|'unbekannt', 'belegt' => array(thema => true)).
+ * 'ok' heisst: der Broker hat die Anmeldung (CONNACK 0) und JEDEN Filter
+ * (SUBACK-Rueckgabe unter 0x80) bestaetigt; was dann nicht unter 'belegt'
+ * steht, ist leer. 'unbekannt': er war nicht zu fragen (keine Wurzel, keine
+ * general.json, keine Verbindung, Anmeldung abgewiesen, Filter abgelehnt,
+ * keine Antwort) - nie "nichts belegt" (Muster 11 der Nachlese, Faelle R16,
+ * R17).
+ *
+ * MQTT 3.1.1 von Hand, nur CONNECT, SUBSCRIBE (QoS 0) und DISCONNECT - ohne
+ * fremde Bibliothek; Bauart bw_mqtt_behalten_liste() (Beschattungswaechter
+ * 0.9.21). Belegt ist ein Thema nur am EMPFANGENEN Paket mit Retain-Merkmal
+ * und nicht leerer Nutzlast. Die Anmeldung nimmt Brokeruser/Brokerpass aus der
+ * general.json (Regeln/07, Abschnitt 2); das Kennwort steht nur im
+ * CONNECT-Paket, nie in einem Protokoll und nie auf einer Kommandozeile.
+ */
+function marstek_mqtt_behalten_liste(array $themen)
+{
+    $aus = array('lage' => 'unbekannt', 'belegt' => array());
+    $soll = array();
+    foreach ($themen as $t) {
+        if ((string) $t !== '') { $soll[(string) $t] = true; }
+    }
+    if (!$soll) {
+        $aus['lage'] = 'ok';
+        return $aus;
+    }
+    $p = marstek_paths();
+    if ($p['lbhome'] === '') { return $aus; }
+    $d = @json_decode((string) @file_get_contents(
+             $p['lbhome'] . '/config/system/general.json'), true);
+    if (!is_array($d) || !isset($d['Mqtt']) || !is_array($d['Mqtt'])) { return $aus; }
+    $m = $d['Mqtt'];
+    $hol = function ($k) use ($m) {
+        return (isset($m[$k]) && is_scalar($m[$k])) ? (string) $m[$k] : '';
+    };
+    $host = trim($hol('Brokerhost'));
+    if ($host === '' || $host === 'localhost') { $host = '127.0.0.1'; }
+    $port = (int) $hol('Brokerport');
+    if ($port <= 0 || $port > 65535) { $port = 1883; }
+    $benutzer = $hol('Brokeruser');
+    $kennwort = $hol('Brokerpass');
+
+    $errno = 0;
+    $errstr = '';
+    $s = @stream_socket_client('tcp://' . $host . ':' . $port, $errno, $errstr, 2);
+    if (!$s) { return $aus; }
+    stream_set_timeout($s, 1);
+
+    $zk = function ($t) { return pack('n', strlen($t)) . $t; };
+    $laenge = function ($n) {
+        $o = '';
+        do {
+            $b = $n % 128;
+            $n = intdiv($n, 128);
+            if ($n > 0) { $b |= 128; }
+            $o .= chr($b);
+        } while ($n > 0);
+        return $o;
+    };
+    /* Genau $n Bytes lesen oder null - bei Zeitablauf und Verbindungsende. */
+    $lies = function ($n) use ($s) {
+        $d = '';
+        while (strlen($d) < $n) {
+            $t = @fread($s, $n - strlen($d));
+            if ($t === false || $t === '') {
+                $meta = stream_get_meta_data($s);
+                if (!empty($meta['timed_out']) || !empty($meta['eof']) || feof($s)) { return null; }
+                continue;
+            }
+            $d .= $t;
+        }
+        return $d;
+    };
+    /* Ein Paket: array(kopfbyte, rumpf) oder null. */
+    $paket = function () use ($lies) {
+        $k = $lies(1);
+        if ($k === null) { return null; }
+        $n = 0;
+        $mult = 1;
+        for ($i = 0; $i < 4; $i++) {
+            $b = $lies(1);
+            if ($b === null) { return null; }
+            $n += (ord($b) & 127) * $mult;
+            $mult *= 128;
+            if (!(ord($b) & 128)) { break; }
+        }
+        $r = ($n > 0) ? $lies($n) : '';
+        return ($r === null) ? null : array(ord($k), $r);
+    };
+
+    $flags = 0x02;                                  // saubere Sitzung
+    $nutz = $zk('mvrueck' . getmypid());
+    if ($benutzer !== '') {
+        $flags |= 0x80;
+        // Ein Kennwort ohne Benutzer laesst MQTT 3.1.1 nicht zu.
+        if ($kennwort !== '') { $flags |= 0x40; }
+    }
+    $kopf = $zk('MQTT') . chr(4) . chr($flags) . pack('n', 10);
+    if ($benutzer !== '') {
+        $nutz .= $zk($benutzer);
+        if ($kennwort !== '') { $nutz .= $zk($kennwort); }
+    }
+    if (@fwrite($s, chr(0x10) . $laenge(strlen($kopf . $nutz)) . $kopf . $nutz) !== false) {
+        $ack = $paket();
+        if ($ack !== null && ($ack[0] >> 4) === 2 && strlen($ack[1]) >= 2 && ord($ack[1][1]) === 0) {
+            $sub = pack('n', 1);
+            foreach (array_keys($soll) as $t) { $sub .= $zk($t) . chr(0); }
+            @fwrite($s, chr(0x82) . $laenge(strlen($sub)) . $sub);
+            $bestaetigt = false;
+            $abgelehnt = false;
+            $ende = microtime(true) + 3.0;
+            while (microtime(true) < $ende) {
+                $pk = $paket();
+                if ($pk === null) { break; }           // Zeitablauf: nichts mehr gekommen
+                $art = $pk[0] >> 4;
+                if ($art === 9) {
+                    /* Je Filter ein Rueckgabebyte hinter der Paketkennung;
+                       0x80 heisst abgelehnt. */
+                    $rc = (string) substr($pk[1], 2);
+                    if (strlen($rc) !== count($soll)) { $abgelehnt = true; }
+                    for ($i = 0; $i < strlen($rc); $i++) {
+                        if (ord($rc[$i]) >= 0x80) { $abgelehnt = true; }
+                    }
+                    if ($abgelehnt) { break; }
+                    $bestaetigt = true;
+                    // Zurueckbehaltenes kommt unmittelbar nach dem SUBACK.
+                    $ende = min($ende, microtime(true) + 1.0);
+                } elseif ($art === 3 && strlen($pk[1]) >= 2) {
+                    $tl = unpack('n', substr($pk[1], 0, 2));
+                    $t = substr($pk[1], 2, $tl[1]);
+                    $versatz = 2 + $tl[1] + ((($pk[0] >> 1) & 3) > 0 ? 2 : 0);
+                    $wert = (string) substr($pk[1], $versatz);
+                    // Am empfangenen Paket: nur mit gesetztem Retain-Merkmal.
+                    if (isset($soll[$t]) && ($pk[0] & 1) && $wert !== '') {
+                        $aus['belegt'][$t] = true;
+                        if (count($aus['belegt']) === count($soll)) { break; }
+                    }
+                }
+            }
+            if ($bestaetigt && !$abgelehnt) {
+                $aus['lage'] = 'ok';
+            } else {
+                $aus['belegt'] = array();
+            }
+        }
+        @fwrite($s, chr(0xE0) . chr(0));
+    }
+    fclose($s);
+    return $aus;
+}
+
+/**
+ * Stehen unter $praefix noch Altwerte? Rueckgabe array('lage' =>
+ * 'erledigt'|'belegt'|'unbekannt', 'themen' => array(<thema ohne praefix>)).
+ *
+ * Nur der Minutentakt fragt den Broker (einmal je Praefix und Lauf); der
+ * Endpunkt, den Loxone im Sekundentakt abfragen kann, fragt nie - eine
+ * Rueckfrage kostet bis zu drei Sekunden (Fall R19). Er schickt die leere
+ * Nutzlast mit, bis der Takt den Merker gesetzt hat.
+ *
+ * Der Merker entsteht NUR aus der Antwort des Brokers ("keines belegt"), nie
+ * aus dem Senden. Er traegt je Zeile die Kennung
+ * "leer-bestaetigt <praefix>: <Themenliste>"; ein anderes Praefix oder eine
+ * andere Liste gilt nicht (Fall R18). Er liegt im Datenverzeichnis neben dem
+ * Ordner und uebersteht deshalb ein Update.
+ */
+function marstek_mqtt_altlast($praefix, array $liste)
+{
+    static $gefragt = array();
+    $kennung = 'leer-bestaetigt ' . $praefix . ': ' . implode(' ', $liste);
+    $merker = marstek_datadir() . '/retain_altlast_bestaetigt';
+    $zeilen = is_file($merker) ? file($merker, FILE_IGNORE_NEW_LINES) : array();
+    if (is_array($zeilen) && in_array($kennung, $zeilen, true)) {
+        return array('lage' => 'erledigt', 'themen' => array());
+    }
+    if (empty($GLOBALS['marstek_ist_takt'])) {
+        return array('lage' => 'unbekannt', 'themen' => $liste);
+    }
+    if (isset($gefragt[$kennung])) {
+        return $gefragt[$kennung];
+    }
+    $voll = array();
+    foreach ($liste as $t) { $voll[] = $praefix . '/' . $t; }
+    $f = marstek_mqtt_behalten_liste($voll);
+    if ($f['lage'] === 'ok' && !$f['belegt']) {
+        if (@file_put_contents($merker, $kennung . "\n", FILE_APPEND) !== false) {
+            marstek_log('MQTT: unter ' . $praefix . '/ steht keiner der frueher zurueckbehaltenen '
+                . 'Werte mehr im Broker (' . implode(', ', $liste) . '; vom Broker bestaetigt).');
+        }
+        return $gefragt[$kennung] = array('lage' => 'erledigt', 'themen' => array());
+    }
+    if ($f['lage'] === 'ok') {
+        $l = strlen($praefix) + 1;
+        $t = array();
+        foreach (array_keys($f['belegt']) as $v) { $t[] = substr($v, $l); }
+        marstek_log_if_changed('altlast_' . md5($praefix), 'MQTT: im Broker stehen noch '
+            . 'zurueckbehaltene Altwerte unter ' . $praefix . '/ (' . implode(', ', $t) . ') - sie '
+            . 'gehen mit leerer Nutzlast unmittelbar vor dem gueltigen Wert hinaus; der naechste '
+            . 'Takt fragt wieder nach.', 'belegt:' . implode(',', $t));
+        return $gefragt[$kennung] = array('lage' => 'belegt', 'themen' => $t);
+    }
+    marstek_log_if_changed('altlast_' . md5($praefix), 'MQTT: der Broker liess sich nicht befragen '
+        . '(Brokerhost, Brokerport und Zugangsdaten in general.json) - die frueher '
+        . 'zurueckbehaltenen Werte unter ' . $praefix . '/ gehen deshalb in jedem Lauf mit leerer '
+        . 'Nutzlast unmittelbar vor dem gueltigen Wert hinaus. Siehe README.', 'unbekannt');
+    return $gefragt[$kennung] = array('lage' => 'unbekannt', 'themen' => $liste);
+}
+
+/** Welche der zu sendenden Schluessel brauchen die leere Nutzlast davor?
+ *  Rueckgabe: array(schluessel => true). */
+function marstek_mqtt_raeumen_fuer($prefix, array $schluessel)
+{
+    $basis = ($prefix === marstek_mqtt_prefix(1));
+    $liste = marstek_mqtt_altlast_liste($basis);
+    if (!array_intersect($schluessel, $liste)) {
+        return array();
+    }
+    $a = marstek_mqtt_altlast($prefix, $liste);
+    $aus = array();
+    foreach ($a['themen'] as $t) {
+        if (in_array($t, $schluessel, true)) { $aus[$t] = true; }
+    }
+    return $aus;
+}
+
+/**
+ * Die Themen, die die Deinstallation leert: jedes, das eine veroeffentlichte
+ * Fassung je retained gesendet hat - die heutigen retained Themen und die
+ * Altwerte. Was nie retained ging, bleibt unberuehrt: eine leere Nachricht
+ * darauf loeschte nichts, kaeme aber am Miniserver als leerer Wert an.
+ * $basis wie bei marstek_mqtt_altlast_liste().
+ */
+function marstek_mqtt_leer_themen($basis = true)
+{
+    $t = array();
+    foreach (array_keys(marstek_mqtt_themen(true)) as $k) {
+        if (!$basis && strpos($k, 'rang_') === 0) { continue; }
+        if (marstek_mqtt_retain($k)) { $t[] = $k; }
+    }
+    foreach (marstek_mqtt_altlast_liste($basis) as $k) {
+        if (!in_array($k, $t, true)) { $t[] = $k; }
+    }
+    return $t;
+}
+
+/**
+ * Die zurueckbehaltenen Themen leeren - fuer uninstall/uninstall
+ * (cron.php --mqtt-leeren). Schreibt kein Protokoll und legt nichts an.
+ *
+ * Geloescht wird ueber den UDP-Eingang des Gateways, "retain <thema> " mit
+ * leerer Nutzlast. VOR der ersten Runde und nach jeder wird der Broker
+ * gefragt (marstek_mqtt_behalten_liste()); hinaus geht nur, was dort noch
+ * steht, hoechstens $runden Runden - dabei auch die Themen der Geraete 2 bis 9
+ * unter <praefix>/<N>, also auch die eines laengst ausgetragenen Speichers.
+ * Ist der Broker nicht zu fragen, gehen die Themen der eingetragenen Speicher
+ * in jeder Runde hinaus, und die Ausgabe sagt "nicht nachgelesen" - der
+ * Eingang verwirft unter Last Datagramme (Regeln/07), ein blosses Senden ist
+ * kein Beleg. Bauart bw_mqtt_leeren() (Beschattungswaechter 0.9.21).
+ *
+ * Rueckgabe 0 geleert oder nicht nachpruefbar, 1 es steht noch etwas bzw.
+ * der Eingang war nicht erreichbar, 2 nicht moeglich.
+ */
+function marstek_mqtt_leeren($runden = 3, $pause_us = 1000000)
+{
+    $GLOBALS['marstek_nur_lesen'] = true;
+    $w = marstek_mqtt_prefix(1);
+    $udpport = marstek_mqtt_udpport();
+    if (!$udpport) {
+        echo '<INFO> MQTT: in der general.json steht kein UDP-Eingangsport des Gateways - '
+           . 'zurueckbehaltene Themen unter ' . $w . '/ wurden nicht geleert.' . "\n";
+        return 2;
+    }
+    $alle = array();
+    $eingetragen = array();
+    $n_geraete = max(1, count(marstek_devices()));
+    for ($g = 1; $g <= 9; $g++) {
+        $pr = marstek_mqtt_prefix($g);
+        foreach (marstek_mqtt_leer_themen($g === 1) as $t) {
+            $alle[] = $pr . '/' . $t;
+            if ($g <= $n_geraete) { $eingetragen[] = $pr . '/' . $t; }
+        }
+    }
+    $f = marstek_mqtt_behalten_liste($alle);
+    $nachgelesen = ($f['lage'] === 'ok');
+    $offen = $nachgelesen ? array_keys($f['belegt']) : $eingetragen;
+    if ($nachgelesen && !$offen) {
+        echo '<OK> MQTT: der Broker bestaetigt: keines der ' . count($alle) . ' Themen unter ' . $w
+           . '/ steht zurueckbehalten - nichts zu leeren.' . "\n";
+        return 0;
+    }
+    $eno = 0;
+    $etxt = '';
+    $fp = @stream_socket_client('udp://127.0.0.1:' . (int) $udpport, $eno, $etxt, 2);
+    if (!$fp) {
+        echo '<WARNING> MQTT: der UDP-Eingang des Gateways ist nicht erreichbar (Port '
+           . (int) $udpport . ') - zurueckbehaltene Themen unter ' . $w
+           . '/ wurden nicht geleert.' . "\n";
+        return 1;
+    }
+    $zu_leeren = count($offen);
+    $datagramme = 0;
+    $gelaufen = 0;
+    for ($r = 1; $r <= max(1, (int) $runden) && $offen; $r++) {
+        if ($r > 1) { usleep((int) $pause_us); }
+        $gelaufen = $r;
+        foreach ($offen as $t) {
+            // Ein Leerzeichen hinter dem Thema, sonst keine Nutzlast: die
+            // Form, die das Gateway als Loeschung liest.
+            if (@fwrite($fp, 'retain ' . $t . ' ') !== false) { $datagramme++; }
+        }
+        usleep(300000);     // dem Gateway Zeit bis zum Broker lassen
+        $f = marstek_mqtt_behalten_liste($offen);
+        if ($f['lage'] === 'ok') {
+            $nachgelesen = true;
+            $offen = array_keys($f['belegt']);
+        } else {
+            $nachgelesen = false;
+        }
+    }
+    fclose($fp);
+    echo '<INFO> MQTT: ' . $zu_leeren . ' Themen unter ' . $w . '/ mit leerer Nutzlast '
+       . 'an den UDP-Eingang ' . (int) $udpport . ' des Gateways gesendet (' . $gelaufen
+       . ' Runde(n), ' . $datagramme . ' Datagramme).' . "\n";
+    if ($nachgelesen && !$offen) {
+        echo '<OK> MQTT: der Broker bestaetigt: keines der Themen steht mehr zurueckbehalten.' . "\n";
+        return 0;
+    }
+    if ($nachgelesen) {
+        echo '<WARNING> MQTT: ' . count($offen) . ' Themen stehen noch zurueckbehalten im Broker ('
+           . implode(', ', array_slice($offen, 0, 5)) . (count($offen) > 5 ? ', ...' : '')
+           . '). Von Hand: mosquitto_pub -r -n -t <thema> (mit den Broker-Zugangsdaten).' . "\n";
+        return 1;
+    }
+    echo '<INFO> MQTT: der Broker liess sich nicht befragen - nicht nachgelesen. Der UDP-Eingang '
+       . 'verwirft unter Last Datagramme; was stehen bleibt, laesst sich mit '
+       . 'mosquitto_pub -r -n -t <thema> von Hand loeschen.' . "\n";
+    return 0;
 }
 
 /**
@@ -3252,17 +3878,20 @@ function marstek_t($schluessel)
     static $texte = null;
     if ($texte === null) {
         // Installiert liegen die Dateien unter
-        // <home>/templates/plugins/<ordner>/lang/ - der Ordnername ergibt
-        // sich aus dem Ablageort dieser Datei.
-        $home = getenv('LBHOMEDIR');
-        if (!$home || !is_dir($home)) {
-            foreach (array(lb_wurzel_ermitteln(), '/home/loxberry/loxberry') as $k) {
-                if (is_dir($k)) { $home = $k; break; }
-            }
+        // <Wurzel>/templates/plugins/<ordner>/lang/ - Wurzel und Ordner
+        // kommen aus marstek_paths(), EINER Stelle fuer die Wurzelregel.
+        //
+        // BERICHTIGT 25.09.2026: bis 1.1.15 stand hier eine eigene Suche mit
+        // dem fest verdrahteten Heimatverzeichnis des Benutzers loxberry als
+        // Rueckfall, und ohne Wurzel wurde der Pfad ab der Laufwerkswurzel
+        // gebildet - VOR den eigenen Sprachdateien. Was dort lag, lieferte die
+        // Texte (in WSL gemessen, Pruefung-MarstekVenus-1.1.16, Faelle C1, C2).
+        $wo = marstek_paths();
+        $pfad = '';
+        if ($wo['lbhome'] !== '') {
+            $pfad = $wo['lbhome'] . '/templates/plugins/' . $wo['plugin'] . '/lang';
         }
-        $ordner = basename(dirname(__FILE__));
-        $pfad = $home . '/templates/plugins/' . $ordner . '/lang';
-        if (!is_dir($pfad)) {
+        if ($pfad === '' || !is_dir($pfad)) {
             // Nicht installiert (Entwicklung): neben dem Plugin nachsehen.
             $pfad = dirname(dirname(dirname(__FILE__))) . '/templates/lang';
         }
@@ -3329,56 +3958,69 @@ function marstek_e($s) {
  *
  * REIHENFOLGE: neue Messgroessen werden HINTEN angehaengt. Eine Umbenennung
  * bricht bestehende Anlagen, ein Anhaengen nicht.
+ *
+ * RETAIN, BERICHTIGT 25.09.2026 (Regeln/07, Abschnitt 3): nie retained ist,
+ * was der Dienst ueber sich selbst sagt - OK aller Saetze (Speicher hat
+ * geantwortet, Modbus-Abfrage glueckte, Preisrechnung glueckte), ERRC, N der
+ * Raenge, NOK der Summe -, und was allein durch die Uhr falsch wird (CHGD,
+ * DISD, CHGM, DISM: Tag und Monat). Retained bleiben die Geraetezustaende
+ * (SOC, FW), der zuletzt angenommene Sollwert (SOLL) und die Zaehler, die auch
+ * nach dem Tod des Dienstes wahr bleiben (CHGT, DIST, CYC, EFF). Die Summe geht
+ * nicht ueber MQTT; ihre Einteilung steht nur der Vollstaendigkeit halber da.
+ *
+ * FORM: %F statt %f (25.09.2026, Muster 10 der Nachlese). %f richtet sich
+ * nach LC_NUMERIC; unter de_DE.UTF-8 in WSL gemessen stand in der Antwortzeile
+ * an Loxone SOC=73,5 statt 73.5 (Fall R20). %F ist davon unabhaengig.
  */
 function marstek_felder($satz) {
     if ($satz === 'energy') {
         return array(
-            'OK'    => array('quelle' => 'ok',   'analog' => 0, 'min' => 0, 'max' => 1,       'einheit' => '',    'form' => '%d',   'retain' => 1, 'kurz' => 'Zähler gültig', 'text' => '1 = Werte gültig'),
-            'CHGT'  => array('quelle' => 'chgt', 'analog' => 1, 'min' => 0, 'max' => 1000000, 'einheit' => 'kWh', 'form' => '%.2f', 'retain' => 1, 'kurz' => 'geladen gesamt', 'text' => 'geladen gesamt'),
-            'DIST'  => array('quelle' => 'dist', 'analog' => 1, 'min' => 0, 'max' => 1000000, 'einheit' => 'kWh', 'form' => '%.2f', 'retain' => 1, 'kurz' => 'abgegeben gesamt', 'text' => 'abgegeben gesamt'),
-            'CHGD'  => array('quelle' => 'chgd', 'analog' => 1, 'min' => 0, 'max' => 1000,    'einheit' => 'kWh', 'form' => '%.2f', 'retain' => 1, 'kurz' => 'geladen heute', 'text' => 'geladen heute'),
-            'DISD'  => array('quelle' => 'disd', 'analog' => 1, 'min' => 0, 'max' => 1000,    'einheit' => 'kWh', 'form' => '%.2f', 'retain' => 1, 'kurz' => 'abgegeben heute', 'text' => 'abgegeben heute'),
-            'CHGM'  => array('quelle' => 'chgm', 'analog' => 1, 'min' => 0, 'max' => 100000,  'einheit' => 'kWh', 'form' => '%.2f', 'retain' => 1, 'kurz' => 'geladen diesen Monat', 'text' => 'geladen diesen Monat'),
-            'DISM'  => array('quelle' => 'dism', 'analog' => 1, 'min' => 0, 'max' => 100000,  'einheit' => 'kWh', 'form' => '%.2f', 'retain' => 1, 'kurz' => 'abgegeben diesen Monat', 'text' => 'abgegeben diesen Monat'),
+            'OK'    => array('quelle' => 'ok',   'analog' => 0, 'min' => 0, 'max' => 1,       'einheit' => '',    'form' => '%d',   'retain' => 0, 'kurz' => 'Zähler gültig', 'text' => '1 = Werte gültig'),
+            'CHGT'  => array('quelle' => 'chgt', 'analog' => 1, 'min' => 0, 'max' => 1000000, 'einheit' => 'kWh', 'form' => '%.2F', 'retain' => 1, 'kurz' => 'geladen gesamt', 'text' => 'geladen gesamt'),
+            'DIST'  => array('quelle' => 'dist', 'analog' => 1, 'min' => 0, 'max' => 1000000, 'einheit' => 'kWh', 'form' => '%.2F', 'retain' => 1, 'kurz' => 'abgegeben gesamt', 'text' => 'abgegeben gesamt'),
+            'CHGD'  => array('quelle' => 'chgd', 'analog' => 1, 'min' => 0, 'max' => 1000,    'einheit' => 'kWh', 'form' => '%.2F', 'retain' => 0, 'kurz' => 'geladen heute', 'text' => 'geladen heute'),
+            'DISD'  => array('quelle' => 'disd', 'analog' => 1, 'min' => 0, 'max' => 1000,    'einheit' => 'kWh', 'form' => '%.2F', 'retain' => 0, 'kurz' => 'abgegeben heute', 'text' => 'abgegeben heute'),
+            'CHGM'  => array('quelle' => 'chgm', 'analog' => 1, 'min' => 0, 'max' => 100000,  'einheit' => 'kWh', 'form' => '%.2F', 'retain' => 0, 'kurz' => 'geladen diesen Monat', 'text' => 'geladen diesen Monat'),
+            'DISM'  => array('quelle' => 'dism', 'analog' => 1, 'min' => 0, 'max' => 100000,  'einheit' => 'kWh', 'form' => '%.2F', 'retain' => 0, 'kurz' => 'abgegeben diesen Monat', 'text' => 'abgegeben diesen Monat'),
             'CYC'   => array('quelle' => 'cyc',  'analog' => 1, 'min' => 0, 'max' => 100000,  'einheit' => '',    'form' => '%d',   'retain' => 1, 'kurz' => 'Vollzyklen', 'text' => 'Vollzyklen'),
-            'EFF'   => array('quelle' => 'eff',  'analog' => 1, 'min' => -1, 'max' => 100,     'einheit' => '%',   'form' => '%.1f', 'retain' => 1, 'kurz' => 'Wirkungsgrad', 'text' => 'Wirkungsgrad gesamt (abgegeben je geladener kWh); -1 = noch zu wenige Zyklen'),
+            'EFF'   => array('quelle' => 'eff',  'analog' => 1, 'min' => -1, 'max' => 100,     'einheit' => '%',   'form' => '%.1F', 'retain' => 1, 'kurz' => 'Wirkungsgrad', 'text' => 'Wirkungsgrad gesamt (abgegeben je geladener kWh); -1 = noch zu wenige Zyklen'),
             'ALTER' => array('quelle' => '_alter', 'analog' => 1, 'min' => -1, 'max' => 86400, 'einheit' => 's',  'form' => '%d',   'retain' => 0, 'kurz' => 'Alter der Zählerstände', 'text' => 'Alter der Zählerstände in Sekunden; -1 = noch nie gemessen'),
         );
     }
     if ($satz === 'ranks') {
         return array(
-            'OK'      => array('quelle' => 'ok',      'analog' => 0, 'min' => 0,  'max' => 1,  'einheit' => '',        'form' => '%d',   'retain' => 1, 'kurz' => 'Preisdaten gültig', 'text' => '1 = Preisdaten gültig'),
-            'N'       => array('quelle' => 'n',       'analog' => 1, 'min' => 0,  'max' => 48, 'einheit' => '',        'form' => '%d',   'retain' => 1, 'kurz' => 'bewertete Stunden', 'text' => 'Anzahl bewerteter Stunden im Fenster'),
+            'OK'      => array('quelle' => 'ok',      'analog' => 0, 'min' => 0,  'max' => 1,  'einheit' => '',        'form' => '%d',   'retain' => 0, 'kurz' => 'Preisdaten gültig', 'text' => '1 = Preisdaten gültig'),
+            'N'       => array('quelle' => 'n',       'analog' => 1, 'min' => 0,  'max' => 48, 'einheit' => '',        'form' => '%d',   'retain' => 0, 'kurz' => 'bewertete Stunden', 'text' => 'Anzahl bewerteter Stunden im Fenster'),
             'RANK'    => array('quelle' => 'rank',    'analog' => 1, 'min' => 0,  'max' => 99, 'einheit' => '',        'form' => '%d',   'retain' => 0, 'kurz' => 'Rang günstig', 'text' => 'Rang der laufenden Stunde im 24-Stunden-Fenster (1 = günstigste); 99 = keine Daten'),
             'RANKD'   => array('quelle' => 'rankd',   'analog' => 1, 'min' => 0,  'max' => 99, 'einheit' => '',        'form' => '%d',   'retain' => 0, 'kurz' => 'Rang teuer', 'text' => 'derselbe Rang absteigend (1 = teuerste Stunde); 99 = keine Daten'),
-            'CURP'    => array('quelle' => 'curp',    'analog' => 1, 'min' => -1, 'max' => 10, 'einheit' => 'EUR/kWh', 'form' => '%.5f', 'retain' => 0, 'kurz' => 'Preis dieser Stunde', 'text' => 'Preis der laufenden Stunde inkl. Aufschlag und USt'),
+            'CURP'    => array('quelle' => 'curp',    'analog' => 1, 'min' => -1, 'max' => 10, 'einheit' => 'EUR/kWh', 'form' => '%.5F', 'retain' => 0, 'kurz' => 'Preis dieser Stunde', 'text' => 'Preis der laufenden Stunde inkl. Aufschlag und USt'),
             'NEG'     => array('quelle' => 'neg',     'analog' => 0, 'min' => 0,  'max' => 1,  'einheit' => '',        'form' => '%d',   'retain' => 0, 'kurz' => 'Preis negativ', 'text' => '1 = der Preis der laufenden Stunde ist negativ'),
-            'MINP'    => array('quelle' => 'minp',    'analog' => 1, 'min' => -1, 'max' => 10, 'einheit' => 'EUR/kWh', 'form' => '%.5f', 'retain' => 0, 'kurz' => 'günstigste Stunde', 'text' => 'günstigste Stunde im Fenster'),
-            'MAXP'    => array('quelle' => 'maxp',    'analog' => 1, 'min' => -1, 'max' => 10, 'einheit' => 'EUR/kWh', 'form' => '%.5f', 'retain' => 0, 'kurz' => 'teuerste Stunde', 'text' => 'teuerste Stunde im Fenster'),
-            'SPREAD'  => array('quelle' => 'spread',  'analog' => 1, 'min' => 0,  'max' => 10, 'einheit' => 'EUR/kWh', 'form' => '%.5f', 'retain' => 0, 'kurz' => 'Preisspanne', 'text' => 'Abstand teuerste zu günstigster Stunde - lohnt sich der Umschlag heute?'),
-            'NEXTP'   => array('quelle' => 'nextp',   'analog' => 1, 'min' => -1, 'max' => 10, 'einheit' => 'EUR/kWh', 'form' => '%.5f', 'retain' => 0, 'kurz' => 'Preis nächste Stunde', 'text' => 'Preis der nächsten Stunde'),
+            'MINP'    => array('quelle' => 'minp',    'analog' => 1, 'min' => -1, 'max' => 10, 'einheit' => 'EUR/kWh', 'form' => '%.5F', 'retain' => 0, 'kurz' => 'günstigste Stunde', 'text' => 'günstigste Stunde im Fenster'),
+            'MAXP'    => array('quelle' => 'maxp',    'analog' => 1, 'min' => -1, 'max' => 10, 'einheit' => 'EUR/kWh', 'form' => '%.5F', 'retain' => 0, 'kurz' => 'teuerste Stunde', 'text' => 'teuerste Stunde im Fenster'),
+            'SPREAD'  => array('quelle' => 'spread',  'analog' => 1, 'min' => 0,  'max' => 10, 'einheit' => 'EUR/kWh', 'form' => '%.5F', 'retain' => 0, 'kurz' => 'Preisspanne', 'text' => 'Abstand teuerste zu günstigster Stunde - lohnt sich der Umschlag heute?'),
+            'NEXTP'   => array('quelle' => 'nextp',   'analog' => 1, 'min' => -1, 'max' => 10, 'einheit' => 'EUR/kWh', 'form' => '%.5F', 'retain' => 0, 'kurz' => 'Preis nächste Stunde', 'text' => 'Preis der nächsten Stunde'),
             'HBIS'    => array('quelle' => 'hbis',    'analog' => 1, 'min' => -1, 'max' => 24, 'einheit' => 'h',       'form' => '%d',   'retain' => 0, 'kurz' => 'Stunden bis günstigste', 'text' => 'Stunden bis zur günstigsten Stunde (0 = jetzt); -1 = unbekannt'),
             'HBISMAX' => array('quelle' => 'hbismax', 'analog' => 1, 'min' => -1, 'max' => 24, 'einheit' => 'h',       'form' => '%d',   'retain' => 0, 'kurz' => 'Stunden bis teuerste', 'text' => 'Stunden bis zur teuersten Stunde (0 = jetzt); -1 = unbekannt'),
-            'ERRC'    => array('quelle' => 'errc',    'analog' => 1, 'min' => 0,  'max' => 9,  'einheit' => '',        'form' => '%d',   'retain' => 1, 'kurz' => 'Grund für OK=0', 'text' => 'Grund für OK=0: 0 in Ordnung, 1 keine Preise geholt, 2 Fenster zu kurz, 3 keine Preise für die laufende Stunde'),
+            'ERRC'    => array('quelle' => 'errc',    'analog' => 1, 'min' => 0,  'max' => 9,  'einheit' => '',        'form' => '%d',   'retain' => 0, 'kurz' => 'Grund für OK=0', 'text' => 'Grund für OK=0: 0 in Ordnung, 1 keine Preise geholt, 2 Fenster zu kurz, 3 keine Preise für die laufende Stunde'),
         );
     }
     if ($satz === 'summe') {
         return array(
-            'OK'      => array('quelle' => 'ok',      'analog' => 0, 'min' => 0,      'max' => 1,     'einheit' => '',    'form' => '%d',   'retain' => 1, 'kurz' => 'alle Speicher erreichbar', 'text' => '1 = ALLE Speicher haben geantwortet'),
+            'OK'      => array('quelle' => 'ok',      'analog' => 0, 'min' => 0,      'max' => 1,     'einheit' => '',    'form' => '%d',   'retain' => 0, 'kurz' => 'alle Speicher erreichbar', 'text' => '1 = ALLE Speicher haben geantwortet'),
             'N'       => array('quelle' => 'n',       'analog' => 1, 'min' => 0,      'max' => 9,     'einheit' => '',    'form' => '%d',   'retain' => 1, 'kurz' => 'Anzahl Speicher', 'text' => 'Anzahl eingetragener Speicher'),
-            'NOK'     => array('quelle' => 'nok',     'analog' => 1, 'min' => 0,      'max' => 9,     'einheit' => '',    'form' => '%d',   'retain' => 1, 'kurz' => 'Speicher ohne Antwort', 'text' => 'Anzahl Speicher ohne Antwort'),
-            'SOC'     => array('quelle' => 'soc',     'analog' => 1, 'min' => -1,     'max' => 100,   'einheit' => '%',   'form' => '%.1f', 'retain' => 1, 'kurz' => 'Ladezustand gewichtet', 'text' => 'nach Kapazität gewichteter Ladezustand; -1 = nicht bildbar'),
-            'KAPAZ'   => array('quelle' => 'kapaz',   'analog' => 1, 'min' => -1,     'max' => 1000,  'einheit' => 'kWh', 'form' => '%.2f', 'retain' => 1, 'kurz' => 'Gesamtkapazität', 'text' => 'Gesamtkapazität; -1 = bei mindestens einem Speicher nicht eingetragen'),
-            'RESTKWH' => array('quelle' => 'restkwh', 'analog' => 1, 'min' => -1,     'max' => 1000,  'einheit' => 'kWh', 'form' => '%.2f', 'retain' => 1, 'kurz' => 'gespeicherte Menge', 'text' => 'noch gespeicherte Menge; -1 = nicht bildbar'),
+            'NOK'     => array('quelle' => 'nok',     'analog' => 1, 'min' => 0,      'max' => 9,     'einheit' => '',    'form' => '%d',   'retain' => 0, 'kurz' => 'Speicher ohne Antwort', 'text' => 'Anzahl Speicher ohne Antwort'),
+            'SOC'     => array('quelle' => 'soc',     'analog' => 1, 'min' => -1,     'max' => 100,   'einheit' => '%',   'form' => '%.1F', 'retain' => 1, 'kurz' => 'Ladezustand gewichtet', 'text' => 'nach Kapazität gewichteter Ladezustand; -1 = nicht bildbar'),
+            'KAPAZ'   => array('quelle' => 'kapaz',   'analog' => 1, 'min' => -1,     'max' => 1000,  'einheit' => 'kWh', 'form' => '%.2F', 'retain' => 1, 'kurz' => 'Gesamtkapazität', 'text' => 'Gesamtkapazität; -1 = bei mindestens einem Speicher nicht eingetragen'),
+            'RESTKWH' => array('quelle' => 'restkwh', 'analog' => 1, 'min' => -1,     'max' => 1000,  'einheit' => 'kWh', 'form' => '%.2F', 'retain' => 1, 'kurz' => 'gespeicherte Menge', 'text' => 'noch gespeicherte Menge; -1 = nicht bildbar'),
             'BATP'    => array('quelle' => 'batp',    'analog' => 1, 'min' => -40000, 'max' => 40000, 'einheit' => 'W',   'form' => '%d',   'retain' => 0, 'kurz' => 'Batterieleistung gesamt', 'text' => 'Summe der Batterieleistungen (+ lädt / - entlädt)'),
             'ALTER'   => array('quelle' => 'alter',   'analog' => 1, 'min' => -1,     'max' => 86400, 'einheit' => 's',   'form' => '%d',   'retain' => 0, 'kurz' => 'Alter der Teilmessungen', 'text' => 'Alter der ältesten Teilmessung; -1 = nicht bildbar'),
         );
     }
     return array(
-        'OK'        => array('quelle' => 'ok',    'analog' => 0, 'min' => 0,      'max' => 1,      'einheit' => '',   'form' => '%d',   'retain' => 1, 'kurz' => 'Speicher erreichbar', 'text' => '1 = Speicher erreichbar'),
-        'SOC'       => array('quelle' => 'soc',   'analog' => 1, 'min' => 0,      'max' => 100,    'einheit' => '%',  'form' => '%.1f', 'retain' => 1, 'kurz' => 'Ladezustand', 'text' => 'Ladezustand'),
+        'OK'        => array('quelle' => 'ok',    'analog' => 0, 'min' => 0,      'max' => 1,      'einheit' => '',   'form' => '%d',   'retain' => 0, 'kurz' => 'Speicher erreichbar', 'text' => '1 = Speicher erreichbar'),
+        'SOC'       => array('quelle' => 'soc',   'analog' => 1, 'min' => 0,      'max' => 100,    'einheit' => '%',  'form' => '%.1F', 'retain' => 1, 'kurz' => 'Ladezustand', 'text' => 'Ladezustand'),
         'BATP'      => array('quelle' => 'batp',  'analog' => 1, 'min' => -10000, 'max' => 10000,  'einheit' => 'W',  'form' => '%d',   'retain' => 0, 'kurz' => 'Batterieleistung', 'text' => 'Batterieleistung (+ lädt / - entlädt)'),
-        'TEMP'      => array('quelle' => 'temp',  'analog' => 1, 'min' => -20,    'max' => 80,     'einheit' => '°C', 'form' => '%.1f', 'retain' => 0, 'kurz' => 'Batterietemperatur', 'text' => 'Batterietemperatur'),
+        'TEMP'      => array('quelle' => 'temp',  'analog' => 1, 'min' => -20,    'max' => 80,     'einheit' => '°C', 'form' => '%.1F', 'retain' => 0, 'kurz' => 'Batterietemperatur', 'text' => 'Batterietemperatur'),
         'GRIDP'     => array('quelle' => 'gridp', 'analog' => 1, 'min' => -20000, 'max' => 20000,  'einheit' => 'W',  'form' => '%d',   'retain' => 0, 'kurz' => 'Netzleistung', 'text' => 'Netzleistung am Speicher'),
         'FW'        => array('quelle' => 'fw',    'analog' => 1, 'min' => 0,      'max' => 100000, 'einheit' => '',   'form' => '%d',   'retain' => 1, 'kurz' => 'Firmwarestand', 'text' => 'Firmwarestand des Geräts'),
         // BERICHTIGT 24.08.2026: hiess "Betriebsmodus des Geraets" mit Bereich
@@ -3475,7 +4117,7 @@ function marstek_xml_virtual_in_http($kopf, $cmds) {
 /** <v.n> zum Zahlenformat des Feldes. */
 function marstek_einheit_muster(array $f) {
     $nk = 0;
-    if (preg_match('/%\.(\d)f/', (string) $f['form'], $m)) { $nk = (int) $m[1]; }
+    if (preg_match('/%\.(\d)[fF]/', (string) $f['form'], $m)) { $nk = (int) $m[1]; }
     return '<v.' . $nk . '>';
 }
 
@@ -3493,7 +4135,9 @@ function marstek_x($s) {
  */
 function marstek_mqtt_gateway_info() {
     $p = marstek_paths();
-    $home = isset($p['lbhome']) && $p['lbhome'] !== '' ? $p['lbhome'] : (getenv('LBHOMEDIR') ?: '');
+    // Nur mit Wurzel (25.09.2026): im Archivmodus las die Oberflaeche sonst
+    // ueber LBHOMEDIR die general.json der Anlage.
+    $home = $p['lbhome'];
     if ($home === '') { return null; }
     $gj = $home . '/config/system/general.json';
     if (!is_file($gj)) { return null; }
@@ -3796,15 +4440,26 @@ function marstek_selbsttest()
      * nicht, das Lebenszeichen nie. Die Liste steht hier ein zweites Mal,
      * getrennt von der Feldtabelle - eine Zeile, die dort versehentlich
      * umspringt, faellt hier auf. */
-    foreach (array('ok', 'soc', 'fw', 'soll', 'energie_chgt', 'energie_cyc',
-                   'rang_ok', 'rang_n') as $t) {
+    // BERICHTIGT 25.09.2026: ok, rang_ok, rang_n standen hier unter JA - die
+    // Pruefung verlangte damit genau das, was Regeln/07 seit dem 18./19.09.2026
+    // verbietet (Aussagen des Dienstes ueber sich selbst nie retained).
+    foreach (array('soc', 'fw', 'soll', 'energie_chgt', 'energie_dist', 'energie_cyc',
+                   'energie_eff') as $t) {
         $pruefe('Retain JA: ' . $t, marstek_mqtt_retain($t), true);
     }
     foreach (array('batp', 'temp', 'gridp', 'ms', 'alter', 'zaehler', 'sollalter',
                    'fbrest', 'rang_curp', 'rang_rank', 'energie_alter',
-                   'ts', 'takt_zaehler', 'takt_ts', 'gibtsnicht') as $t) {
+                   'ts', 'takt_zaehler', 'takt_ts', 'gibtsnicht',
+                   'ok', 'energie_ok', 'energie_chgd', 'energie_disd', 'energie_chgm',
+                   'energie_dism', 'rang_ok', 'rang_n', 'rang_errc') as $t) {
         $pruefe('Retain NEIN: ' . $t, marstek_mqtt_retain($t), false);
     }
+    // Jeder Altwert, den die Linie abraeumt, geht heute wirklich fluechtig -
+    // sonst raeumte sie ab, was sie gleich wieder zurueckbehaelt.
+    foreach (marstek_mqtt_altlast_liste(true) as $t) {
+        $pruefe('Altwert heute fluechtig: ' . $t, marstek_mqtt_retain($t), false);
+    }
+    $pruefe('Einheit %.2F -> <v.2>', marstek_einheit_muster(array('form' => '%.2F')), '<v.2>');
 
     /* --- Die Bezeichnung der Vorlagen ist lesbar und eindeutig ---
      *

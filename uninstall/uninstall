@@ -30,51 +30,142 @@
 #   4. Ein noch laufender Cron-Durchgang. Sind die Speicher nicht
 #      erreichbar, dauert ein Durchgang bis zu anderthalb Minuten; er
 #      wuerde ins Leere weiterlaufen.
+#   5. Die zurueckbehaltenen MQTT-Themen der Linie (seit 1.1.16 geleert).
 #
 # ZUR PROZESSSUCHE: "pkill -f cron.php" waere falsch - so heissen die
-# Cron-Skripte etlicher Plugins. Verglichen wird argumentweise gegen den
-# vollen Pfad.
+# Cron-Skripte etlicher Plugins. Verglichen wird argumentweise
+# (mv_ist_durchgang()).
 
 PDIR=$3
 [ -n "$PDIR" ] || PDIR="marstekvenus"
 BASE="${5:-$LBHOMEDIR}"
-# Dritter Rueckfall: der eigene Ablageort. Bewusst kein fest verdrahteter
-# Systempfad - LoxBerry laesst sich anderswohin installieren, und der
-# Plugin-Pruefer sucht die Zeichenkette, ohne den Zusammenhang zu sehen.
-# Der Installer legt dieses Skript als <home>/data/system/uninstall/<ordner>
-# ab und uebergibt die LoxBerry-Wurzel als fuenftes Argument
-# (plugininstall.pl:1158 und :1577, am Geraet nachgesehen 17.09.2026);
-# dieser Zweig greift nur, wenn beides fehlt.
-if [ -z "$BASE" ] || [ ! -d "$BASE" ]; then
-    BASE=$(cd "$(dirname "$(readlink -f "$0")")/../../.." 2>/dev/null && pwd)
+# Die Wurzel: $5 (vom Installer) oder $LBHOMEDIR, wenn dort config/plugins und
+# data/plugins liegen - sonst vom eigenen Ablageort AUFWAERTS SUCHEN, bis ein
+# Verzeichnis config/plugins, data/plugins UND config/system/general.json
+# traegt. Der Installer legt dieses Skript als <home>/data/system/uninstall/
+# <ordner> ab und uebergibt die LoxBerry-Wurzel als fuenftes Argument
+# (plugininstall.pl:1158 und :1577, am Geraet nachgesehen 17.09.2026).
+#
+# BERICHTIGT 25.09.2026. Bis 1.1.15 war der Rueckfall "$0/../../.." ohne jede
+# Pruefung. In WSL gemessen (Pruefung-MarstekVenus-1.1.16): in einem fremden
+# Baum ohne general.json loeschte die Deinstallation dessen Zweitschrift und
+# Verlauf (Fall H6), und aus einem Archiv unter / ergab der Rueckfall "/" -
+# geloescht wurde /config/plugins/<ordner>.backup.json (Fall C11). Ohne Wurzel
+# wird jetzt GEWARNT statt vollzogen.
+mv_wurzel_suchen() {
+    mv_v=$(cd "$1" 2>/dev/null && pwd -P) || return 1
+    mv_i=0
+    while [ -n "$mv_v" ] && [ "$mv_v" != "/" ] && [ "$mv_i" -lt 8 ]; do
+        if [ -d "$mv_v/config/plugins" ] && [ -d "$mv_v/data/plugins" ] \
+           && [ -f "$mv_v/config/system/general.json" ]; then
+            echo "$mv_v"
+            return 0
+        fi
+        mv_v=$(dirname "$mv_v")
+        mv_i=$((mv_i + 1))
+    done
+    return 1
+}
+if [ -z "$BASE" ] || [ ! -d "$BASE/config/plugins" ] || [ ! -d "$BASE/data/plugins" ]; then
+    BASE=$(mv_wurzel_suchen "$(dirname "$(readlink -f "$0")")") || BASE=""
+fi
+if [ -z "$BASE" ]; then
+    echo "<WARNING> Es wurde kein LoxBerry-Wurzelverzeichnis gefunden: weder als fuenftes"
+    echo "<WARNING> Argument noch in \$LBHOMEDIR, und oberhalb von $(dirname "$(readlink -f "$0")")"
+    echo "<WARNING> traegt kein Verzeichnis config/plugins, data/plugins und config/system/general.json."
+    echo "<WARNING> Es wurde nichts entfernt und kein Prozess beendet."
+    exit 1
 fi
 
 # Seit 1.0.5 liegt cron.php unter bin/, nicht mehr unter webfrontend/html/.
 # Beide Orte werden geprueft: nach einem Update aus einer aelteren Fassung
 # kann noch ein Durchgang vom alten Pfad laufen, und der soll ebenso beendet
-# werden. Verglichen wird argumentweise gegen den vollen Pfad.
+# werden.
 SKRIPT="$BASE/bin/plugins/$PDIR/cron.php"
 SKRIPT_ALT="$BASE/webfrontend/html/plugins/$PDIR/cron.php"
+SKRIPT_ECHT=$(readlink -f -- "$SKRIPT" 2>/dev/null || echo "$SKRIPT")
+SKRIPT_ALT_ECHT=$(readlink -f -- "$SKRIPT_ALT" 2>/dev/null || echo "$SKRIPT_ALT")
 TMP="/tmp/marstekvenus"
 BK="$BASE/config/plugins/$PDIR.backup.json"
 VERLAUF="$BASE/data/plugins/$PDIR.verlauf"
+# Der Minutentakt laeuft als loxberry (Regeln/06); gibt es den Benutzer nicht,
+# die eigene Nummer.
+DIENST_UID=$(id -u loxberry 2>/dev/null || id -u)
+
+# Ist <PID> ein Durchgang dieses Plugins? ARGUMENTWEISE, nicht ueber die ganze
+# Befehlszeile: argv[0] ist php (auch php7.4, /usr/bin/php8.4), argv[1] ist
+# zeichengenau der eigene cron.php (bei relativem Start ueber /proc/<pid>/cwd
+# aufgeloest), es gibt KEIN drittes Argument (ein Einmallauf wie --einmal ist
+# kein Durchgang des Takts), und der Prozess gehoert dem Dienstbenutzer.
+#
+# BERICHTIGT 25.09.2026. Bis 1.1.15 genuegte es, dass IRGENDEIN Argument dem
+# Pfad glich, und nach fuenf Sekunden kam kill -9 ohne erneute Pruefung. In WSL
+# gemessen (Pruefung-MarstekVenus-1.1.16): beendet wurden "tail -f <cron.php>"
+# (Fall U4), ein Einmallauf "php <cron.php> --einmal" (U5) und ein Prozess, der
+# auf SIGTERM sein Programm gewechselt hatte (U6) - diesen traf der kill -9.
+# Bauart ist_dienst() aus AnkerSolix 0.9.17, Regeln/06.
+mv_ist_durchgang() {
+    local p="$1" a0 a1 uid
+    local -a argv=()
+    [ -r "/proc/$p/cmdline" ] || return 1
+    mapfile -d '' -t argv < "/proc/$p/cmdline" 2>/dev/null || return 1
+    [ "${#argv[@]}" -eq 2 ] || return 1
+    a0=$(basename -- "${argv[0]}")
+    case "$a0" in php|php[0-9]*) ;; *) return 1 ;; esac
+    a1="${argv[1]}"
+    case "$a1" in
+        /*) ;;
+        *) a1="$(readlink "/proc/$p/cwd" 2>/dev/null)/$a1" ;;
+    esac
+    a1=$(readlink -f -- "$a1" 2>/dev/null) || return 1
+    [ "$a1" = "$SKRIPT_ECHT" ] || [ "$a1" = "$SKRIPT_ALT_ECHT" ] || return 1
+    uid=$(awk '/^Uid:/ {print $2}' "/proc/$p/status" 2>/dev/null)
+    [ "$uid" = "$DIENST_UID" ] || return 1
+    return 0
+}
 
 GEFUNDEN=0
 for D in /proc/[0-9]*; do
-    P=$(basename "$D")
-    [ -r "$D/cmdline" ] || continue
-    if tr '\0' '\n' < "$D/cmdline" 2>/dev/null | grep -qxF -e "$SKRIPT" -e "$SKRIPT_ALT"; then
-        kill "$P" 2>/dev/null
-        for i in 1 2 3 4 5; do
-            kill -0 "$P" 2>/dev/null || break
-            sleep 1
-        done
+    P=${D#/proc/}
+    mv_ist_durchgang "$P" || continue
+    kill "$P" 2>/dev/null
+    for i in 1 2 3 4 5; do
+        mv_ist_durchgang "$P" || break
+        sleep 1
+    done
+    # Vor dem harten Signal NOCH EINMAL pruefen: ist es nicht mehr derselbe
+    # Durchgang (beendet, oder die Nummer gehoert inzwischen einem anderen
+    # Programm), wird nichts geschickt.
+    if mv_ist_durchgang "$P"; then
         kill -9 "$P" 2>/dev/null
-        GEFUNDEN=1
+        sleep 1
+    fi
+    GEFUNDEN=1
+    if mv_ist_durchgang "$P"; then
+        echo "<WARNING> Der Cron-Durchgang PID $P liess sich nicht beenden."
+    else
         echo "<OK> Laufenden Cron-Durchgang beendet (PID $P)."
     fi
 done
 [ "$GEFUNDEN" -eq 0 ] && echo "<INFO> Es lief kein Cron-Durchgang."
+
+# ---------- Zurueckbehaltene MQTT-Themen leeren (neu 25.09.2026) ----------
+# Bis 1.1.15 stand hier nur der Rat, im Broker von Hand aufzuraeumen; die
+# retained Themen der Linie blieben nach der Deinstallation stehen (gemessen,
+# Fall U1). cron.php --mqtt-leeren fragt den Broker, leert ueber den
+# UDP-Eingang des Gateways und liest nach (marstek_mqtt_leeren()). Als loxberry,
+# wenn dieses Skript als root laeuft - es liest nur, schreibt aber nichts.
+if command -v php >/dev/null 2>&1 && [ -f "$SKRIPT" ]; then
+    if [ "$(id -u)" = "0" ] && id loxberry >/dev/null 2>&1; then
+        su -s /bin/bash loxberry -c "$(printf '%q ' env "LBHOMEDIR=$BASE" "LBPPLUGINDIR=$PDIR" \
+            timeout 120 php "$SKRIPT" --mqtt-leeren)" < /dev/null 2>&1 || true
+    else
+        env "LBHOMEDIR=$BASE" "LBPPLUGINDIR=$PDIR" timeout 120 php "$SKRIPT" --mqtt-leeren \
+            < /dev/null 2>&1 || true
+    fi
+else
+    echo "<INFO> PHP oder cron.php fehlt - zurueckbehaltene MQTT-Themen wurden nicht geleert."
+fi
 
 if [ -f "$BK" ]; then
     rm -f "$BK" && echo "<OK> Sicherung der Konfiguration entfernt: $PDIR.backup.json"
@@ -91,12 +182,6 @@ if [ -d "$TMP" ]; then
     rm -rf "$TMP" && echo "<OK> Zwischenspeicher $TMP entfernt."
 fi
 
-echo "<WARNING> Im MQTT-Broker koennen Werte stehen bleiben."
-echo "<INFO> Das Plugin veroeffentlicht unter dem eingestellten Themenpraefix"
-echo "<INFO> (Vorgabe: marstek/...) die Themen soc, batp, temp, gridp, ok, fw,"
-echo "<INFO> ms, alter, zaehler, soll, sollalter, fbrest, ts, energie_* und"
-echo "<INFO> rang_* sowie takt_zaehler und takt_ts. Zum Aufraeumen:"
-echo "<INFO> LoxBerry -> System -> MQTT Gateway."
 
 # ---------- Den Nachbarn der Update-Sicherung wegraeumen ----------
 # data/plugins/<ordner>.upgrade_sicherung liegt AUSSERHALB des Ordners, den
