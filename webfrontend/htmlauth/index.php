@@ -72,6 +72,30 @@ $mv_beanstandung = array();// O4: warum das Formular abgewiesen wurde (es wurde 
 $mv_warnungen = array();   // C11: gespeichert, aber mit Hinweis
 $mv_meldung = '';
 $mv_form_rueck = null;     // O4: die abgewiesene Eingabe - niemand soll alles neu tippen
+$mv_mqtt_rueck = null;     // X-2: dasselbe fuer das MQTT-Formular
+$mv_falsch = array();      // X-2: die beanstandeten Felder (Feldkennung => true)
+
+/** X-2: das Merkmal fuer ein beanstandetes Feld (roter Rahmen, fuer Vorleser
+ *  "ungueltig"). Die Kennung ist der Feldname, bei Geraetezeilen
+ *  dev_<schluessel>_<nr>. */
+function mv_fa($id, $setzen = null)
+{
+    // Die Liste liegt hier, nicht in $GLOBALS: rendern.py und der Router
+    // binden diese Seite auch aus einer Funktion heraus ein.
+    static $falsch = array();
+    if (is_array($setzen)) {
+        $falsch = $setzen;
+        return '';
+    }
+    return isset($falsch[$id]) ? ' aria-invalid="true"' : '';
+}
+
+/** X-2: ein Wert fuer das value-Attribut - so, wie er gespeichert oder
+ *  eingetippt ist (bis 1.1.18 mit (int): "5.5" kam als 5 zurueck). */
+function mv_wert($v)
+{
+    return is_scalar($v) ? marstek_e((string) $v) : '';
+}
 $mv_suchergebnis = null;
 $mv_suchmeldung = '';
 $mv_post = (isset($_SERVER['REQUEST_METHOD']) && $_SERVER['REQUEST_METHOD'] === 'POST');
@@ -143,7 +167,19 @@ if (!$mv_post) {
             }
         }
     }
-    if (isset($mv_flash['form']) && is_array($mv_flash['form'])) { $mv_form_rueck = $mv_flash['form']; }
+    /* X-2 (Regeln/04): die abgewiesenen Eingaben reisen unter 'eingaben', mit
+     * dem Formular, zu dem sie gehoeren, und den beanstandeten Feldern. */
+    if (isset($mv_flash['eingaben']) && is_array($mv_flash['eingaben'])) {
+        $mv_fname = (isset($mv_flash['formular']) && is_string($mv_flash['formular'])) ? $mv_flash['formular'] : '';
+        if ($mv_fname === 'einstellungen') { $mv_form_rueck = $mv_flash['eingaben']; }
+        if ($mv_fname === 'mqtt') { $mv_mqtt_rueck = $mv_flash['eingaben']; }
+        if (isset($mv_flash['falsch']) && is_array($mv_flash['falsch'])) {
+            foreach ($mv_flash['falsch'] as $mv_z) {
+                if (is_string($mv_z)) { $mv_falsch[$mv_z] = true; }
+            }
+        }
+        mv_fa('', $mv_falsch);
+    }
     if (!empty($mv_flash['suche'])) {
         $mv_suchergebnis = marstek_suchergebnis_lesen();
         if ($mv_suchergebnis === null) { $mv_suchergebnis = array(); }
@@ -307,10 +343,15 @@ if ($mv_post && isset($_POST['uebernehmen']) && is_string($_POST['uebernehmen'])
     $mv_gr = marstek_modell_grenzen($mv_modell);
     $mv_neu = array();
     foreach ($mv_nrn as $mv_n => $d) { $d['nr'] = $mv_n; $mv_neu[] = $d; }
-    $mv_neu[] = array('name' => 'Venus E', 'ip' => $ip, 'port' => 30000,
+    $mv_ueb = array('name' => 'Venus E', 'ip' => $ip, 'port' => 30000,
         'pmax_charge' => $mv_gr !== null ? $mv_gr[0] : 2500,
         'pmax_discharge' => $mv_gr !== null ? $mv_gr[1] : 2500,
         'modbus' => 1, 'kwh' => 0, 'nr' => $mv_frei);
+    // b1: das Modell aus der Suche steht danach in der Auswahl.
+    if (marstek_modell_erkennen($mv_modell) !== '') {
+        $mv_ueb['modell'] = marstek_modell_erkennen($mv_modell);
+    }
+    $mv_neu[] = $mv_ueb;
     $cfg['devices'] = $mv_neu;
     if (!marstek_cfg_schreiben($cfg)) {
         mv_weiter('tab-test', array('fehler' => marstek_t('MELD.SPEICHERN_FEHLGESCHLAGEN')));
@@ -411,7 +452,10 @@ if ($mv_post && isset($_POST['mqtt_save'])) {
     $topic = (isset($_POST['mqtt_topic']) && is_string($_POST['mqtt_topic'])) ? trim($_POST['mqtt_topic']) : '';
     $mv_g = marstek_wert_pruefen('mqtt_topic', $topic);
     if ($mv_g !== '') {
-        mv_weiter('tab-mqtt', array('fehler' => sprintf(marstek_t('MELD.PRAEFIX_UNGUELTIG'), $topic, $mv_g)));
+        // X-2: das eingetippte Praefix und der Schalter kommen zurueck ins Formular.
+        mv_weiter('tab-mqtt', array('fehler' => sprintf(marstek_t('MELD.PRAEFIX_UNGUELTIG'), $topic, $mv_g),
+            'formular' => 'mqtt', 'falsch' => array('mqtt_topic'),
+            'eingaben' => array('mqtt_topic' => $topic, 'mqtt_enabled' => isset($_POST['mqtt_enabled']) ? 1 : 0)));
     }
     $cfg['mqtt_enabled'] = isset($_POST['mqtt_enabled']) ? 1 : 0;
     $cfg['mqtt_topic'] = $topic;
@@ -460,6 +504,7 @@ if ($mv_post && isset($_POST['save'])) {
         return is_string($v) ? trim($v) : null;
     };
     $mv_maengel = array();
+    $mv_falsch_neu = array();   // X-2: die beanstandeten Felder
     $mv_rueck = array('geraete' => array());
     $mv_geraete = array();
     $mv_pruef = array();
@@ -467,10 +512,12 @@ if ($mv_post && isset($_POST['save'])) {
         $mv_nr = $i + 1;
         $mv_roh = array();
         foreach (array('name' => 'dev_name', 'ip' => 'dev_ip', 'port' => 'dev_port', 'pmax_charge' => 'dev_pc',
-                       'pmax_discharge' => 'dev_pd', 'modbus' => 'dev_mb', 'kwh' => 'dev_kwh') as $mv_k => $mv_feld) {
+                       'pmax_discharge' => 'dev_pd', 'modbus' => 'dev_mb', 'kwh' => 'dev_kwh',
+                       'modell' => 'dev_modell') as $mv_k => $mv_feld) {
             $v = $mv_str($mv_feld, $i);
             if ($v === null) {
                 $mv_maengel[] = sprintf(marstek_t('MELD.EINGABE_UNGUELTIG'), $mv_nr, $mv_k);
+                $mv_falsch_neu[] = 'dev_' . $mv_k . '_' . $mv_nr;   // X-2
                 $v = '';
             }
             $mv_roh[$mv_k] = $v;
@@ -481,6 +528,7 @@ if ($mv_post && isset($_POST['save'])) {
         }
         if (!marstek_ip_gueltig($mv_roh['ip'])) {
             $mv_maengel[] = sprintf(marstek_t('MELD.IP_UNGUELTIG'), $mv_nr, $mv_roh['ip']);
+            $mv_falsch_neu[] = 'dev_ip_' . $mv_nr;
         }
         $mv_kwh = str_replace(',', '.', $mv_roh['kwh']);
         $mv_eintrag = array(
@@ -492,11 +540,18 @@ if ($mv_post && isset($_POST['save'])) {
             'modbus' => $mv_roh['modbus'] === '1' ? 1 : 0,
             'kwh' => $mv_kwh === '' ? '0' : $mv_kwh,
             'nr' => $mv_nr,
+            'modell' => $mv_roh['modell'],   // b1: '' = Erkennung
         );
         $mv_geraete[] = $mv_eintrag;
         // Die gemeinsame Pruefung bekommt die Adresse nur, wenn sie gueltig
         // ist - sonst stuende derselbe Grund zweimal in der Meldung.
         $mv_pruef[] = array('ip' => marstek_ip_gueltig($mv_roh['ip']) ? $mv_roh['ip'] : '') + $mv_eintrag;
+        // X-2: welches Feld der Zeile beanstandet ist - dieselbe Pruefung, je Feld allein.
+        foreach (array('name', 'port', 'pmax_charge', 'pmax_discharge', 'kwh', 'modell') as $mv_k) {
+            if (marstek_geraete_maengel(array(array($mv_k => $mv_eintrag[$mv_k])))) {
+                $mv_falsch_neu[] = 'dev_' . $mv_k . '_' . $mv_nr;
+            }
+        }
     }
     foreach (marstek_geraete_maengel($mv_pruef) as $mv_g) {
         $mv_maengel[] = $mv_g;
@@ -514,6 +569,7 @@ if ($mv_post && isset($_POST['save'])) {
         $mv_rueck[$mv_k] = $v;
         $mv_g = marstek_wert_pruefen($mv_k, $v);
         if ($mv_g !== '') {
+            $mv_falsch_neu[] = $mv_k;   // X-2
             if ($mv_k === 'vat') {
                 $mv_maengel[] = sprintf(marstek_t('MELD.UST_UNGUELTIG'), $v);
             } elseif ($mv_k === 'aufschlag_ct') {
@@ -533,15 +589,24 @@ if ($mv_post && isset($_POST['save'])) {
             $mv_neu[$mv_k] = (int) $v;
         }
     }
-    foreach (array('steuerung_ein', 'verteilen_ein', 'melden_ein', 'schutz_ein') as $mv_k) {
+    foreach (array('steuerung_ein', 'verteilen_ein', 'melden_ein', 'schutz_ein', 'bremse_abstand_ein') as $mv_k) {
         $mv_neu[$mv_k] = isset($_POST[$mv_k]) ? 1 : 0;
         $mv_rueck[$mv_k] = $mv_neu[$mv_k];
     }
     foreach (marstek_cfg_kreuzmaengel($mv_neu + $alt) as $mv_g) {
         $mv_maengel[] = $mv_g;
     }
+    // X-2: bei einer Kreuzbeanstandung sind beide Felder des Paars markiert.
+    foreach (array(array('soc_min', 'soc_max'), array('temp_min', 'temp_max')) as $mv_paar) {
+        $mv_pw = array_intersect_key($mv_neu + $alt, array_flip($mv_paar));
+        if (marstek_cfg_kreuzmaengel($mv_pw)) {
+            $mv_falsch_neu[] = $mv_paar[0];
+            $mv_falsch_neu[] = $mv_paar[1];
+        }
+    }
     if ($mv_maengel) {
-        mv_weiter('tab-settings', array('beanstandung' => $mv_maengel, 'form' => $mv_rueck));
+        mv_weiter('tab-settings', array('beanstandung' => $mv_maengel, 'formular' => 'einstellungen',
+            'eingaben' => $mv_rueck, 'falsch' => array_values(array_unique($mv_falsch_neu))));
     }
     // Ab hier ist alles geprueft; erst jetzt werden die Typen gesetzt.
     $mv_norm = array();
@@ -550,16 +615,26 @@ if ($mv_post && isset($_POST['save'])) {
         $e = array('name' => $g['name'], 'ip' => $g['ip'], 'port' => (int) $g['port'],
                    'pmax_charge' => (int) $g['pmax_charge'], 'pmax_discharge' => (int) $g['pmax_discharge'],
                    'modbus' => (int) $g['modbus'], 'kwh' => round((float) $g['kwh'], 2), 'nr' => (int) $g['nr']);
+        if ($g['modell'] !== '') { $e['modell'] = $g['modell']; }   // b1
         $mv_norm[] = $e;
-        // C11: nur, wenn unter dieser Nummer schon DIESER Speicher lief - das
-        // Modell stammt aus seinem Zwischenspeicher.
-        if (isset($mv_vorher[$e['nr']]) && $mv_vorher[$e['nr']]['ip'] === $e['ip']) {
+        /* C11, b1: die Grenzen des GEWAEHLTEN Modells. Ohne Wahl wie bis
+         * 1.1.18 die Erkennung - nur, wenn unter dieser Nummer schon DIESER
+         * Speicher lief, denn das Modell stammt aus seinem Zwischenspeicher.
+         * "anderes" hat keine Grenzen und warnt nicht. */
+        $mv_mk = $g['modell'];
+        $mv_modell = '';
+        if ($mv_mk === '' && isset($mv_vorher[$e['nr']]) && $mv_vorher[$e['nr']]['ip'] === $e['ip']) {
             $mv_modell = marstek_modell_von($e['nr']);
-            $mv_gr = marstek_modell_grenzen($mv_modell);
-            if ($mv_gr !== null && ($e['pmax_charge'] > $mv_gr[0] || $e['pmax_discharge'] > $mv_gr[1])) {
-                $mv_warn[] = sprintf(marstek_t('MELD.MODELL_GRENZE'), $e['nr'], $mv_modell, $mv_gr[0], $mv_gr[1],
-                                     $e['pmax_charge'], $e['pmax_discharge']);
-            }
+            $mv_mk = marstek_modell_erkennen($mv_modell);
+        }
+        $mv_mod = marstek_modelle();
+        $mv_gr = ($mv_mk !== '' && isset($mv_mod[$mv_mk])) ? $mv_mod[$mv_mk] : null;
+        if ($mv_modell === '' && $mv_mk !== '') {
+            $mv_modell = marstek_t('EINST.MODELL_' . strtoupper($mv_mk));
+        }
+        if ($mv_gr !== null && ($e['pmax_charge'] > $mv_gr[0] || $e['pmax_discharge'] > $mv_gr[1])) {
+            $mv_warn[] = sprintf(marstek_t('MELD.MODELL_GRENZE'), $e['nr'], $mv_modell, $mv_gr[0], $mv_gr[1],
+                                 $e['pmax_charge'], $e['pmax_discharge']);
         }
     }
     $cfg = $alt;                       // Bestand uebernehmen, dann ueberschreiben.
@@ -569,7 +644,8 @@ if ($mv_post && isset($_POST['save'])) {
     // angefasst. Bis 1.0.10 fehlte das fuer aktionstoken: jedes Speichern
     // warf es still weg, und alle Loxone-Adressen liefen danach auf 403.
     if (!marstek_cfg_schreiben($cfg)) {
-        mv_weiter('tab-settings', array('fehler' => marstek_t('MELD.SPEICHERN_FEHLGESCHLAGEN'), 'form' => $mv_rueck));
+        mv_weiter('tab-settings', array('fehler' => marstek_t('MELD.SPEICHERN_FEHLGESCHLAGEN'),
+            'formular' => 'einstellungen', 'eingaben' => $mv_rueck, 'falsch' => array()));
     }
     $mv_texte = array();
     foreach (array_diff(array_keys($mv_vorher), array_keys(marstek_devices())) as $mv_n) {
@@ -617,9 +693,18 @@ if (empty($mv_cfg['aktionstoken'])) {
 if (is_array($mv_form_rueck)) {
     foreach (array('cache_sec', 'fallback_min', 'verlauf_tage', 'melden_ab', 'temp_min', 'temp_max',
                    'soc_min', 'soc_max', 'vat', 'aufschlag_ct', 'awattar',
-                   'steuerung_ein', 'verteilen_ein', 'melden_ein', 'schutz_ein') as $mv_k) {
+                   'steuerung_ein', 'verteilen_ein', 'melden_ein', 'schutz_ein', 'bremse_abstand_ein') as $mv_k) {
         if (array_key_exists($mv_k, $mv_form_rueck) && is_scalar($mv_form_rueck[$mv_k])) {
             $mv_cfg[$mv_k] = $mv_form_rueck[$mv_k];
+        }
+    }
+}
+
+// X-2: dasselbe fuer das MQTT-Formular.
+if (is_array($mv_mqtt_rueck)) {
+    foreach (array('mqtt_topic', 'mqtt_enabled') as $mv_k) {
+        if (array_key_exists($mv_k, $mv_mqtt_rueck) && is_scalar($mv_mqtt_rueck[$mv_k])) {
+            $mv_cfg[$mv_k] = $mv_mqtt_rueck[$mv_k];
         }
     }
 }
@@ -782,6 +867,9 @@ $mv_verlauf_tag = isset($_GET['vtag']) && is_string($_GET['vtag']) ? preg_replac
     padding-right: 32px;
 }
 .sm-devtbl input, .sm-devtbl select { min-width: 60px; }
+/* X-2: ein beanstandetes Feld (Ergaenzung zur Vorlage). */
+.sm-wrap input[aria-invalid="true"], .sm-wrap select[aria-invalid="true"] {
+    border: 2px solid #c62828 !important; background-color: #ffebee !important; }
 .sm-kacheln { display: flex; flex-wrap: wrap; gap: 10px; margin: 10px 0; }
 .sm-kachel { border: 1px solid #ddd; border-radius: 10px; padding: 10px 14px; min-width: 130px; }
 .sm-kachel b { display: block; font-size: 1.35em; color: #33691e; }
@@ -913,6 +1001,7 @@ $mv_verlauf_tag = isset($_GET['vtag']) && is_string($_GET['vtag']) ? preg_replac
 <div class="sm-breit">
 <table class="sm-tbl sm-devtbl">
 <tr><th style="width:34px;">Nr.</th><th><?= marstek_e(marstek_t('EINST.SP_NAME')) ?></th><th><?= marstek_e(marstek_t('EINST.SP_IP')) ?></th>
+<th style="width:130px;"><?= marstek_e(marstek_t('EINST.SP_MODELL')) ?></th>
 <th style="width:88px;"><?= marstek_e(marstek_t('EINST.SP_PORT')) ?></th><th style="width:104px;"><?= marstek_e(marstek_t('EINST.SP_PMAX_LADEN')) ?></th>
 <th style="width:104px;"><?= marstek_e(marstek_t('EINST.SP_PMAX_ENTLADEN')) ?></th><th style="width:96px;"><?= marstek_e(marstek_t('EINST.SP_KWH')) ?></th>
 <th style="width:110px;"><?= marstek_e(marstek_t('EINST.SP_MODBUS')) ?></th></tr>
@@ -929,17 +1018,32 @@ for ($i = 0; $i < 4; $i++) {
     } else {
         $d = (isset($mv_zeilen[$i + 1]) && is_array($mv_zeilen[$i + 1])) ? $mv_zeilen[$i + 1] : array();
     }
-    $d += array('name' => '', 'ip' => '', 'port' => 30000, 'pmax_charge' => 2500, 'pmax_discharge' => 2500, 'modbus' => 1, 'kwh' => 0);
+    $d += array('name' => '', 'ip' => '', 'port' => 30000, 'pmax_charge' => 2500, 'pmax_discharge' => 2500, 'modbus' => 1, 'kwh' => 0,
+                'modell' => '');
+    /* b1: das Modell - gewaehlt, sonst (Eintrag ohne Modell, wie bis 1.1.18)
+     * das Ergebnis der Erkennung aus der letzten Geraetemeldung. */
+    $mv_mod_wahl = $mv_s($d['modell']);
+    $mv_mod_erkannt = '';
+    if ($mv_mod_wahl === '' && !is_array($mv_form_rueck) && isset($mv_zeilen[$i + 1])) {
+        $mv_mod_erkannt = marstek_modell_von($i + 1);
+        $mv_mod_wahl = marstek_modell_erkennen($mv_mod_erkannt);
+    }
     $mv_kwh_anz = $mv_s($d['kwh']);
     if (is_numeric($mv_kwh_anz) && (float) $mv_kwh_anz <= 0) { $mv_kwh_anz = ''; } ?>
 <tr>
 <td><?= $i + 1 ?></td>
-<td><input data-role="none" type="text" name="dev_name[]" value="<?= marstek_e($mv_s($d['name'])) ?>" placeholder="<?= marstek_e($i === 0 ? marstek_t('EINST.PH_NAME') : marstek_t('EINST.PH_LEER')) ?>"></td>
-<td><input data-role="none" type="text" name="dev_ip[]" value="<?= marstek_e($mv_s($d['ip'])) ?>" placeholder="<?= marstek_e($i === 0 ? '192.168.1.25' : '') ?>"></td>
-<td><input data-role="none" type="number" name="dev_port[]" value="<?= marstek_e($mv_s($d['port'])) ?>" min="1" max="65535"></td>
-<td><input data-role="none" type="number" name="dev_pc[]" value="<?= marstek_e($mv_s($d['pmax_charge'])) ?>" min="100" max="3600"></td>
-<td><input data-role="none" type="number" name="dev_pd[]" value="<?= marstek_e($mv_s($d['pmax_discharge'])) ?>" min="100" max="3600"></td>
-<td><input data-role="none" type="text" name="dev_kwh[]" value="<?= marstek_e($mv_kwh_anz) ?>" placeholder="5.12"></td>
+<td><input<?= mv_fa('dev_name_' . ($i + 1)) ?> data-role="none" type="text" name="dev_name[]" value="<?= marstek_e($mv_s($d['name'])) ?>" placeholder="<?= marstek_e($i === 0 ? marstek_t('EINST.PH_NAME') : marstek_t('EINST.PH_LEER')) ?>"></td>
+<td><input<?= mv_fa('dev_ip_' . ($i + 1)) ?> data-role="none" type="text" name="dev_ip[]" value="<?= marstek_e($mv_s($d['ip'])) ?>" placeholder="<?= marstek_e($i === 0 ? '192.168.1.25' : '') ?>"></td>
+<td><select<?= mv_fa('dev_modell_' . ($i + 1)) ?> data-role="none" class="sm-auswahl mv-modell" name="dev_modell[]">
+<option value=""<?= $mv_mod_wahl === '' ? ' selected' : '' ?>><?= marstek_e(marstek_t('EINST.MODELL_UNBEKANNT')) ?></option>
+<?php foreach (array_keys(marstek_modelle()) as $mv_mk) { ?>
+<option value="<?= marstek_e($mv_mk) ?>"<?= $mv_mod_wahl === $mv_mk ? ' selected' : '' ?>><?= marstek_e(marstek_t('EINST.MODELL_' . strtoupper($mv_mk))) ?></option>
+<?php } ?>
+</select><?php if ($mv_mod_erkannt !== '') { ?><div class="sm-hilfe"><?= marstek_e(sprintf(marstek_t('EINST.MODELL_ERKANNT'), $mv_mod_erkannt)) ?></div><?php } ?></td>
+<td><input<?= mv_fa('dev_port_' . ($i + 1)) ?> data-role="none" type="number" name="dev_port[]" value="<?= marstek_e($mv_s($d['port'])) ?>" min="1" max="65535"></td>
+<td><input<?= mv_fa('dev_pmax_charge_' . ($i + 1)) ?> data-role="none" type="number" name="dev_pc[]" value="<?= marstek_e($mv_s($d['pmax_charge'])) ?>" min="100" max="3600"></td>
+<td><input<?= mv_fa('dev_pmax_discharge_' . ($i + 1)) ?> data-role="none" type="number" name="dev_pd[]" value="<?= marstek_e($mv_s($d['pmax_discharge'])) ?>" min="100" max="3600"></td>
+<td><input<?= mv_fa('dev_kwh_' . ($i + 1)) ?> data-role="none" type="text" name="dev_kwh[]" value="<?= marstek_e($mv_kwh_anz) ?>" placeholder="5.12"></td>
 <td><select data-role="none" class="sm-auswahl" name="dev_mb[]">
 <option value="0"<?= empty($d['modbus']) ? ' selected' : '' ?>><?= marstek_e(marstek_t('EINST.AUS')) ?></option>
 <option value="1"<?= !empty($d['modbus']) ? ' selected' : '' ?>><?= marstek_e(marstek_t('EINST.EIN')) ?></option>
@@ -954,17 +1058,17 @@ for ($i = 0; $i < 4; $i++) {
 <div class="sm-row">
     <div>
         <label><?= marstek_e(marstek_t('EINST.L_CACHE')) ?></label>
-        <input data-role="none" type="number" name="cache_sec" value="<?= (int) $mv_cfg['cache_sec'] ?>" min="5" max="300">
+        <input<?= mv_fa('cache_sec') ?> data-role="none" type="number" name="cache_sec" value="<?= mv_wert($mv_cfg['cache_sec']) ?>" min="5" max="300">
         <div class="sm-hilfe"><?= marstek_e(marstek_t('EINST.H_CACHE')) ?></div>
     </div>
     <div>
         <label><?= marstek_e(marstek_t('EINST.L_FALLBACK')) ?></label>
-        <input data-role="none" type="number" name="fallback_min" value="<?= (int) $mv_cfg['fallback_min'] ?>" min="0" max="1440">
+        <input<?= mv_fa('fallback_min') ?> data-role="none" type="number" name="fallback_min" value="<?= mv_wert($mv_cfg['fallback_min']) ?>" min="0" max="1440">
         <div class="sm-hilfe"><?= marstek_e(marstek_t('EINST.H_FALLBACK')) ?></div>
     </div>
     <div>
         <label><?= marstek_e(marstek_t('EINST.L_VERLAUF_TAGE')) ?></label>
-        <input data-role="none" type="number" name="verlauf_tage" value="<?= (int) $mv_cfg['verlauf_tage'] ?>" min="1" max="365">
+        <input<?= mv_fa('verlauf_tage') ?> data-role="none" type="number" name="verlauf_tage" value="<?= mv_wert($mv_cfg['verlauf_tage']) ?>" min="1" max="365">
         <div class="sm-hilfe"><?= marstek_e(marstek_t('EINST.H_VERLAUF_TAGE')) ?></div>
     </div>
 </div>
@@ -978,6 +1082,11 @@ for ($i = 0; $i < 4; $i++) {
     <?= marstek_e(marstek_t('EINST.L_VERTEILEN')) ?>
 </label>
 <div class="sm-hilfe"><?= marstek_e(marstek_t('EINST.H_VERTEILEN')) ?></div>
+<label style="display:inline-flex;align-items:center;gap:6px;margin-top:10px;">
+    <input data-role="none" type="checkbox" name="bremse_abstand_ein" <?= !empty($mv_cfg['bremse_abstand_ein']) ? 'checked' : '' ?>>
+    <?= marstek_e(marstek_t('EINST.L_BREMSE_ABSTAND')) ?>
+</label>
+<div class="sm-hilfe"><?= marstek_e(marstek_t('EINST.H_BREMSE_ABSTAND')) ?></div>
 
 <h2><?= marstek_e(marstek_t('EINST.H_SCHUTZ')) ?></h2>
 <div class="sm-hinweis"><?= marstek_t('EINST.SCHUTZ_ERKLAERUNG') ?></div>
@@ -987,13 +1096,13 @@ for ($i = 0; $i < 4; $i++) {
 </label>
 <div class="sm-row" style="margin-top:6px;">
     <div><label><?= marstek_e(marstek_t('EINST.L_TEMP_MIN')) ?></label>
-        <input data-role="none" type="number" name="temp_min" value="<?= (int) $mv_cfg['temp_min'] ?>" min="-20" max="20"></div>
+        <input<?= mv_fa('temp_min') ?> data-role="none" type="number" name="temp_min" value="<?= mv_wert($mv_cfg['temp_min']) ?>" min="-20" max="20"></div>
     <div><label><?= marstek_e(marstek_t('EINST.L_TEMP_MAX')) ?></label>
-        <input data-role="none" type="number" name="temp_max" value="<?= (int) $mv_cfg['temp_max'] ?>" min="20" max="80"></div>
+        <input<?= mv_fa('temp_max') ?> data-role="none" type="number" name="temp_max" value="<?= mv_wert($mv_cfg['temp_max']) ?>" min="20" max="80"></div>
     <div><label><?= marstek_e(marstek_t('EINST.L_SOC_MIN')) ?></label>
-        <input data-role="none" type="number" name="soc_min" value="<?= (int) $mv_cfg['soc_min'] ?>" min="0" max="50"></div>
+        <input<?= mv_fa('soc_min') ?> data-role="none" type="number" name="soc_min" value="<?= mv_wert($mv_cfg['soc_min']) ?>" min="0" max="50"></div>
     <div><label><?= marstek_e(marstek_t('EINST.L_SOC_MAX')) ?></label>
-        <input data-role="none" type="number" name="soc_max" value="<?= (int) $mv_cfg['soc_max'] ?>" min="50" max="100"></div>
+        <input<?= mv_fa('soc_max') ?> data-role="none" type="number" name="soc_max" value="<?= mv_wert($mv_cfg['soc_max']) ?>" min="50" max="100"></div>
 </div>
 
 <h2><?= marstek_e(marstek_t('EINST.H_MELDEN')) ?></h2>
@@ -1004,26 +1113,26 @@ for ($i = 0; $i < 4; $i++) {
 <div class="sm-hilfe"><?= marstek_e(marstek_t('EINST.H_MELDEN')) ?></div>
 <div class="sm-row" style="margin-top:6px;">
     <div style="max-width:240px;"><label><?= marstek_e(marstek_t('EINST.L_MELDEN_AB')) ?></label>
-        <input data-role="none" type="number" name="melden_ab" value="<?= (int) $mv_cfg['melden_ab'] ?>" min="1" max="20"></div>
+        <input<?= mv_fa('melden_ab') ?> data-role="none" type="number" name="melden_ab" value="<?= mv_wert($mv_cfg['melden_ab']) ?>" min="1" max="20"></div>
 </div>
 
 <h2><?= marstek_e(marstek_t('EINST.H_SPOT')) ?></h2>
 <div class="sm-row">
     <div>
         <label><?= marstek_e(marstek_t('EINST.L_MARKT')) ?></label>
-        <select data-role="none" class="sm-auswahl" name="awattar">
+        <select<?= mv_fa('awattar') ?> data-role="none" class="sm-auswahl" name="awattar">
             <option value="de"<?= $mv_cfg['awattar'] === 'de' ? ' selected' : '' ?>><?= marstek_e(marstek_t('EINST.MARKT_DE')) ?></option>
             <option value="at"<?= $mv_cfg['awattar'] === 'at' ? ' selected' : '' ?>><?= marstek_e(marstek_t('EINST.MARKT_AT')) ?></option>
         </select>
     </div>
     <div>
         <label><?= marstek_e(marstek_t('EINST.L_UST')) ?></label>
-        <input data-role="none" type="text" name="vat" value="<?= marstek_e($mv_cfg['vat']) ?>" placeholder="1.19">
+        <input<?= mv_fa('vat') ?> data-role="none" type="text" name="vat" value="<?= mv_wert($mv_cfg['vat']) ?>" placeholder="1.19">
         <div class="sm-hilfe"><?= marstek_e(marstek_t('EINST.H_UST')) ?></div>
     </div>
     <div>
         <label><?= marstek_e(marstek_t('EINST.L_AUFSCHLAG')) ?></label>
-        <input data-role="none" type="text" name="aufschlag_ct" value="<?= marstek_e($mv_cfg['aufschlag_ct']) ?>" placeholder="0">
+        <input<?= mv_fa('aufschlag_ct') ?> data-role="none" type="text" name="aufschlag_ct" value="<?= mv_wert($mv_cfg['aufschlag_ct']) ?>" placeholder="0">
         <div class="sm-hilfe"><?= marstek_e(marstek_t('EINST.H_AUFSCHLAG')) ?></div>
     </div>
 </div>
@@ -1033,6 +1142,21 @@ for ($i = 0; $i < 4; $i++) {
 
 <h2><?= marstek_e(marstek_t('EINST.H_SICHERUNG')) ?></h2>
 <div class="sm-hinweis"><?= marstek_t('EINST.SICHERUNG_ERKLAERUNG') ?></div>
+<?php
+/* X-3 (Verbesserungsbau 30.09.2026): bestuende die eigene Sicherung das
+ * Zurueckspielen nicht, steht es hier - dieselbe Pruefung wie beim
+ * Zurueckspielen (marstek_sicherung_pruefen()). Gesichert wird trotzdem. */
+$mv_sich_gruende = array();
+foreach (marstek_sicherung_eigene_maengel() as $mv_z) {
+    if (strncmp($mv_z, 'UNBEKANNT:', 10) === 0) {
+        $mv_sich_gruende[] = sprintf(marstek_t('EINST.SICHERUNG_UNBEKANNT'), substr($mv_z, 10));
+    } else {
+        $mv_sich_gruende[] = strncmp($mv_z, 'WERT:', 5) === 0 ? substr($mv_z, 5) : $mv_z;
+    }
+}
+if ($mv_sich_gruende) { ?>
+<div class="sm-alert sm-warn"><?= marstek_e(sprintf(marstek_t('EINST.SICHERUNG_WARNUNG'), implode(' | ', $mv_sich_gruende))) ?></div>
+<?php } ?>
 <div class="sm-knopfreihe">
   <form action="index.php" method="post">
     <input data-role="none" type="hidden" name="formtoken" value="<?= $mv_ft ?>">
@@ -1071,7 +1195,7 @@ for ($i = 0; $i < 4; $i++) {
 <div class="sm-row" style="margin-top:6px;">
     <div style="max-width:420px;">
         <label><?= marstek_e(marstek_t('MQTT.L_PRAEFIX')) ?></label>
-        <input data-role="none" type="text" name="mqtt_topic" value="<?= marstek_e($mv_cfg['mqtt_topic']) ?>" placeholder="marstek">
+        <input<?= mv_fa('mqtt_topic') ?> data-role="none" type="text" name="mqtt_topic" value="<?= mv_wert($mv_cfg['mqtt_topic']) ?>" placeholder="marstek">
         <div class="sm-hilfe"><?= marstek_e(marstek_t('MQTT.H_PRAEFIX')) ?></div>
     </div>
 </div>
@@ -1440,6 +1564,21 @@ if (function_exists('mv_test_seite')) {
     }
     tabs.forEach(function (t) { t.addEventListener('click', function (ev) { ev.preventDefault(); activate(t.dataset.ziel); }); });
     activate(<?= json_encode($mv_active_tab) ?>);
+    /* b1: die Auswahl des Modells belegt die Leistungsgrenzen der Zeile vor.
+     * "anderes" und "nicht gewaehlt" lassen sie stehen. Gespeichert wird erst
+     * mit dem Knopf; ueber der Modellgrenze warnt das Speichern gelb. */
+    var mvGrenzen = <?= json_encode(array_filter(marstek_modelle())) ?>;
+    document.querySelectorAll('select.mv-modell').forEach(function (s) {
+        s.addEventListener('change', function () {
+            var g = mvGrenzen[s.value];
+            var tr = s.closest('tr');
+            if (!g || !tr) { return; }
+            var pc = tr.querySelector('input[name="dev_pc[]"]');
+            var pd = tr.querySelector('input[name="dev_pd[]"]');
+            if (pc) { pc.value = g[0]; }
+            if (pd) { pd.value = g[1]; }
+        });
+    });
 })();
 </script>
 <?php

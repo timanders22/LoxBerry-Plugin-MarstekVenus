@@ -62,6 +62,15 @@
  *   ZWISCHENSPEICHER (C9): laeuft der Minutentakt, beantwortet ?status aus
  *     dessen Zwischenspeicher, solange der hoechstens drei Takte alt ist - ein
  *     schweigender Speicher blockierte den Endpunkt bis 1.1.17 24 s lang.
+ *
+ * BEFEHLSBREMSE (a1 / X-7, Verbesserungsbau 30.09.2026): ?p= und ?mode= je
+ *   Geraet durch marstek_gebremst(). Derselbe Befehl innerhalb von 60 s:
+ *   HTTP 200 mit UNVERAENDERT=1, nichts gesendet (ein Sollwert, der nur um
+ *   1 W abweicht, gilt als derselbe - der Dither der Baustein-Liste). Ein
+ *   anderer innerhalb von 10 s: HTTP 429, ERR=BREMSE;WARTEN_S=n - nur mit der
+ *   Einstellung bremse_abstand_ein (ab Werk aus, Entscheidung Nr. 14). Merker nicht
+ *   zu oeffnen: HTTP 503, ERR=BREMSE_MERKER. Der Trockenlauf geht an der
+ *   Bremse vorbei (er sendet nichts).
  */
 
 require_once __DIR__ . '/marstek_lib.php';
@@ -189,12 +198,32 @@ if (isset($_GET['p'])) {
         list($ok, $angenommen, $gesamt, $zeilen) = marstek_set_passive_alle($mv_p, $mv_t, $mv_trocken);
         $txt = '';
         $mv_begr = 0;
+        $mv_gebremst = 0;
+        $mv_merker = 0;
         foreach ($zeilen as $z) {
             $txt .= ';P' . $z['n'] . '=' . $z['p'] . ';OK' . $z['n'] . '=' . $z['ok'];
             if (!empty($z['begrenzt'])) { $mv_begr = 1; }
+            // a1: das Urteil der Befehlsbremse je Geraet.
+            $mv_bz = isset($z['bremse']) ? (string) $z['bremse'] : '';
+            if ($mv_bz === 'UNVERAENDERT') {
+                $txt .= ';UNVERAENDERT' . $z['n'] . '=1';
+            } elseif ($mv_bz === 'WARTEN') {
+                $txt .= ';WARTEN_S' . $z['n'] . '=' . (int) $z['warten_s'];
+                $mv_gebremst++;
+            } elseif ($mv_bz !== '') {
+                $txt .= ';BREMSE_MERKER' . $z['n'] . '=1';
+                $mv_merker++;
+            }
         }
         $mv_zeile = 'SET;OK=' . $ok . ';N=' . $angenommen . ';GES=' . $gesamt . ';DEV=alle'
            . ($mv_begr ? ';BEGRENZT=1' : '') . ($mv_trocken ? ';DRY=1' : '') . $txt . "\n";
+        // Alle Geraete gebremst: 429; alle ohne Merker: 503 (faellt geschlossen aus).
+        if ($gesamt > 0 && $mv_merker === $gesamt) {
+            mv_abweisen(503, $mv_zeile, 'bremse');
+        }
+        if ($gesamt > 0 && $mv_gebremst + $mv_merker === $gesamt) {
+            mv_abweisen(429, $mv_zeile, 'bremse');
+        }
         echo $mv_zeile;
         if (!$mv_trocken) {
             marstek_anruf_log('sollwert_alle', 'p=' . $mv_p . ' t=' . $mv_t . ' -> ' . trim($mv_zeile));
@@ -204,7 +233,26 @@ if (isset($_GET['p'])) {
         }
         exit;
     }
-    list($ok, $p, $t, $hinweis, $mv_begr) = marstek_set_passive($mv_p, $mv_t, $dev, $mv_trocken);
+    if ($mv_trocken) {
+        list($ok, $p, $t, $hinweis, $mv_begr) = marstek_set_passive($mv_p, $mv_t, $dev, true);
+    } else {
+        // a1 / X-7: durch die Befehlsbremse (siehe Kopf).
+        $mv_gb = marstek_gebremst($dev, 'p', (int) $mv_p, (int) $mv_t, function () use ($mv_p, $mv_t, $dev) {
+            return marstek_set_passive($mv_p, $mv_t, $dev, false);
+        });
+        if ($mv_gb['bremse'] === 'MERKER' || $mv_gb['bremse'] === 'BELEGT') {
+            mv_abweisen(503, 'SET;OK=0;ERR=BREMSE_' . $mv_gb['bremse'] . ';DEV=' . $dev . "\n", 'bremse');
+        }
+        if ($mv_gb['bremse'] === 'WARTEN') {
+            mv_abweisen(429, 'SET;OK=0;ERR=BREMSE;WARTEN_S=' . (int) $mv_gb['warten_s'] . ';DEV=' . $dev . "\n", 'bremse');
+        }
+        if ($mv_gb['bremse'] === 'UNVERAENDERT') {
+            echo 'SET;OK=1;P=' . (int) $mv_gb['gemerkt']['p_ist'] . ';T=' . (int) $mv_gb['gemerkt']['t']
+               . ';DEV=' . $dev . ";UNVERAENDERT=1\n";
+            exit;
+        }
+        list($ok, $p, $t, $hinweis, $mv_begr) = $mv_gb['erg'];
+    }
     $mv_zeile = 'SET;OK=' . $ok . ';P=' . $p . ';T=' . $t . ';DEV=' . $dev
        . ($mv_begr ? ';BEGRENZT=1' : '')
        . ($hinweis !== '' ? ';HINWEIS=' . $hinweis : '') . "\n";
@@ -227,7 +275,26 @@ if (isset($_GET['mode'])) {
     if ($mv_m === null) {
         mv_abweisen(400, "MODE;OK=0;ERR=MODE\n", 'abweisung');
     }
-    list($ok, $m, $hinweis) = marstek_set_mode($mv_m, $dev, $mv_trocken);
+    $mv_mk = strtolower($mv_m);
+    if ($mv_trocken || !in_array($mv_mk, array('auto', 'ai'), true)) {
+        list($ok, $m, $hinweis) = marstek_set_mode($mv_m, $dev, $mv_trocken);
+    } else {
+        // a1 / X-7: auch der Moduswechsel durch die Befehlsbremse.
+        $mv_gb = marstek_gebremst($dev, 'mode', $mv_mk, 0, function () use ($mv_m, $dev) {
+            return marstek_set_mode($mv_m, $dev, false);
+        });
+        if ($mv_gb['bremse'] === 'MERKER' || $mv_gb['bremse'] === 'BELEGT') {
+            mv_abweisen(503, 'MODE;OK=0;ERR=BREMSE_' . $mv_gb['bremse'] . ';DEV=' . $dev . "\n", 'bremse');
+        }
+        if ($mv_gb['bremse'] === 'WARTEN') {
+            mv_abweisen(429, 'MODE;OK=0;ERR=BREMSE;WARTEN_S=' . (int) $mv_gb['warten_s'] . ';DEV=' . $dev . "\n", 'bremse');
+        }
+        if ($mv_gb['bremse'] === 'UNVERAENDERT') {
+            echo 'MODE;OK=1;M=' . ($mv_mk === 'ai' ? 'AI' : 'Auto') . ';DEV=' . $dev . ";UNVERAENDERT=1\n";
+            exit;
+        }
+        list($ok, $m, $hinweis) = $mv_gb['erg'];
+    }
     if ($hinweis === 'MODE') {
         mv_abweisen(400, "MODE;OK=0;ERR=MODE\n", 'abweisung');
     }

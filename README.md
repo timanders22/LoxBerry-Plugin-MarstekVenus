@@ -13,6 +13,42 @@ den Auto-Modus des Geräts zurück.
 
 Kompatibel mit LoxBerry 3.x und **LoxBerry 4** (reines PHP, läuft mit PHP 7.4 und 8.x).
 
+## Neu in 1.1.18
+
+Verbesserungen aus dem Durchgang vom 30.09.2026 (Verbesserungsliste
+`Pruefung-Durchgang-2026-09-29/VERBESSERUNGEN_OFFEN.md`). Gemessen an einer
+Speicher-Attrappe unter PHP 7.4, 8.3 und 8.5; nicht am Gerät.
+
+**Befehlsbremse je Speicher**
+
+* Derselbe Befehl (Sollwert ±1 W, gleiches `t`) geht innerhalb von 60 s nur
+  einmal an den Speicher; weitere Aufrufe antworten mit `UNVERAENDERT=1` und
+  senden nichts. Das schont den Speicher. Der Dither der Baustein-Liste
+  erneuert den Watchdog weiter spätestens alle 60 s (gemessen: 0-mal
+  abgelaufen).
+* **Neue Einstellung „Mindestabstand 10 s“ (ab Werk aus):** Eingeschaltet wird
+  ein anderer Sollwert oder Modus innerhalb von 10 s mit HTTP 429 und
+  `WARTEN_S` abgewiesen. Ab Werk aus, weil eine Logik, die den Sollwert bei
+  jeder Änderung schickt, sonst Werte verlöre.
+* Gilt für `?p=`, `?mode=` und `&dev=alle` (je Speicher). Lässt sich der Merker
+  der Bremse nicht öffnen, antwortet der Endpunkt mit 503.
+
+**Oberfläche**
+
+* Modell je Speicher als Auswahlfeld (Venus E / Venus E Mini / anderes). Es
+  belegt die Leistungsgrenzen vor (Mini 1500/800 W); die Warnung über der
+  Modellgrenze folgt dem gewählten Modell. Ohne Wahl gilt die Erkennung wie
+  bisher.
+* Nach einer Beanstandung stehen die eingetippten Werte wieder im Formular
+  (Einstellungen und MQTT), das beanstandete Feld ist markiert.
+* „Einstellungen sichern“ warnt gelb, wenn die eigene Sicherung das
+  Zurückspielen nicht bestehen würde.
+
+**Betrieb**
+
+* Die MQTT-Schreibwege prüfen die Länge: eine gekürzte Schreibung oder ein zu
+  langes Paket gilt als Fehlschlag und steht im Protokoll.
+
 ## Neu in 1.1.17
 
 Durchgang vom 30.09.2026 mit vier Prüfern (Code, Oberfläche, Installer, MQTT).
@@ -680,8 +716,8 @@ Rundruf und Gerätesuche aus, und der Reiter Test sagt das ausdrücklich.
 | `?ranks` | `RANKS;OK=..;N=..;RANK=..;RANKD=..;CURP=..;NEG=..;MINP=..;MAXP=..;SPREAD=..;NEXTP=..;HBIS=..;HBISMAX=..;ERRC=..` |
 | `?energy[&dev=N]` | `ENERGY;OK=..;CHGT=..;DIST=..;CHGD=..;DISD=..;CHGM=..;DISM=..;CYC=..;EFF=..;ALTER=..` (Modbus TCP, je Gerät zu aktivieren) |
 | `?summe` | `SUMME;OK=..;N=..;NOK=..;SOC=..;KAPAZ=..;RESTKWH=..;BATP=..;ALTER=..` |
-| `?p=WATT&t=SEK&token=T[&dev=N\|&dev=alle][&dry=1]` | Passiv-Sollwert (+ = laden, − = entladen, 0 = Leerlauf; t = Watchdog). `t` gilt von 30 bis 3600 s, `p` bis zur Leistungsgrenze des Speichers; darüber wird begrenzt, und die Antwort trägt `BEGRENZT=1` |
-| `?mode=auto\|ai&token=T[&dev=N][&dry=1]` | Regie an den Speicher zurückgeben |
+| `?p=WATT&t=SEK&token=T[&dev=N\|&dev=alle][&dry=1]` | Passiv-Sollwert (+ = laden, − = entladen, 0 = Leerlauf; t = Watchdog). `t` gilt von 30 bis 3600 s, `p` bis zur Leistungsgrenze des Speichers; darüber wird begrenzt, und die Antwort trägt `BEGRENZT=1`. Befehlsbremse je Speicher (siehe unten) |
+| `?mode=auto\|ai&token=T[&dev=N][&dry=1]` | Regie an den Speicher zurückgeben; ebenfalls gebremst |
 | `?selftest=1&token=T` | prüft nur das Token, ohne den Speicher anzufassen |
 | `?diag=1&token=T` | Diagnose: Unicast, Rundruf, Modbus einzeln |
 | `?debug=1&token=T` | Rohdaten. Tokenpflichtig seit 1.1.5: der Schalter umgeht den Zwischenspeicher, gemessen 30 s je Aufruf gegen ein stummes Gerät |
@@ -693,6 +729,19 @@ und `?summe` mit HTTP 503 und dem Grund in der Zeile (`GRUND=KEIN_SPEICHER`,
 `GRUND=NIE_GEMESSEN`). Läuft der Minutentakt, beantwortet `?status` aus dessen
 Zwischenspeicher, ohne den Speicher selbst zu fragen.
 
+**Befehlsbremse** (je Speicher, für `?p=` und `?mode=`, nicht für `&dry=1`):
+derselbe Befehl – ein Sollwert, der sich nur um 1 W unterscheidet, und
+dasselbe `t` gelten als derselbe, das ist der Dither der Baustein-Liste
+(#36/#38) – geht innerhalb von 60 s nicht erneut hinaus; die Antwort ist
+HTTP 200 mit `UNVERAENDERT=1`. Spätestens nach 58 s (bei kleinem `t` nach der
+Hälfte von `t`, abzüglich 2 s) geht er wieder hinaus und erneuert den
+Watchdog. Mit der Einstellung „Mindestabstand 10 s für einen anderen
+Sollwert“ (Reiter Einstellungen, **ab Werk aus**) bekommt ein anderer Befehl
+innerhalb von 10 s HTTP 429 mit `ERR=BREMSE;WARTEN_S=n`. Lässt sich der Merker unter `/tmp/marstekvenus` nicht
+öffnen, antwortet der Endpunkt mit HTTP 503 (`ERR=BREMSE_MERKER`).
+Bei `&dev=alle` gilt die Bremse je Speicher (`UNVERAENDERT<N>=1`,
+`WARTEN_S<N>=n`). Die Knöpfe im Reiter Test gehen an der Bremse vorbei.
+
 Alle Ausgaben sind abwärtskompatibel zu Ein-Geräte-Installationen — ohne
 `&dev=` wird immer Gerät 1 angesprochen. Die Gerätenummer hängt am Speicher,
 nicht an der Stelle in der Liste: eine geleerte Zeile lässt die übrigen auf
@@ -703,7 +752,7 @@ daraus. Eine Zeile, die der Vorlage widerspricht, kann so nicht mehr entstehen.
 
 ## Oberfläche
 
-Fünf Reiter: **Einstellungen** (Gerätetabelle mit Kapazität, Leistungsgrenzen,
+Fünf Reiter: **Einstellungen** (Gerätetabelle mit Modell, Kapazität, Leistungsgrenzen,
 Status-Cache, Auto-Fallback, Verlaufsdauer, Hauptschalter, Schutzschwellen,
 Benachrichtigungen, aWATTar-Markt, USt-Faktor und Aufschlag, Sicherung),
 **MQTT** (Haken, Präfix, Abo-Hinweis je nach Gateway-Fassung und die Tabelle

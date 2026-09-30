@@ -94,6 +94,21 @@ if (!defined('MARSTEK_MQTT_PAUSE_US')) {
     define('MARSTEK_MQTT_PAUSE_US', 5000);
 }
 
+/* a1 / X-7 (Verbesserungsbau 30.09.2026): Befehlsbremse je Geraet, Bauform
+ * EVCC 0.9.34. Derselbe Sollwert geht innerhalb von MARSTEK_BREMSE_GLEICH_S
+ * nicht erneut hinaus; ein anderer hoechstens alle MARSTEK_BREMSE_ABSTAND_S,
+ * wenn die Einstellung bremse_abstand_ein an ist (ab Werk aus, Nr. 14).
+ * Siehe marstek_gebremst(). */
+if (!defined('MARSTEK_BREMSE_GLEICH_S')) {
+    define('MARSTEK_BREMSE_GLEICH_S', 60);
+}
+if (!defined('MARSTEK_BREMSE_ABSTAND_S')) {
+    define('MARSTEK_BREMSE_ABSTAND_S', 10);
+}
+if (!defined('MARSTEK_BREMSE_TOLERANZ_S')) {
+    define('MARSTEK_BREMSE_TOLERANZ_S', 2);
+}
+
 /* BERICHTIGT 08.09.2026: die drei Konstanten oben standen bis 1.1.10 INNERHALB
  * der Wache von MARSTEK_TAKT_SCHRANKE. Wer die Taktschranke vorher definierte,
  * bekam die anderen beiden gar nicht - gemessen: "MARSTEK_EFF_ZYKLEN NICHT
@@ -314,6 +329,7 @@ function marstek_vorgaben() {
         'soc_max'        => 98,     // ab diesem Ladezustand nicht laden
         'verlauf_tage'   => 8,      // Aufbewahrung des SOC-Verlaufs
         'verteilen_ein'  => 0,      // &dev=alle verteilt einen Sollwert auf alle Speicher
+        'bremse_abstand_ein' => 0,  // Nr. 14: 10-s-Mindestabstand fuer einen anderen Sollwert (429)
     );
 }
 
@@ -802,7 +818,7 @@ function marstek_wert_ganz($v, $min, $max)
 /** Die Schluessel, die ein Geraeteeintrag tragen darf (O3, 30.09.2026). */
 function marstek_geraet_schluessel()
 {
-    return array('name', 'ip', 'port', 'pmax_charge', 'pmax_discharge', 'modbus', 'kwh', 'nr');
+    return array('name', 'ip', 'port', 'pmax_charge', 'pmax_discharge', 'modbus', 'kwh', 'nr', 'modell');
 }
 
 /** Ein Themen-Praefix, wie der Sender es ohne Aenderung uebernimmt (M6). */
@@ -855,6 +871,11 @@ function marstek_geraete_maengel($liste)
             if (isset($g[$k]) && !marstek_wert_ganz($g[$k], $gr[0], $gr[1])) {
                 $m[] = sprintf(marstek_t('PRUEF.GERAET_BEREICH'), $z, $k, $gr[0], $gr[1]);
             }
+        }
+        // b1: das Modell ist leer (Erkennung) oder einer der Schluessel der Auswahl.
+        if (isset($g['modell']) && (!is_string($g['modell'])
+                                    || ($g['modell'] !== '' && !array_key_exists($g['modell'], marstek_modelle())))) {
+            $m[] = sprintf(marstek_t('PRUEF.MODELL'), $z);
         }
         if (isset($g['kwh']) && (!marstek_wert_zahl($g['kwh'], 0, 1000)
                                  || preg_match('/^\d{1,4}(\.\d{1,2})?$/', (string) $g['kwh']) !== 1)) {
@@ -915,7 +936,7 @@ function marstek_wert_pruefen($schluessel, $wert)
                   'soc_max' => array(50, 100), 'verlauf_tage' => array(1, 365),
                   'mqtt_enabled' => array(0, 1), 'steuerung_ein' => array(0, 1),
                   'verteilen_ein' => array(0, 1), 'melden_ein' => array(0, 1),
-                  'schutz_ein' => array(0, 1));
+                  'schutz_ein' => array(0, 1), 'bremse_abstand_ein' => array(0, 1));
     if (isset($ganz[$schluessel])) {
         $g = $ganz[$schluessel];
         return marstek_wert_ganz($wert, $g[0], $g[1]) ? ''
@@ -975,6 +996,19 @@ function marstek_sicherung_schreiben()
         '_stand'   => date('Y-m-d H:i'),
         '_fassung' => marstek_fassung(),
     );
+    /* X-3: bestuende diese Sicherung das eigene Zurueckspielen nicht, sagt es
+     * der Kopf. Geliefert wird sie trotzdem - sie ist die einzige Kopie des
+     * Aktionstokens, und der Wert laesst sich nach dem Zurueckspielen in der
+     * Oberflaeche berichtigen. */
+    list(, $mv_m) = marstek_sicherung_pruefen($cfg, $cfg);
+    if ($mv_m) {
+        $mv_mt = array();
+        foreach ($mv_m as $mv_z) {
+            $mv_mt[] = strncmp($mv_z, 'WERT:', 5) === 0 ? substr($mv_z, 5) : $mv_z;
+        }
+        $kopf['_warnung'] = 'Diese Sicherung wuerde beim Zurueckspielen abgewiesen: ' . implode(' | ', $mv_mt)
+                          . '. Bitte den Wert in der Oberflaeche berichtigen und neu sichern.';
+    }
     return $kopf + $cfg;
 }
 
@@ -992,36 +1026,20 @@ function marstek_sicherung_schreiben()
  */
 function marstek_sicherung_lesen($roh)
 {
-    $meldungen = array();
     $hinweise = array();
     $neu = json_decode((string) $roh, true);
     if (!is_array($neu)) {
         return array(null, array('KEIN_JSON'), 0, array());
     }
-    // Der lesbare Kopf wird UEBERGANGEN, nicht beanstandet.
-    foreach (array_keys($neu) as $k) {
-        if ($k !== '' && is_string($k) && $k[0] === '_') {
-            unset($neu[$k]);
-        }
-    }
-    if (!array_key_exists('devices', $neu)) {
-        return array(null, array('FREMD'), 0, array());
+    /* X-3 (Verbesserungsbau 30.09.2026): die Pruefung steht in
+     * marstek_sicherung_pruefen() - dieselbe, mit der "Einstellungen sichern"
+     * die eigene Sicherung vorher ansieht. */
+    $laufend = marstek_config();
+    list($neu, $meldungen) = marstek_sicherung_pruefen($neu, $laufend);
+    if ($meldungen) {
+        return array(null, $meldungen, $meldungen[0] === 'FREMD' ? 0 : count($neu), array());   // fail closed
     }
     $vorgaben = marstek_vorgaben();
-    $fremd = array_diff(array_map('strval', array_keys($neu)), array_keys($vorgaben));
-    if ($fremd) {
-        return array(null, array('UNBEKANNT:' . implode(', ', array_slice($fremd, 0, 8))),
-                     count($neu), array());
-    }
-    foreach ($neu as $k => $v) {
-        $grund = marstek_wert_pruefen($k, $v);
-        if ($grund !== '') {
-            $meldungen[] = 'WERT:' . $k . ': ' . $grund;
-        }
-    }
-    if ($meldungen) {
-        return array(null, $meldungen, count($neu), array());   // fail closed
-    }
     /* C10 (Durchgang 30.09.2026): ein leeres oder fehlendes Aktionstoken heisst
      * "kein Token gesichert" (Regeln/05) - das laufende bleibt.
      *
@@ -1031,7 +1049,6 @@ function marstek_sicherung_lesen($roh)
      * Zweitschrift her - das Zurueckgespielte lag danach als .kaputt daneben.
      * Gibt es gar kein laufendes Token, entsteht eines wie bei einer neuen
      * Anlage, und die Meldung sagt es. */
-    $laufend = marstek_config();
     if (!isset($neu['aktionstoken']) || trim((string) $neu['aktionstoken']) === '') {
         $lt = isset($laufend['aktionstoken']) ? trim((string) $laufend['aktionstoken']) : '';
         if ($lt !== '') {
@@ -1047,12 +1064,6 @@ function marstek_sicherung_lesen($roh)
      * mit nur devices und aktionstoken MQTT und die Schutzschwellen still ab. */
     $fehlend = array_values(array_diff(array_keys($vorgaben), array_keys($neu)));
     $vollstaendig = array_intersect_key($neu + $laufend + $vorgaben, $vorgaben);
-    $kreuz = marstek_cfg_kreuzmaengel($vollstaendig);
-    if ($kreuz) {
-        $aus = array();
-        foreach ($kreuz as $z) { $aus[] = 'WERT:' . $z; }
-        return array(null, $aus, count($neu), array());
-    }
     if ($fehlend) {
         $hinweise[] = 'BEHALTEN:' . implode(', ', $fehlend);
     }
@@ -1062,6 +1073,55 @@ function marstek_sicherung_lesen($roh)
     marstek_log('Konfiguration aus einer hochgeladenen Datei zurueckgespielt'
         . ($hinweise ? ' (' . implode('; ', $hinweise) . ')' : '') . '.');
     return array($vollstaendig, array(), count($neu), $hinweise);
+}
+
+/**
+ * X-3 (Verbesserungsbau 30.09.2026): die Pruefung einer Sicherung, ohne etwas
+ * zu schreiben. Bis 1.1.18 stand sie nur in marstek_sicherung_lesen(); jetzt
+ * ruft sie auch die Warnung am Knopf "Einstellungen sichern", damit beide
+ * dasselbe sagen. $laufend fuellt fehlende Schluessel fuer die Kreuzpruefung
+ * (wie beim Zurueckspielen). Rueckgabe: array(Datei ohne Kopf, Gruende) -
+ * Gruende leer = die Datei bestuende das Zurueckspielen.
+ */
+function marstek_sicherung_pruefen(array $neu, array $laufend)
+{
+    // Der lesbare Kopf wird UEBERGANGEN, nicht beanstandet.
+    foreach (array_keys($neu) as $k) {
+        if ($k !== '' && is_string($k) && $k[0] === '_') {
+            unset($neu[$k]);
+        }
+    }
+    if (!array_key_exists('devices', $neu)) {
+        return array($neu, array('FREMD'));
+    }
+    $vorgaben = marstek_vorgaben();
+    $fremd = array_diff(array_map('strval', array_keys($neu)), array_keys($vorgaben));
+    if ($fremd) {
+        return array($neu, array('UNBEKANNT:' . implode(', ', array_slice($fremd, 0, 8))));
+    }
+    $meldungen = array();
+    foreach ($neu as $k => $v) {
+        $grund = marstek_wert_pruefen($k, $v);
+        if ($grund !== '') {
+            $meldungen[] = 'WERT:' . $k . ': ' . $grund;
+        }
+    }
+    if ($meldungen) {
+        return array($neu, $meldungen);
+    }
+    foreach (marstek_cfg_kreuzmaengel(array_intersect_key($neu + $laufend + $vorgaben, $vorgaben)) as $z) {
+        $meldungen[] = 'WERT:' . $z;
+    }
+    return array($neu, $meldungen);
+}
+
+/** X-3: Wuerde die EIGENE Sicherung beim Zurueckspielen abgewiesen?
+ *  Dieselbe Pruefung ueber das, was "Einstellungen sichern" liefert.
+ *  Rueckgabe: die Gruende (leer = besteht). */
+function marstek_sicherung_eigene_maengel()
+{
+    list(, $m) = marstek_sicherung_pruefen(marstek_sicherung_schreiben(), marstek_config());
+    return $m;
 }
 
 /** Die Fassung aus der plugin.cfg - eine Quelle, kein zweiter Ort. */
@@ -1171,6 +1231,9 @@ function marstek_devices() {
             // ein gewichteter Gesamt-Ladezustand ohne die echte Kapazitaet
             // waere eine Zahl, die richtig aussieht und es nicht ist.
             'kwh' => isset($d['kwh']) && is_scalar($d['kwh']) && (float) $d['kwh'] > 0 ? round((float) $d['kwh'], 2) : 0.0,
+            // b1: das gewaehlte Modell, '' = nicht gewaehlt (Erkennung).
+            'modell' => (isset($d['modell']) && is_string($d['modell']) && array_key_exists($d['modell'], marstek_modelle()))
+                ? $d['modell'] : '',
         );
     }
     return $out;
@@ -2641,6 +2704,10 @@ function marstek_set_passive($p, $t, $dev = 1, $trocken = false, $nachhol = null
         return array(0, $p, $t, $sperre, $begrenzt);
     }
 
+    if ($nachhol === null && empty($GLOBALS['marstek_bremse_aktiv'])) {
+        // a1: ein Befehl an der Befehlsbremse vorbei (Knoepfe im Reiter Test).
+        marstek_bremse_vergessen($dev);
+    }
     if ($nachhol === null) {
         /* C4 (Durchgang 30.09.2026): auch ein Befehl aus LOXONE fragt vor
          * jedem Senden, ob er noch der neueste ist. Bis 1.1.17 tat das nur
@@ -2771,9 +2838,28 @@ function marstek_set_passive_alle($p, $t, $trocken = false) {
         $anteil = ($i === $anzahl || $summe <= 0) ? $rest : (int) round($p * $grenze / $summe);
         if (abs($anteil) > abs($rest)) { $anteil = $rest; }
         $rest -= $anteil;
-        list($ok, $pw, , $hinweis, $begr) = marstek_set_passive($anteil, $t, $n, $trocken);
+        $bremse = '';
+        $warten = 0;
+        if ($trocken) {
+            list($ok, $pw, , $hinweis, $begr) = marstek_set_passive($anteil, $t, $n, $trocken);
+        } else {
+            // a1: je Geraet durch die Befehlsbremse.
+            $gb = marstek_gebremst($n, 'p', $anteil, (int) $t, function () use ($anteil, $t, $n) {
+                return marstek_set_passive($anteil, $t, $n, false);
+            });
+            $bremse = $gb['bremse'];
+            $warten = $gb['warten_s'];
+            if ($bremse === 'UNVERAENDERT') {
+                list($ok, $pw, $hinweis, $begr) = array(1, (int) $gb['gemerkt']['p_ist'], '', 0);
+            } elseif ($bremse !== '') {
+                list($ok, $pw, $hinweis, $begr) = array(0, (int) $anteil, '', 0);
+            } else {
+                list($ok, $pw, , $hinweis, $begr) = $gb['erg'];
+            }
+        }
         $ok_ges += $ok;
-        $zeilen[] = array('n' => $n, 'p' => $pw, 'ok' => $ok, 'hinweis' => $hinweis, 'begrenzt' => $begr);
+        $zeilen[] = array('n' => $n, 'p' => $pw, 'ok' => $ok, 'hinweis' => $hinweis, 'begrenzt' => $begr,
+                          'bremse' => $bremse, 'warten_s' => $warten);
     }
     return array($ok_ges > 0 ? 1 : 0, $ok_ges, $anzahl, $zeilen);
 }
@@ -2808,6 +2894,10 @@ function marstek_set_mode($m, $dev = 1, $trocken = false) {
     // naechste Durchgang den alten Wunsch hinterher und schaltete das Geraet
     // zurueck, das der Anwender gerade umgestellt hat.
     marstek_set_offen_loeschen($dev);
+    if (empty($GLOBALS['marstek_bremse_aktiv'])) {
+        // a1: Moduswechsel an der Befehlsbremse vorbei (Reiter Test, Auto-Fallback).
+        marstek_bremse_vergessen($dev);
+    }
     // C4 (30.09.2026): auch der Moduswechsel ist ein Auftrag - ein noch
     // wiederholender aelterer Sollwert gibt auf, und die Sperre je Geraet
     // haelt beide auseinander.
@@ -2830,6 +2920,190 @@ function marstek_set_mode($m, $dev = 1, $trocken = false) {
     }
     marstek_log('Modus ' . $m . ' gesetzt (Geraet ' . (int) $dev . '): ok=' . $ok);
     return array($ok, $m, '');
+}
+
+/* ---------------- Befehlsbremse je Geraet (a1 / X-7, Verbesserungsbau 30.09.2026) ----------------
+ *
+ * Regeln/03: jeder Ausloeser, den eine fremde Anlage bedient, braucht eine
+ * Bremse im Plugin. Bis 1.1.17 ging jeder ?p= und ?mode= aus Loxone an den
+ * Speicher - ein flatternder Ausgang schaltete ihn im Takt der Anfragen.
+ * Jetzt je Geraet, Bauform EVCC 0.9.34:
+ *   - derselbe Befehl innerhalb von 60 s geht nicht erneut hinaus
+ *     (HTTP 200, UNVERAENDERT=1);
+ *   - ein anderer hoechstens alle 10 s (HTTP 429, ERR=BREMSE, WARTEN_S) -
+ *     NUR, wenn die Einstellung bremse_abstand_ein an ist (ab Werk AUS,
+ *     Entscheidung Nr. 14 vom 30.09.2026: die Hausanlage sendet den Sollwert
+ *     bei jeder Aenderung, oft mehrmals je Minute);
+ *   - laesst sich der Merker nicht oeffnen, faellt die Bremse geschlossen
+ *     aus: HTTP 503 und eine Protokollzeile. Die Regel "gleich" ist immer an
+ *     und braucht den Merker; deshalb gilt das auch mit Mindestabstand aus.
+ *
+ * DER DITHER DER BAUSTEIN-LISTE (#36/#38) MUSS DURCHKOMMEN. Loxone schickt
+ * den Sollwert nur bei einer Aenderung; die Liste addiert deshalb im
+ * 60-s-Takt abwechselnd 0 und 1. Ein Sollwert, der sich nur um 1 W vom
+ * zuletzt gesendeten unterscheidet, gilt als GLEICH (keine 429), und
+ * "gleich" heisst nur "innerhalb des Fensters nicht erneut". Ist das Fenster
+ * um, geht er wieder hinaus und erneuert den Watchdog. Das Fenster ist
+ * hoechstens halb so lang wie der Watchdog t des gesendeten Befehls
+ * (t = 240: 60 s; t = 60: 30 s; t = 30: 15 s) - so erneuert ein Loxone, das
+ * haeufiger fragt als das Fenster, den Watchdog immer, bevor er ablaeuft.
+ * Vom Fenster gehen 2 s Uhrtoleranz ab (MARSTEK_BREMSE_TOLERANZ_S): gezaehlt
+ * wird in ganzen Sekunden, und der 60-s-Impuls der Liste kommt mit Laufzeit
+ * an - ein Impuls nach 59,8 s ergaebe sonst "59 s, unveraendert", und der
+ * Watchdog wuerde erst nach 120 s erneuert statt spaetestens nach 60 s.
+ *
+ * Gemerkt wird der GESENDETE Befehl, nur nach ok = 1. Scheitert das Senden,
+ * wird der Merker verworfen: der naechste Befehl geht hinaus, und der
+ * offene Sollwert (Nachholen) behaelt seine Regeln. Ein Befehl auf einem
+ * Weg an der Bremse vorbei (Knoepfe im Reiter Test, Auto-Fallback) verwirft
+ * den Merker ebenfalls (marstek_bremse_vergessen()), sonst hielte die Bremse
+ * einen Sollwert fuer "gleich", den der Speicher gar nicht mehr faehrt.
+ *
+ * Die Sperre bleibt bis zum Ende des Befehls gehalten; zwei gleichzeitige
+ * Befehle laufen nacheinander. Wer warten muss, legt vorher eine neue
+ * Auftragskennung ab (marstek_set_auftrag_neu()): ein aelterer Befehl, der
+ * im Schweigefenster des Speichers noch wiederholt, gibt dann auf (C4) und
+ * haelt den neueren nicht bis zu seinem letzten Versuch fest. */
+
+/** Pfad des Merkers der Befehlsbremse fuer Geraet $dev. */
+function marstek_bremse_datei($dev)
+{
+    return marstek_tmpdir() . '/befehlsbremse_dev' . (int) $dev . '.json';
+}
+
+/**
+ * Das Urteil der Bremse - rein, ohne Datei (Selbsttest).
+ * $m: der gemerkte, zuletzt GESENDETE Befehl (array('art','wert','t','ts')) oder array().
+ * $art: 'p' (Sollwert, $wert in W, $t Watchdog in s) oder 'mode' ($wert 'auto'|'ai').
+ * $abstand: der 10-s-Mindestabstand fuer einen ANDEREN Befehl ist an
+ * (Einstellung bremse_abstand_ein, ab Werk aus - Entscheidung Nr. 14).
+ * Rueckgabe: array('' | 'UNVERAENDERT' | 'WARTEN', warten_s).
+ */
+function marstek_bremse_urteil(array $m, $art, $wert, $t, $jetzt, $abstand = true)
+{
+    if (!isset($m['art'], $m['ts'], $m['wert']) || !is_scalar($m['ts'])) {
+        return array('', 0);
+    }
+    $seit = (int) $jetzt - (int) $m['ts'];
+    // Uhr zurueckgesprungen: der Merker sagt nichts mehr - sonst stuende der
+    // Sollwert bis zum Einholen der Uhr als "unveraendert" und der Watchdog
+    // liefe ab.
+    if ($seit < 0) {
+        return array('', 0);
+    }
+    if ((string) $m['art'] === (string) $art) {
+        if ($art === 'p') {
+            $mt = max(30, min(3600, (int) (isset($m['t']) ? $m['t'] : 0)));
+            $gleich = abs((int) $m['wert'] - (int) $wert) <= 1 && $mt === max(30, min(3600, (int) $t));
+            $fenster = min(MARSTEK_BREMSE_GLEICH_S, intdiv($mt, 2)) - MARSTEK_BREMSE_TOLERANZ_S;
+        } else {
+            $gleich = ((string) $m['wert'] === (string) $wert);
+            $fenster = MARSTEK_BREMSE_GLEICH_S - MARSTEK_BREMSE_TOLERANZ_S;
+        }
+        if ($gleich) {
+            // Gleich und im Fenster: nicht senden. Gleich und faellig:
+            // senden - das erneuert den Watchdog.
+            return $seit < $fenster ? array('UNVERAENDERT', 0) : array('', 0);
+        }
+    }
+    if ($abstand && $seit < MARSTEK_BREMSE_ABSTAND_S) {
+        return array('WARTEN', MARSTEK_BREMSE_ABSTAND_S - $seit);
+    }
+    return array('', 0);
+}
+
+/**
+ * Einen schaltenden Befehl durch die Bremse schicken.
+ * $senden: Funktion ohne Argument, die marstek_set_passive() bzw.
+ * marstek_set_mode() ruft und deren Rueckgabe liefert (Stelle 0 = ok).
+ * Rueckgabe: array('bremse' => ''|'UNVERAENDERT'|'WARTEN'|'MERKER'|'BELEGT',
+ *                  'warten_s' => int, 'gemerkt' => array, 'erg' => Rueckgabe von $senden oder null)
+ */
+function marstek_gebremst($dev, $art, $wert, $t, $senden)
+{
+    $aus = array('bremse' => '', 'warten_s' => 0, 'gemerkt' => array(), 'erg' => null);
+    $f = marstek_bremse_datei($dev);
+    $fh = @fopen($f, 'c+');
+    if ($fh === false) {
+        marstek_log_if_changed('bremse_dev' . (int) $dev, 'Die Merkerdatei der Befehlsbremse (' . $f . ') laesst '
+            . 'sich nicht oeffnen - schaltende Befehle fuer Geraet ' . (int) $dev . ' werden mit HTTP 503 '
+            . 'abgewiesen, bis das behoben ist. Pruefen: Platz und Eigentuemer (loxberry).', 'merker');
+        $aus['bremse'] = 'MERKER';
+        return $aus;
+    }
+    if (!@flock($fh, LOCK_EX | LOCK_NB)) {
+        // Ein anderer Befehl laeuft: sich als neuer melden (C4), dann warten.
+        marstek_set_auftrag_neu($dev);
+        $ende = microtime(true) + 20;
+        while (!@flock($fh, LOCK_EX | LOCK_NB)) {
+            if (microtime(true) >= $ende) {
+                fclose($fh);
+                marstek_log_if_changed('bremse_dev' . (int) $dev, 'Die Befehlsbremse fuer Geraet ' . (int) $dev
+                    . ' war laenger als 20 s belegt - der Befehl wurde mit HTTP 503 abgewiesen.', 'belegt');
+                $aus['bremse'] = 'BELEGT';
+                return $aus;
+            }
+            usleep(50000);
+        }
+    }
+    $m = json_decode((string) stream_get_contents($fh), true);
+    if (!is_array($m)) { $m = array(); }
+    // Nr. 14: der Mindestabstand nur mit der Einstellung (ab Werk aus).
+    $mv_bc = marstek_config(false);
+    list($u, $w) = marstek_bremse_urteil($m, $art, $wert, $t, time(), !empty($mv_bc['bremse_abstand_ein']));
+    if ($u !== '') {
+        flock($fh, LOCK_UN);
+        fclose($fh);
+        $aus['bremse'] = $u;
+        $aus['warten_s'] = (int) $w;
+        $aus['gemerkt'] = $m;
+        return $aus;
+    }
+    $GLOBALS['marstek_bremse_aktiv'] = true;
+    $erg = $senden();
+    unset($GLOBALS['marstek_bremse_aktiv']);
+    $aus['erg'] = $erg;
+    $neu = '';
+    if (is_array($erg) && !empty($erg[0])) {
+        $neu = (string) json_encode(array('art' => (string) $art,
+            'wert' => $art === 'p' ? (int) $wert : (string) $wert,
+            't' => ($art === 'p' && isset($erg[2])) ? (int) $erg[2] : (int) $t,
+            'p_ist' => ($art === 'p' && isset($erg[1])) ? (int) $erg[1] : 0,
+            'ts' => time()));
+    }
+    // Gemerkt wird nur ein angenommener Befehl; sonst wird der Merker geleert.
+    if (!(ftruncate($fh, 0) && rewind($fh) && ($neu === '' || (fwrite($fh, $neu) === strlen($neu) && fflush($fh))))) {
+        marstek_log_if_changed('bremse_schreiben_dev' . (int) $dev, 'Die Merkerdatei der Befehlsbremse ('
+            . $f . ') liess sich nicht schreiben - die Bremse erkennt den letzten Befehl nicht.', 'fehler');
+    }
+    flock($fh, LOCK_UN);
+    fclose($fh);
+    return $aus;
+}
+
+/** Den Merker leeren - fuer Befehle an der Bremse vorbei (Knoepfe im Reiter
+ *  Test, Auto-Fallback). Wartet hoechstens 20 s auf einen laufenden Befehl. */
+function marstek_bremse_vergessen($dev)
+{
+    $f = marstek_bremse_datei($dev);
+    if (!is_file($f)) {
+        return;
+    }
+    $fh = @fopen($f, 'c+');
+    if ($fh === false) {
+        return;
+    }
+    $ende = microtime(true) + 20;
+    while (!@flock($fh, LOCK_EX | LOCK_NB)) {
+        if (microtime(true) >= $ende) {
+            fclose($fh);
+            return;
+        }
+        usleep(50000);
+    }
+    ftruncate($fh, 0);
+    flock($fh, LOCK_UN);
+    fclose($fh);
 }
 
 /* ---------------- Auto-Fallback (Cron, minutlich) ---------------- */
@@ -3540,6 +3814,23 @@ function marstek_mqtt_retain($schluessel)
 }
 
 /**
+ * Ein Paket vollstaendig schreiben (a2, Verbesserungsbau 30.09.2026).
+ *
+ * Bauart B (Regeln/03, Abschnitt 8): bis 1.1.18 stand an CONNECT und im
+ * Leeren "fwrite(...) !== false" als Erfolg, an den Datagrammen gar keine
+ * Pruefung. Eine kurze Schreibung ist genauso kaputt wie keine - ein
+ * abgeschnittenes CONNECT wartet danach auf ein CONNACK, das nie kommt, ein
+ * abgeschnittenes Datagramm setzt einen verstuemmelten Wert. Verglichen wird
+ * mit der Laenge. Rueckgabe: true nur, wenn alles geschrieben wurde.
+ */
+function marstek_ganz_schreiben($s, $daten)
+{
+    $daten = (string) $daten;
+    $n = @fwrite($s, $daten);
+    return $n === strlen($daten);
+}
+
+/**
  * Themen unter einem Praefix senden - gemeinsamer Unterbau aller
  * Veroeffentlichungen (Status, Energiezaehler, Spotpreis-Raenge, Takt).
  *
@@ -3559,20 +3850,31 @@ function marstek_mqtt_senden(array $werte, $prefix)
     if ($s === false) {
         return false;
     }
+    // a2: jedes Datagramm mit der Laenge verglichen. Ueber das UDP-Tor sagt
+    // das nichts ueber die Ankunft (Regeln/07), aber eine kurze oder
+    // gescheiterte Schreibung wird nicht mehr als "gesendet" gezaehlt: die
+    // Aenderungssperre merkt sich die Signatur dann nicht, und der naechste
+    // Takt sendet noch einmal.
+    $kurz = 0;
     foreach ($werte as $k => $v) {
         if (isset($raeumen[$k])) {
             // Leere Nutzlast mit retain LOESCHT den Altwert im Broker
             // (mqttgateway.pl:281/357, am Geraet 19.09.2026 belegt), und der
             // gueltige Wert folgt unmittelbar - am Miniserver steht damit nie
             // nur der leere Wert.
-            @fwrite($s, 'retain ' . $prefix . '/' . $k . ' ');
+            if (!marstek_ganz_schreiben($s, 'retain ' . $prefix . '/' . $k . ' ')) { $kurz++; }
             usleep(MARSTEK_MQTT_PAUSE_US);
         }
-        @fwrite($s, (marstek_mqtt_retain($k) ? 'retain ' : 'publish ')
-                  . $prefix . '/' . $k . ' ' . marstek_mqtt_wert_saeubern($v));
+        if (!marstek_ganz_schreiben($s, (marstek_mqtt_retain($k) ? 'retain ' : 'publish ')
+                  . $prefix . '/' . $k . ' ' . marstek_mqtt_wert_saeubern($v))) { $kurz++; }
         usleep(MARSTEK_MQTT_PAUSE_US);   // M7, siehe MARSTEK_MQTT_PAUSE_US
     }
     fclose($s);
+    if ($kurz > 0) {
+        marstek_log_if_changed('mqtt_kurz', 'MQTT: ' . $kurz . ' Datagramm(e) an den UDP-Eingang des Gateways '
+            . 'liessen sich nicht vollstaendig schreiben - der naechste Takt sendet erneut.', 'kurz');
+        return false;
+    }
     return true;
 }
 
@@ -3720,15 +4022,15 @@ function marstek_mqtt_behalten_liste(array $themen)
         $nutz .= $zk($benutzer);
         if ($kennwort !== '') { $nutz .= $zk($kennwort); }
     }
-    if (@fwrite($s, chr(0x10) . $laenge(strlen($kopf . $nutz)) . $kopf . $nutz) !== false) {
+    // a2: CONNECT und SUBSCRIBE mit der Laenge verglichen (Bauart B).
+    if (marstek_ganz_schreiben($s, chr(0x10) . $laenge(strlen($kopf . $nutz)) . $kopf . $nutz)) {
         $ack = $paket();
         if ($ack !== null && ($ack[0] >> 4) === 2 && strlen($ack[1]) >= 2 && ord($ack[1][1]) === 0) {
             $sub = pack('n', 1);
             foreach (array_keys($soll) as $t) { $sub .= $zk($t) . chr(0); }
-            @fwrite($s, chr(0x82) . $laenge(strlen($sub)) . $sub);
             $bestaetigt = false;
-            $abgelehnt = false;
-            $ende = microtime(true) + 3.0;
+            $abgelehnt = !marstek_ganz_schreiben($s, chr(0x82) . $laenge(strlen($sub)) . $sub);
+            $ende = $abgelehnt ? microtime(true) : microtime(true) + 3.0;
             while (microtime(true) < $ende) {
                 $pk = $paket();
                 if ($pk === null) { break; }           // Zeitablauf: nichts mehr gekommen
@@ -3763,7 +4065,8 @@ function marstek_mqtt_behalten_liste(array $themen)
                 $aus['belegt'] = array();
             }
         }
-        @fwrite($s, chr(0xE0) . chr(0));
+        // DISCONNECT: ein Fehlschlag aendert am Ergebnis nichts mehr.
+        marstek_ganz_schreiben($s, chr(0xE0) . chr(0));
     }
     fclose($s);
     return $aus;
@@ -3803,7 +4106,13 @@ function marstek_mqtt_altlast($praefix, array $liste)
     foreach ($liste as $t) { $voll[] = $praefix . '/' . $t; }
     $f = marstek_mqtt_behalten_liste($voll);
     if ($f['lage'] === 'ok' && !$f['belegt']) {
-        if (@file_put_contents($merker, $kennung . "\n", FILE_APPEND) !== false) {
+        /* a2: bis 1.1.18 FILE_APPEND mit "!== false" - eine kurze Schreibung
+         * hinterliess eine halbe Kennung und galt als Merker. Jetzt die ganze
+         * Datei atomar (Nebendatei mit PID, Rechte vor Inhalt, Laenge
+         * nachgezaehlt, rename); der Merker entsteht nur, wenn das glueckt. */
+        $mv_zl = is_array($zeilen) ? $zeilen : array();
+        $mv_zl[] = $kennung;
+        if (marstek_write_atomic($merker, implode("\n", $mv_zl) . "\n", 0644)) {
             marstek_log('MQTT: unter ' . $praefix . '/ steht keiner der frueher zurueckbehaltenen '
                 . 'Werte mehr im Broker (' . implode(', ', $liste) . '; vom Broker bestaetigt).');
         }
@@ -3928,7 +4237,8 @@ function marstek_mqtt_leeren($runden = 3, $pause_us = 1000000)
         foreach ($offen as $t) {
             // Ein Leerzeichen hinter dem Thema, sonst keine Nutzlast: die
             // Form, die das Gateway als Loeschung liest.
-            if (@fwrite($fp, 'retain ' . $t . ' ') !== false) { $datagramme++; }
+            // a2: gezaehlt wird nur ein vollstaendig geschriebenes Datagramm.
+            if (marstek_ganz_schreiben($fp, 'retain ' . $t . ' ')) { $datagramme++; }
             usleep(MARSTEK_MQTT_PAUSE_US);   // M7
         }
         usleep(300000);     // dem Gateway Zeit bis zum Broker lassen
@@ -3988,7 +4298,9 @@ function marstek_mqtt_senden_bei_aenderung(array $werte, $prefix, $merkername, ?
     if (!marstek_mqtt_senden($werte, $prefix)) {
         return false;
     }
-    @file_put_contents($sigf, $sig);
+    // a2: die Signatur atomar - eine halb geschriebene lieh dem naechsten Takt
+    // eine Aenderung vor, die keine war (harmlos), eine leere ebenso.
+    marstek_write_atomic($sigf, $sig, 0644);
     @touch($beat);
     return true;
 }
@@ -4761,6 +5073,29 @@ function marstek_modell_grenzen($modell)
     return array(2500, 2500);
 }
 
+/**
+ * b1 (Verbesserungsbau 30.09.2026): die Modelle der Auswahl im Geraeteformular
+ * mit ihren Leistungsgrenzen (laden, entladen). "anderes" hat keine Vorgabe:
+ * die Grenzen bleiben, wie sie eingetragen sind, und es gibt keine Warnung.
+ * Bis 1.1.18 wurde das Modell nur am Wort "mini" im Modellnamen erkannt und
+ * nirgends gezeigt.
+ */
+function marstek_modelle()
+{
+    return array('venus_e' => array(2500, 2500), 'venus_e_mini' => array(1500, 800), 'anderes' => null);
+}
+
+/** b1: der Schluessel der Auswahl zu einem gemeldeten Modellnamen - die
+ *  Erkennung wie bis 1.1.18 (marstek_modell_grenzen()). '' = nicht erkannt. */
+function marstek_modell_erkennen($name)
+{
+    $m = strtolower(trim((string) $name));
+    if ($m === '') {
+        return '';
+    }
+    return strpos($m, 'mini') !== false ? 'venus_e_mini' : 'venus_e';
+}
+
 /** Das zuletzt von Geraet $n gemeldete Modell (Zwischenspeicher) oder ''. */
 function marstek_modell_von($n)
 {
@@ -4804,7 +5139,8 @@ function marstek_geraet_abmelden($n)
                    'udpmode_dev%d', 'passive_dev%d.json', 'passive_dev%d', 'set_offen_dev%d.json',
                    'set_auftrag_dev%d', 'ausfall_dev%d.json', 'fallback_gemeldet_dev%d', 'hist_ts_dev%d',
                    'mqtt_sig_energie_dev%d.txt', 'mqtt_beat_energie_dev%d', 'last_status_dev%d.txt',
-                   'last_energy_dev%d.txt', 'last_set_dev%d.txt', 'last_fallback_dev%d.txt') as $muster) {
+                   'last_energy_dev%d.txt', 'last_set_dev%d.txt', 'last_fallback_dev%d.txt',
+                   'befehlsbremse_dev%d.json') as $muster) {
         $f = $tmp . '/' . sprintf($muster, $n);
         if (is_file($f) && @unlink($f)) {
             $aus['tmp']++;
@@ -4861,14 +5197,20 @@ function marstek_mqtt_praefix_abraeumen($praefix, $runden = 3)
     if (!$fp) {
         return -1;
     }
+    $kurz = 0;
     for ($r = 1; $r <= max(1, (int) $runden); $r++) {
         if ($r > 1) { usleep(200000); }
         foreach ($themen as $t) {
-            @fwrite($fp, 'retain ' . $t . ' ');
+            // a2: mit der Laenge verglichen; eine kurze Schreibung steht im Protokoll.
+            if (!marstek_ganz_schreiben($fp, 'retain ' . $t . ' ')) { $kurz++; }
             usleep(MARSTEK_MQTT_PAUSE_US);
         }
     }
     fclose($fp);
+    if ($kurz > 0) {
+        marstek_log('MQTT: beim Abraeumen des alten Praefixes ' . $praefix . '/ liessen sich ' . $kurz
+            . ' Datagramm(e) nicht vollstaendig schreiben.');
+    }
     marstek_log('MQTT: Themen-Praefix gewechselt - ' . count($themen) . ' zurueckbehaltene Themen unter '
         . $praefix . '/ mit leerer Nutzlast abgeraeumt (' . (int) $runden . ' Runden).');
     return count($themen);
@@ -5311,6 +5653,59 @@ function marstek_selbsttest()
     $pruefe('Ereignisliste nicht im Protokollverzeichnis',
         strpos($mv_ep, dirname($mv_pf['log'])) === 0, false);
     $pruefe('Taktschranke definiert', defined('MARSTEK_TAKT_SCHRANKE'), true);
+
+    /* --- X-3: dieselbe Pruefung fuer Sichern und Zurueckspielen --- */
+    $mv_sv = marstek_vorgaben();
+    $mv_sv['devices'] = array(array('ip' => '192.168.1.2', 'nr' => 1));
+    list(, $mv_sm) = marstek_sicherung_pruefen($mv_sv, $mv_sv);
+    $pruefe('X-3: Vorgaben bestehen das Zurueckspielen', $mv_sm, array());
+    $mv_sv['cache_sec'] = 400;
+    list(, $mv_sm) = marstek_sicherung_pruefen($mv_sv, $mv_sv);
+    $pruefe('X-3: cache_sec 400 wird beanstandet', count($mv_sm) === 1 && strpos($mv_sm[0], 'WERT:cache_sec') === 0, true);
+    $mv_sv['cache_sec'] = 40;
+    $mv_sv['soc_min'] = 50;
+    $mv_sv['soc_max'] = 50;
+    list(, $mv_sm) = marstek_sicherung_pruefen($mv_sv, $mv_sv);
+    $pruefe('X-3: Kreuzpruefung soc_min = soc_max', count($mv_sm), 1);
+    $mv_sv['soc_min'] = 5;
+    $mv_sv['soc_max'] = 98;
+    $mv_sv['_warnung'] = 'Kopf';
+    $mv_sv['altschluessel'] = 1;
+    list(, $mv_sm) = marstek_sicherung_pruefen($mv_sv, $mv_sv);
+    $pruefe('X-3: Kopf uebergangen, fremder Schluessel beanstandet', $mv_sm, array('UNBEKANNT:altschluessel'));
+
+    /* --- b1: Modell je Geraet --- */
+    $pruefe('Modell: Mini erkannt', marstek_modell_erkennen('VenusE Mini 2.0'), 'venus_e_mini');
+    $pruefe('Modell: anderer Name ist Venus E', marstek_modell_erkennen('VenusE 3.0'), 'venus_e');
+    $pruefe('Modell: leer ist nicht erkannt', marstek_modell_erkennen(''), '');
+    $pruefe('Modell: gueltige Auswahl ohne Mangel', marstek_geraete_maengel(array(array('ip' => '192.168.1.2', 'modell' => 'venus_e_mini'))), array());
+    $pruefe('Modell: leer ohne Mangel', marstek_geraete_maengel(array(array('ip' => '192.168.1.2', 'modell' => ''))), array());
+    $pruefe('Modell: unbekannt abgewiesen', count(marstek_geraete_maengel(array(array('ip' => '192.168.1.2', 'modell' => 'venus_x')))), 1);
+    $pruefe('Modell: Liste abgewiesen', count(marstek_geraete_maengel(array(array('ip' => '192.168.1.2', 'modell' => array('mini'))))), 1);
+
+    /* --- a1: Befehlsbremse (Urteil, ohne Datei) --- */
+    $mv_bm = array('art' => 'p', 'wert' => 800, 't' => 240, 'ts' => 1000);
+    $pruefe('Bremse: ohne Merker frei', marstek_bremse_urteil(array(), 'p', 800, 240, 1000), array('', 0));
+    $pruefe('Bremse: gleicher Wert nach 5 s unveraendert', marstek_bremse_urteil($mv_bm, 'p', 800, 240, 1005), array('UNVERAENDERT', 0));
+    $pruefe('Bremse: Dither +1 nach 30 s unveraendert', marstek_bremse_urteil($mv_bm, 'p', 801, 240, 1030), array('UNVERAENDERT', 0));
+    $pruefe('Bremse: Dither +1 nach 60 s frei (Watchdog)', marstek_bremse_urteil($mv_bm, 'p', 801, 240, 1060), array('', 0));
+    $pruefe('Bremse: +2 W ist ein anderer Wert', marstek_bremse_urteil($mv_bm, 'p', 802, 240, 1005), array('WARTEN', 5));
+    $pruefe('Bremse: anderer Wert nach 3 s wartet 7 s', marstek_bremse_urteil($mv_bm, 'p', -800, 240, 1003), array('WARTEN', 7));
+    $pruefe('Bremse: anderer Wert nach 10 s frei', marstek_bremse_urteil($mv_bm, 'p', -800, 240, 1010), array('', 0));
+    $pruefe('Bremse: anderes t ist ein anderer Befehl', marstek_bremse_urteil($mv_bm, 'p', 800, 120, 1005), array('WARTEN', 5));
+    $pruefe('Bremse: Fenster halb so lang wie t=60', marstek_bremse_urteil(array('art' => 'p', 'wert' => 800, 't' => 60, 'ts' => 1000), 'p', 801, 60, 1030), array('', 0));
+    $pruefe('Bremse: t=60, nach 27 s unveraendert', marstek_bremse_urteil(array('art' => 'p', 'wert' => 800, 't' => 60, 'ts' => 1000), 'p', 800, 60, 1027), array('UNVERAENDERT', 0));
+    $pruefe('Bremse: t=60, nach 28 s frei (Uhrtoleranz)', marstek_bremse_urteil(array('art' => 'p', 'wert' => 800, 't' => 60, 'ts' => 1000), 'p', 800, 60, 1028), array('', 0));
+    $pruefe('Bremse: Dither nach 57 s unveraendert', marstek_bremse_urteil($mv_bm, 'p', 801, 240, 1057), array('UNVERAENDERT', 0));
+    $pruefe('Bremse: Dither nach 58 s frei (Uhrtoleranz)', marstek_bremse_urteil($mv_bm, 'p', 801, 240, 1058), array('', 0));
+    $pruefe('Bremse: Uhr zurueck gibt frei', marstek_bremse_urteil($mv_bm, 'p', 800, 240, 990), array('', 0));
+    $pruefe('Bremse: Modus nach Sollwert wartet', marstek_bremse_urteil($mv_bm, 'mode', 'auto', 0, 1002), array('WARTEN', 8));
+    $pruefe('Bremse Nr. 14: Mindestabstand aus - anderer Wert nach 3 s frei', marstek_bremse_urteil($mv_bm, 'p', -800, 240, 1003, false), array('', 0));
+    $pruefe('Bremse Nr. 14: Mindestabstand aus - gleicher Wert bleibt unveraendert', marstek_bremse_urteil($mv_bm, 'p', 801, 240, 1030, false), array('UNVERAENDERT', 0));
+    $pruefe('Bremse Nr. 14: Mindestabstand aus - Modus nach Sollwert frei', marstek_bremse_urteil($mv_bm, 'mode', 'auto', 0, 1002, false), array('', 0));
+    $pruefe('Bremse Nr. 14: Vorgabe bremse_abstand_ein ist 0', marstek_vorgaben()['bremse_abstand_ein'], 0);
+    $pruefe('Bremse Nr. 14: bremse_abstand_ein nimmt 0/1', array(marstek_wert_pruefen('bremse_abstand_ein', 1), marstek_wert_pruefen('bremse_abstand_ein', 2) !== ''), array('', true));
+    $pruefe('Bremse: gleicher Modus unveraendert', marstek_bremse_urteil(array('art' => 'mode', 'wert' => 'auto', 't' => 0, 'ts' => 1000), 'mode', 'auto', 0, 1057), array('UNVERAENDERT', 0));
 
     printf("Rechenkern Marstek Venus E: %d Faelle geprueft, %d Fehlschlaege.\n",
            $faelle, count($fehl));
