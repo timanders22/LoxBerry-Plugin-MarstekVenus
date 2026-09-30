@@ -40,12 +40,28 @@ if [ -z "$BASE" ]; then
     echo "<WARNING> Es wurde nichts eingerichtet und nichts zurueckgespielt."
     exit 1
 fi
+# I1 (Durchgang 30.09.2026, Entscheidung 1): eingespielt wird aus der
+# Zweitschrift NUR bei einer Aktualisierung, und die erkennt dieses Skript
+# allein an der Marke, die preupgrade.sh als Erstes anlegt (kein
+# Altersvergleich). Festgehalten wird es hier, bevor der trap die Marke
+# entfernt. Bei einer Neuinstallation hat preinstall.sh die Reste einer
+# frueheren Installation schon nach .alt gelegt.
+# Die Marke faellt ueber einen trap, nicht erst am Dateiende: bis dahin
+# pausiert der Minutentakt (bin/cron.php), und das soll er nicht laenger als
+# noetig.
+MARKE="$BASE/data/plugins/$PFOLDER.upgrade_laeuft"
+UPGRADE=0
+[ -f "$MARKE" ] && UPGRADE=1
+trap 'rm -f "$MARKE" 2>/dev/null' EXIT
+SICHER="$BASE/data/plugins/$PFOLDER.upgrade_sicherung"
+
 mkdir -p "$BASE/config/plugins/$PFOLDER" 2>/dev/null
 if [ ! -f "$BASE/config/plugins/$PFOLDER/marstek.json" ]; then
     echo '{}' > "$BASE/config/plugins/$PFOLDER/marstek.json"
 fi
-# Konfiguration aus der Zweitschrift wiederherstellen (uebersteht Updates UND
-# Neuinstallation) - nach INHALT, nicht nach Form.
+# Konfiguration aus der Zweitschrift wiederherstellen - bei einer
+# AKTUALISIERUNG (Marke, siehe oben), nach INHALT, nicht nach Form. Eine
+# Neuinstallation spielt nichts ein (Entscheidung 1 vom 29.09.2026).
 #
 # BERICHTIGT 25.09.2026. Bis 1.1.15 stand hier die Formfrage "leer oder {}" an
 # die Konfiguration, und die Zweitschrift wurde gar nicht angesehen. Gemessen
@@ -67,7 +83,7 @@ mv_hat_token() {
     # Plugin noch einmal (marstek_config()).
     [ -s "$1" ] && [ "$(cat "$1" 2>/dev/null)" != "{}" ]
 }
-if mv_hat_token "$BK" && ! mv_hat_token "$CF"; then
+if [ "$UPGRADE" = 1 ] && mv_hat_token "$BK" && ! mv_hat_token "$CF"; then
     # Der verdraengte Stand bleibt lesbar liegen, wenn er ueberhaupt etwas
     # traegt - es kann darin stehen, was nur der Bediener wiederherstellen kann.
     if [ -s "$CF" ] && [ "$(tr -d ' \t\r\n' < "$CF" 2>/dev/null)" != "{}" ]; then
@@ -81,7 +97,7 @@ if mv_hat_token "$BK" && ! mv_hat_token "$CF"; then
     else
         echo "<WARNING> Die Konfiguration liess sich nicht aus der Zweitschrift $BK zurueckholen."
     fi
-elif [ -f "$BK" ] && ! mv_hat_token "$BK" && ! mv_hat_token "$CF"; then
+elif [ "$UPGRADE" = 1 ] && [ -f "$BK" ] && ! mv_hat_token "$BK" && ! mv_hat_token "$CF"; then
     echo "<INFO> Die Zweitschrift $BK traegt kein lesbares Aktionstoken - es wurde nichts zurueckgespielt."
 fi
 # Nachmessung: liegt die Cron-Datei als DATEI dort, wo LoxBerry sie aufruft?
@@ -125,9 +141,12 @@ mv_eingerichtet() {
         }
         exit(1);' "$1" 2>/dev/null
 }
+# I4 (Durchgang 30.09.2026): ueber die Marke entschieden. Bis 1.1.17 sagte
+# dieser Satz auch bei einer NEUINSTALLATION "holt postupgrade.sh gleich aus
+# der Update-Sicherung zurueck" - postupgrade laeuft dann aber nie (gemessen N4).
 if mv_eingerichtet "$CF"; then
     echo "<OK> Installation abgeschlossen, Einstellungen uebernommen."
-elif mv_eingerichtet "$BASE/data/plugins/$PFOLDER.upgrade_sicherung/marstek.json"; then
+elif [ "$UPGRADE" = 1 ] && mv_eingerichtet "$SICHER/marstek.json"; then
     # Ohne Zweitschrift holt erst postupgrade.sh die Konfiguration aus der
     # Update-Sicherung zurueck und meldet dort, ob es gelang.
     echo "<OK> Installation abgeschlossen. Die Einstellungen holt postupgrade.sh gleich aus der Update-Sicherung zurueck."

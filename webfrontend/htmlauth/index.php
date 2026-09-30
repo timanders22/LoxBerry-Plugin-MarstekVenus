@@ -67,20 +67,14 @@ if (is_file($mv_testdatei)) {
 }
 
 $mv_saved = false;
-$mv_save_error = '';       // blockiert das Speichern
-$mv_beanstandung = array();// wird gemeldet, blockiert aber NICHT
+$mv_save_error = '';       // Fehler: es wurde nichts getan
+$mv_beanstandung = array();// O4: warum das Formular abgewiesen wurde (es wurde NICHTS gespeichert)
+$mv_warnungen = array();   // C11: gespeichert, aber mit Hinweis
 $mv_meldung = '';
+$mv_form_rueck = null;     // O4: die abgewiesene Eingabe - niemand soll alles neu tippen
+$mv_suchergebnis = null;
+$mv_suchmeldung = '';
 $mv_post = (isset($_SERVER['REQUEST_METHOD']) && $_SERVER['REQUEST_METHOD'] === 'POST');
-
-/* ---------- EIN Wachposten fuer alle Formulare ----------
- *
- * Vor jedem Handler, nicht in jedem Handler. Eine Abfrage je Knopf haette
- * man beim naechsten Knopf vergessen.
- */
-if ($mv_post && !marstek_formtoken_ok()) {
-    $mv_post = false;
-    $mv_save_error = marstek_t('MELD.FREMDES_FORMULAR');
-}
 
 /* ---------- Welcher Reiter ist offen ----------
  *
@@ -98,7 +92,66 @@ if (isset($_POST['activetab']) && is_string($_POST['activetab'])
     $mv_active_tab = 'tab-' . $_GET['tab'];
 }
 
-/* ---------- Loxone-Vorlagen herunterladen ---------- */
+/* ---------- O1 (Durchgang 30.09.2026): JEDER verandernde POST endet mit einer Umleitung ----------
+ *
+ * Bis 1.1.17 stand im ganzen Paket kein header('Location'. Gemessen: F5 nach
+ * "Neues Token erzeugen" wuerfelte ein weiteres Token - das eben in Loxone
+ * eingetragene lief danach auf HTTP 403 -, F5 nach "Log leeren" loeschte eine
+ * inzwischen geschriebene Zeile, und Rueckspielen, Geraetesuche und Speichern
+ * wiederholten ihre Wirkung. Das Ergebnis reist als Einmalmeldung ueber die
+ * Umleitung (Bauform Docker NG 1.3.9). 303 heisst ausdruecklich "mit GET
+ * abholen". Nur die Downloads (Vorlagen, Sicherung, CSV) antworten direkt -
+ * sie veraendern nichts.
+ */
+function mv_weiter($reiter, array $daten = array())
+{
+    if (!preg_match('/^tab-(settings|mqtt|loxone|test|log)$/', (string) $reiter)) {
+        $reiter = 'tab-settings';
+    }
+    if ($daten) {
+        marstek_einmalmeldung_schreiben($daten);
+    }
+    header('Location: index.php?tab=' . substr($reiter, 4), true, 303);
+    exit;
+}
+
+/* ---------- EIN Wachposten fuer alle Formulare ----------
+ *
+ * Vor jedem Handler, nicht in jedem Handler. Eine Abfrage je Knopf haette
+ * man beim naechsten Knopf vergessen. Auch die Abweisung endet mit einer
+ * Umleitung - sonst wiederholt ein Neuladen den abgewiesenen POST.
+ */
+if ($mv_post && !marstek_formtoken_ok()) {
+    // Die Wache schaltet $mv_post ab, BEVOR sie umleitet: jeder Handler haengt
+    // an $mv_post, und so bleibt das auch fuer wachposten_pruefen.py lesbar.
+    $mv_post = false;
+    mv_weiter($mv_active_tab, array('fehler' => marstek_t('MELD.FREMDES_FORMULAR')));
+}
+
+/* ---------- Das Ergebnis der vorigen Anfrage (NUR beim GET) ---------- */
+if (!$mv_post) {
+    $mv_flash = marstek_einmalmeldung_lesen();
+    if (!empty($mv_flash['saved'])) { $mv_saved = true; }
+    if (isset($mv_flash['meldung']) && is_string($mv_flash['meldung'])) { $mv_meldung = $mv_flash['meldung']; }
+    if (isset($mv_flash['fehler']) && is_string($mv_flash['fehler'])) { $mv_save_error = $mv_flash['fehler']; }
+    foreach (array('beanstandung', 'warnungen') as $mv_k) {
+        if (isset($mv_flash[$mv_k]) && is_array($mv_flash[$mv_k])) {
+            foreach ($mv_flash[$mv_k] as $mv_z) {
+                if (is_string($mv_z)) {
+                    if ($mv_k === 'beanstandung') { $mv_beanstandung[] = $mv_z; } else { $mv_warnungen[] = $mv_z; }
+                }
+            }
+        }
+    }
+    if (isset($mv_flash['form']) && is_array($mv_flash['form'])) { $mv_form_rueck = $mv_flash['form']; }
+    if (!empty($mv_flash['suche'])) {
+        $mv_suchergebnis = marstek_suchergebnis_lesen();
+        if ($mv_suchergebnis === null) { $mv_suchergebnis = array(); }
+        $mv_suchmeldung = (isset($mv_flash['suchmeldung']) && is_string($mv_flash['suchmeldung'])) ? $mv_flash['suchmeldung'] : '';
+    }
+}
+
+/* ---------- Loxone-Vorlagen herunterladen (Download, veraendert nichts) ---------- */
 if ($mv_post && isset($_POST['vorlage_paket'])) {
     $paket = marstek_vorlagen_paket();
     if ($paket !== null) {
@@ -107,11 +160,10 @@ if ($mv_post && isset($_POST['vorlage_paket'])) {
         echo $paket[1];
         exit;
     }
-    $mv_save_error = marstek_t('MELD.KEIN_ZIP');
-    $mv_active_tab = 'tab-loxone';
+    mv_weiter('tab-loxone', array('fehler' => marstek_t('MELD.KEIN_ZIP')));
 }
 if ($mv_post && isset($_POST['vorlage_vo'])) {
-    list($mv_vname, $mv_vinhalt) = marstek_vo_vorlage(isset($_POST['vorlage_dev']) ? (int) $_POST['vorlage_dev'] : 1);
+    list($mv_vname, $mv_vinhalt) = marstek_vo_vorlage(isset($_POST['vorlage_dev']) && is_string($_POST['vorlage_dev']) ? (int) $_POST['vorlage_dev'] : 1);
     header('Content-Type: application/x-download');
     header('Content-Disposition: attachment; filename="' . $mv_vname . '"');
     echo $mv_vinhalt;
@@ -120,7 +172,7 @@ if ($mv_post && isset($_POST['vorlage_vo'])) {
 if ($mv_post && isset($_POST['vorlage'])) {
     list($mv_vname, $mv_vinhalt) = marstek_vorlage(
         is_string($_POST['vorlage']) ? $_POST['vorlage'] : 'status',
-        isset($_POST['vorlage_dev']) ? (int) $_POST['vorlage_dev'] : 1);
+        isset($_POST['vorlage_dev']) && is_string($_POST['vorlage_dev']) ? (int) $_POST['vorlage_dev'] : 1);
     header('Content-Type: application/x-download');
     header('Content-Disposition: attachment; filename="' . $mv_vname . '"');
     echo $mv_vinhalt;
@@ -134,9 +186,7 @@ if ($mv_post && isset($_POST['vorlage'])) {
  * Miniserver ungueltig wuerden.
  */
 if ($mv_post && isset($_POST['mv_sichern'])) {
-    // Mit lesbarem Kopf (_hinweis, _stand, _fassung). Bis 1.1.4 hatte die
-    // Datei keinen, und eine Datei MIT einem solchen Kopf wurde beim
-    // Zurueckspielen abgewiesen - gemessen.
+    // Mit lesbarem Kopf (_hinweis, _stand, _fassung).
     header('Content-Type: application/x-download');
     header('Content-Disposition: attachment; filename="marstekvenus_' . date('Ymd_His') . '.json"');
     echo json_encode(marstek_sicherung_schreiben(),
@@ -146,61 +196,71 @@ if ($mv_post && isset($_POST['mv_sichern'])) {
 if ($mv_post && isset($_POST['mv_zurueck'])) {
     // Abgewiesen wird, was nicht passt - nie zurechtgebogen.
     if (!isset($_FILES['konfigdatei']) || !is_uploaded_file($_FILES['konfigdatei']['tmp_name'])) {
-        $mv_save_error = marstek_t('MELD.IMPORT_KEINE_DATEI');
-    } elseif ((int) $_FILES['konfigdatei']['size'] > 262144) {
+        mv_weiter('tab-settings', array('fehler' => marstek_t('MELD.IMPORT_KEINE_DATEI')));
+    }
+    if ((int) $_FILES['konfigdatei']['size'] > 262144) {
         /* Eine Sicherung dieses Plugins ist wenige Kilobyte gross.
          * Alles darueber wird gar nicht erst gelesen. */
-        $mv_save_error = marstek_t('MELD.IMPORT_ZU_GROSS');
-    } else {
-        /* Gelesen wird in der BIBLIOTHEK, nicht hier. Zwei Gruende:
-         *
-         * 1. Bis 1.1.4 wurden nur die Schluessel geprueft, nie die Werte.
-         *    Gemessen gingen sechs von sechs vergifteten Werten durch;
-         *    ein Aktionstoken als Feld liess ?token=Array schalten, und ein
-         *    Themen-Praefix mit Zeilenumbruch schleuste eine zweite
-         *    publish-Zeile in jedes Datagramm.
-         * 2. Die drei Hauswerkzeuge fuer den Sicherungs-Bauplan suchen eine
-         *    benannte Lesefunktion. Weil es keine gab, haben sie diese Linie
-         *    ueberhaupt nicht gemessen - eines meldete "1 in Ordnung" mit
-         *    leerer Tabelle.
-         */
-        $roh = (string) @file_get_contents($_FILES['konfigdatei']['tmp_name']);
-        list($mv_imp_cfg, $mv_imp_meld, ) = marstek_sicherung_lesen($roh);
-        if ($mv_imp_cfg !== null) {
-            $mv_saved = true;
-            $mv_meldung = marstek_t('MELD.IMPORT_OK');
+        mv_weiter('tab-settings', array('fehler' => marstek_t('MELD.IMPORT_ZU_GROSS')));
+    }
+    /* Gelesen wird in der BIBLIOTHEK, nicht hier (siehe marstek_sicherung_lesen()).
+     * C10 (30.09.2026): die Meldung sagt, was mit dem Aktionstoken und mit
+     * fehlenden Schluesseln geschah; C13: weggefallene Geraetenummern werden
+     * abgemeldet wie beim Speichern des Formulars. */
+    $mv_vorher = array_keys(marstek_devices());
+    $roh = (string) @file_get_contents($_FILES['konfigdatei']['tmp_name']);
+    $mv_imp = marstek_sicherung_lesen($roh);
+    $mv_imp_cfg = $mv_imp[0];
+    $mv_imp_meld = $mv_imp[1];
+    if ($mv_imp_cfg === null) {
+        $mv_erste = isset($mv_imp_meld[0]) ? (string) $mv_imp_meld[0] : '';
+        if ($mv_erste === 'KEIN_JSON') {
+            $mv_f = marstek_t('MELD.IMPORT_KEIN_JSON');
+        } elseif ($mv_erste === 'FREMD') {
+            $mv_f = marstek_t('MELD.IMPORT_FREMD');
+        } elseif (strncmp($mv_erste, 'UNBEKANNT:', 10) === 0) {
+            $mv_f = sprintf(marstek_t('MELD.IMPORT_UNBEKANNT'), substr($mv_erste, 10));
+        } elseif ($mv_erste === 'SCHREIBEN') {
+            $mv_f = marstek_t('MELD.SPEICHERN_FEHLGESCHLAGEN');
         } else {
-            $mv_erste = isset($mv_imp_meld[0]) ? (string) $mv_imp_meld[0] : '';
-            if ($mv_erste === 'KEIN_JSON') {
-                $mv_save_error = marstek_t('MELD.IMPORT_KEIN_JSON');
-            } elseif ($mv_erste === 'FREMD') {
-                $mv_save_error = marstek_t('MELD.IMPORT_FREMD');
-            } elseif (strncmp($mv_erste, 'UNBEKANNT:', 10) === 0) {
-                $mv_save_error = sprintf(marstek_t('MELD.IMPORT_UNBEKANNT'),
-                    marstek_e(substr($mv_erste, 10)));
-            } elseif ($mv_erste === 'SCHREIBEN') {
-                $mv_save_error = marstek_t('MELD.SPEICHERN_FEHLGESCHLAGEN');
-            } else {
-                // Alle Beanstandungen, nicht die erste.
-                $mv_liste = array();
-                foreach ($mv_imp_meld as $mv_z) {
-                    $mv_liste[] = marstek_e(strncmp($mv_z, 'WERT:', 5) === 0
-                        ? substr($mv_z, 5) : $mv_z);
-                }
-                $mv_save_error = sprintf(marstek_t('MELD.IMPORT_WERTE'),
-                    implode(' | ', $mv_liste));
+            // Alle Beanstandungen, nicht die erste.
+            $mv_liste = array();
+            foreach ($mv_imp_meld as $mv_z) {
+                $mv_liste[] = strncmp($mv_z, 'WERT:', 5) === 0 ? substr($mv_z, 5) : $mv_z;
             }
+            $mv_f = sprintf(marstek_t('MELD.IMPORT_WERTE'), implode(' | ', $mv_liste));
+        }
+        mv_weiter('tab-settings', array('fehler' => $mv_f));
+    }
+    $mv_texte = array(marstek_t('MELD.IMPORT_OK'));
+    foreach ((isset($mv_imp[3]) && is_array($mv_imp[3])) ? $mv_imp[3] : array() as $mv_h) {
+        if ($mv_h === 'TOKEN_BEHALTEN') {
+            $mv_texte[] = marstek_t('MELD.IMPORT_TOKEN_BEHALTEN');
+        } elseif ($mv_h === 'TOKEN_NEU') {
+            $mv_texte[] = marstek_t('MELD.IMPORT_TOKEN_NEU');
+        } elseif (strncmp($mv_h, 'BEHALTEN:', 9) === 0) {
+            $mv_texte[] = sprintf(marstek_t('MELD.IMPORT_BEHALTEN'), substr($mv_h, 9));
         }
     }
-    $mv_active_tab = 'tab-settings';
+    foreach (array_diff($mv_vorher, array_keys(marstek_devices())) as $mv_n) {
+        $mv_a = marstek_geraet_abmelden($mv_n);
+        $mv_texte[] = sprintf(marstek_t('MELD.GERAET_AUSGETRAGEN'), $mv_n,
+            $mv_a['mqtt'] >= 0 ? sprintf(marstek_t('MELD.AUSGETRAGEN_MQTT'), $mv_a['mqtt'])
+                               : marstek_t('MELD.AUSGETRAGEN_OHNE_MQTT'), $mv_a['alt']);
+    }
+    mv_weiter('tab-settings', array('saved' => 1, 'meldung' => implode(' ', $mv_texte)));
 }
 
-/* ---------- Log leeren ---------- */
+/* ---------- Log leeren ----------
+ * O7 (30.09.2026): die Meldung folgt dem Rueckgabewert. Bis 1.1.17 kam bei
+ * schreibgeschuetztem Protokoll gar keine Meldung, und die Zeile blieb. */
 if ($mv_post && isset($_POST['clearlog'])) {
     if (!is_dir(dirname($mv_log_file))) { @mkdir(dirname($mv_log_file), 0775, true); }
-    @file_put_contents($mv_log_file, '[' . date('Y-m-d H:i:s') . '] '
-        . marstek_t('LOG.GELEERT') . "\n");
-    $mv_active_tab = 'tab-log';
+    $mv_z = '[' . date('Y-m-d H:i:s') . '] ' . marstek_t('LOG.GELEERT') . "\n";
+    if (@file_put_contents($mv_log_file, $mv_z) === strlen($mv_z)) {
+        mv_weiter('tab-log', array('meldung' => marstek_t('MELD.LOG_GELEERT')));
+    }
+    mv_weiter('tab-log', array('fehler' => sprintf(marstek_t('MELD.LOG_NICHT_GELEERT'), $mv_log_file)));
 }
 
 /* ---------- Neues Aktionstoken erzeugen ---------- */
@@ -208,67 +268,123 @@ if ($mv_post && isset($_POST['token_neu'])) {
     $cfg = marstek_config();
     $cfg['aktionstoken'] = marstek_token_erzeugen();
     if (marstek_cfg_schreiben($cfg)) {
-        $mv_meldung = marstek_t('MELD.TOKEN_NEU');
         marstek_log('Neues Aktionstoken erzeugt (Oberflaeche).');
-    } else {
-        $mv_save_error = marstek_t('MELD.SPEICHERN_FEHLGESCHLAGEN');
+        mv_weiter('tab-loxone', array('meldung' => marstek_t('MELD.TOKEN_NEU')));
     }
-    $mv_active_tab = 'tab-loxone';
+    mv_weiter('tab-loxone', array('fehler' => marstek_t('MELD.SPEICHERN_FEHLGESCHLAGEN')));
 }
 
-/* ---------- Geraetesuche ---------- */
-$mv_suchergebnis = null;
-$mv_suchmeldung = '';
+/* ---------- Geraetesuche ----------
+ * Das Ergebnis liegt zehn Minuten im Zwischenspeicher und wird nach der
+ * Umleitung einmal angezeigt (O1). */
 if ($mv_post && isset($_POST['suchen'])) {
-    list($mv_suchergebnis, $mv_suchmeldung) = marstek_suche(3);
-    $mv_active_tab = 'tab-test';
+    list($mv_erg, $mv_sm) = marstek_suche(3);
+    marstek_suchergebnis_ablegen($mv_erg);
+    mv_weiter('tab-test', array('suche' => 1, 'suchmeldung' => (string) $mv_sm));
 }
 if ($mv_post && isset($_POST['uebernehmen']) && is_string($_POST['uebernehmen'])) {
     $ip = trim($_POST['uebernehmen']);
-    if (preg_match('/^\d{1,3}(\.\d{1,3}){3}$/', $ip)) {
-        $cfg = marstek_config();
-        $schon = false;
-        foreach ((array) $cfg['devices'] as $d) {
-            if (is_array($d) && isset($d['ip']) && $d['ip'] === $ip) { $schon = true; }
-        }
-        if ($schon) {
-            $mv_meldung = sprintf(marstek_t('MELD.SCHON_EINGETRAGEN'), marstek_e($ip));
-        } elseif (count((array) $cfg['devices']) >= 4) {
-            $mv_save_error = marstek_t('MELD.VIER_SCHON_VOLL');
-        } else {
-            $cfg['devices'][] = array('name' => 'Venus E', 'ip' => $ip, 'port' => 30000,
-                'pmax_charge' => 2500, 'pmax_discharge' => 2500, 'modbus' => 1, 'kwh' => 0);
-            if (marstek_cfg_schreiben($cfg)) {
-                $mv_saved = true;
-                $mv_meldung = sprintf(marstek_t('MELD.UEBERNOMMEN'), marstek_e($ip));
-            } else {
-                $mv_save_error = marstek_t('MELD.SPEICHERN_FEHLGESCHLAGEN');
-            }
+    // C11 (30.09.2026): das Modell aus der Suche belegt die Leistungsgrenzen vor.
+    $mv_modell = (isset($_POST['modell']) && is_string($_POST['modell']))
+        ? substr(preg_replace('/[^A-Za-z0-9 _.\-]/', '', $_POST['modell']), 0, 40) : '';
+    if (!marstek_ip_gueltig($ip)) {
+        mv_weiter('tab-test', array('fehler' => sprintf(marstek_t('MELD.IP_UNGUELTIG_SUCHE'), $ip)));
+    }
+    $cfg = marstek_config();
+    // C13: die vergebenen Nummern bleiben; ein Eintrag ohne Nummer bekommt
+    // jetzt die, unter der er bisher lief - die neue Zeile verschiebt nichts.
+    $mv_nrn = marstek_geraete_nummern(isset($cfg['devices']) ? $cfg['devices'] : array());
+    foreach ($mv_nrn as $d) {
+        if (isset($d['ip']) && is_scalar($d['ip']) && trim((string) $d['ip']) === $ip) {
+            mv_weiter('tab-test', array('meldung' => sprintf(marstek_t('MELD.SCHON_EINGETRAGEN'), $ip)));
         }
     }
-    $mv_active_tab = 'tab-test';
+    if (count($mv_nrn) >= 4) {
+        mv_weiter('tab-test', array('fehler' => marstek_t('MELD.VIER_SCHON_VOLL')));
+    }
+    $mv_frei = 1;
+    while (isset($mv_nrn[$mv_frei])) { $mv_frei++; }
+    $mv_gr = marstek_modell_grenzen($mv_modell);
+    $mv_neu = array();
+    foreach ($mv_nrn as $mv_n => $d) { $d['nr'] = $mv_n; $mv_neu[] = $d; }
+    $mv_neu[] = array('name' => 'Venus E', 'ip' => $ip, 'port' => 30000,
+        'pmax_charge' => $mv_gr !== null ? $mv_gr[0] : 2500,
+        'pmax_discharge' => $mv_gr !== null ? $mv_gr[1] : 2500,
+        'modbus' => 1, 'kwh' => 0, 'nr' => $mv_frei);
+    $cfg['devices'] = $mv_neu;
+    if (!marstek_cfg_schreiben($cfg)) {
+        mv_weiter('tab-test', array('fehler' => marstek_t('MELD.SPEICHERN_FEHLGESCHLAGEN')));
+    }
+    $mv_t = sprintf(marstek_t('MELD.UEBERNOMMEN'), $ip);
+    if ($mv_gr !== null) {
+        $mv_t .= ' ' . sprintf(marstek_t('MELD.UEBERNOMMEN_GRENZEN'), $mv_modell, $mv_gr[0], $mv_gr[1]);
+    }
+    mv_weiter('tab-test', array('saved' => 1, 'meldung' => $mv_t));
 }
 
 /* ---------- Mitschnitt ein- und ausschalten ----------
  *
- * Er schaltet sich selbst ab. Ein Mitschnitt, der stehenbleibt, schreibt
- * unbemerkt weiter - deshalb eine Frist und eine Zeile im Reiter Test, die
- * daran erinnert.
+ * Er schaltet sich selbst ab. O7 (30.09.2026): die Meldung folgt dem
+ * Rueckgabewert - bis 1.1.17 hiess es "laeuft bis ..." auch dann, wenn sich
+ * die Merkerdatei nicht schreiben liess.
  */
 if ($mv_post && isset($_POST['mitschnitt'])) {
     $sek = is_string($_POST['mitschnitt']) ? (int) $_POST['mitschnitt'] : 0;
     $bis = marstek_mitschnitt_schalten($sek);
-    $mv_meldung = $bis > 0
+    if ($bis === false) {
+        mv_weiter('tab-test', array('fehler' => marstek_t('MELD.MITSCHNITT_FEHLER')));
+    }
+    mv_weiter('tab-test', array('meldung' => $bis > 0
         ? sprintf(marstek_t('MELD.MITSCHNITT_AN'), date('H:i:s', $bis))
-        : marstek_t('MELD.MITSCHNITT_AUS');
-    $mv_active_tab = 'tab-test';
+        : marstek_t('MELD.MITSCHNITT_AUS')));
 }
 
-/* ---------- Verlauf als CSV ---------- */
+/* ---------- Schalten aus dem Reiter Test (O6, 30.09.2026) ----------
+ *
+ * Bis 1.1.17 waren die vier Knoepfe Verweise auf den Endpunkt mit dem Token in
+ * der Adresse: F5 im geoeffneten Ergebnisreiter schaltete den Speicher erneut
+ * (gemessen: 2 x ES.SetMode), und das Token stand im Browserverlauf. Jetzt ein
+ * POST mit Merkmal, derselbe Weg wie der Endpunkt, danach die Umleitung.
+ */
+if ($mv_post && isset($_POST['schalten']) && is_string($_POST['schalten'])) {
+    $mv_n = (isset($_POST['schalt_dev']) && is_string($_POST['schalt_dev']) && preg_match('/^[1-9]$/', $_POST['schalt_dev']))
+        ? (int) $_POST['schalt_dev'] : 0;
+    $mv_dv = marstek_dev($mv_n);
+    $mv_befehle = array('leerlauf' => array(0, 60), 'entladen' => array(-800, 120), 'laden' => array(800, 120));
+    if ($mv_n < 1 || $mv_dv === null) {
+        mv_weiter('tab-test', array('fehler' => sprintf(marstek_t('MELD.SCHALTEN_KEIN_GERAET'), $mv_n)));
+    }
+    if (isset($mv_befehle[$_POST['schalten']])) {
+        list($mv_ok, $mv_p, $mv_tt, $mv_h, $mv_b) = marstek_set_passive($mv_befehle[$_POST['schalten']][0],
+            $mv_befehle[$_POST['schalten']][1], $mv_n);
+        $mv_zeile = 'SET;OK=' . $mv_ok . ';P=' . $mv_p . ';T=' . $mv_tt . ';DEV=' . $mv_n
+            . ($mv_b ? ';BEGRENZT=1' : '') . ($mv_h !== '' ? ';HINWEIS=' . $mv_h : '');
+    } elseif ($_POST['schalten'] === 'auto') {
+        list($mv_ok, $mv_m, $mv_h) = marstek_set_mode('auto', $mv_n);
+        $mv_zeile = 'MODE;OK=' . $mv_ok . ';M=' . $mv_m . ';DEV=' . $mv_n . ($mv_h !== '' ? ';HINWEIS=' . $mv_h : '');
+    } else {
+        mv_weiter('tab-test', array('fehler' => sprintf(marstek_t('MELD.SCHALTEN_KEIN_GERAET'), $mv_n)));
+    }
+    marstek_log('Oberflaeche: Schaltknopf ' . $_POST['schalten'] . ' (Geraet ' . $mv_n . '): ' . $mv_zeile);
+    mv_weiter('tab-test', array($mv_ok ? 'meldung' : 'fehler' =>
+        sprintf(marstek_t('MELD.SCHALTEN_ERGEBNIS'), $mv_dv['name'], $mv_zeile)));
+}
+
+/* ---------- Verlauf als CSV (Download) ----------
+ * O14 (30.09.2026): ein unbekanntes Geraet oder ein ungueltiger Tag ergibt
+ * HTTP 400. Bis 1.1.17 kam eine leere Datei "marstek_verlauf_7_.csv". */
 if ($mv_post && isset($_POST['verlauf_csv'])) {
-    $n = isset($_POST['verlauf_dev']) ? max(1, (int) $_POST['verlauf_dev']) : 1;
-    $tag = isset($_POST['verlauf_tag']) && is_string($_POST['verlauf_tag'])
-         ? preg_replace('/\D/', '', $_POST['verlauf_tag']) : date('Ymd');
+    $n = (isset($_POST['verlauf_dev']) && is_string($_POST['verlauf_dev']) && preg_match('/^[1-9]$/', $_POST['verlauf_dev']))
+        ? (int) $_POST['verlauf_dev'] : 0;
+    $tag = (isset($_POST['verlauf_tag']) && is_string($_POST['verlauf_tag'])) ? $_POST['verlauf_tag'] : '';
+    $mv_devs_csv = marstek_devices();
+    if (!isset($mv_devs_csv[$n]) || !preg_match('/^\d{8}$/', $tag)
+            || (!in_array($tag, marstek_history_tage($n), true) && $tag !== date('Ymd'))) {
+        http_response_code(400);
+        header('Content-Type: text/plain; charset=utf-8');
+        echo marstek_t('MELD.CSV_UNGUELTIG') . "\n";
+        exit;
+    }
     header('Content-Type: text/csv; charset=utf-8');
     header('Content-Disposition: attachment; filename="marstek_verlauf_' . $n . '_' . $tag . '.csv"');
     echo "zeit;soc_prozent;batterieleistung_w\r\n";
@@ -278,107 +394,191 @@ if ($mv_post && isset($_POST['verlauf_csv'])) {
     exit;
 }
 
-/* ---------- MQTT speichern (eigener Reiter, Hausstandard) ---------- */
+/* ---------- MQTT speichern (eigener Reiter, Hausstandard) ----------
+ *
+ * M6 (30.09.2026): das Praefix wird mit DERSELBEN Pruefung wie die Sicherung
+ * und in der Form, die der Sender ohne Aenderung nimmt, angenommen - oder
+ * abgewiesen. Bis 1.1.17 wurde "haus/mär stek" still zu "haus/mrstek", und
+ * "marstek/" stand als Abo "marstek//#" in der Anleitung.
+ * M5: bei einem Wechsel des Praefixes gehen die Signaturmerker weg (alles
+ * geht beim naechsten Takt vollstaendig hinaus), und das alte Praefix raeumt
+ * seine retained Themen einmal ab.
+ */
 if ($mv_post && isset($_POST['mqtt_save'])) {
     $cfg = marstek_config();
-    $cfg['mqtt_enabled'] = isset($_POST['mqtt_enabled']) ? 1 : 0;
-    $topic = isset($_POST['mqtt_topic']) && is_string($_POST['mqtt_topic']) ? $_POST['mqtt_topic'] : 'marstek';
-    $cfg['mqtt_topic'] = preg_replace('#[^\w/\-]#', '', $topic) ?: 'marstek';
-    if (marstek_cfg_schreiben($cfg)) {
-        $mv_saved = true;
-    } else {
-        $mv_save_error = marstek_t('MELD.SPEICHERN_FEHLGESCHLAGEN');
+    $mv_alt_praefix = marstek_mqtt_prefix(1);
+    $mv_alt_ein = !empty($cfg['mqtt_enabled']);
+    $topic = (isset($_POST['mqtt_topic']) && is_string($_POST['mqtt_topic'])) ? trim($_POST['mqtt_topic']) : '';
+    $mv_g = marstek_wert_pruefen('mqtt_topic', $topic);
+    if ($mv_g !== '') {
+        mv_weiter('tab-mqtt', array('fehler' => sprintf(marstek_t('MELD.PRAEFIX_UNGUELTIG'), $topic, $mv_g)));
     }
-    $mv_active_tab = 'tab-mqtt';
+    $cfg['mqtt_enabled'] = isset($_POST['mqtt_enabled']) ? 1 : 0;
+    $cfg['mqtt_topic'] = $topic;
+    if (!marstek_cfg_schreiben($cfg)) {
+        mv_weiter('tab-mqtt', array('fehler' => marstek_t('MELD.SPEICHERN_FEHLGESCHLAGEN')));
+    }
+    $mv_texte = array();
+    if ($topic !== $mv_alt_praefix) {
+        marstek_mqtt_merker_loeschen();
+        $mv_z = marstek_mqtt_praefix_abraeumen($mv_alt_praefix);
+        $mv_texte[] = $mv_z >= 0 ? sprintf(marstek_t('MELD.PRAEFIX_GEWECHSELT'), $mv_alt_praefix, $mv_z)
+                                 : sprintf(marstek_t('MELD.PRAEFIX_GEWECHSELT_OHNE'), $mv_alt_praefix);
+    } elseif (!$mv_alt_ein && !empty($cfg['mqtt_enabled'])) {
+        marstek_mqtt_merker_loeschen();
+    }
+    mv_weiter('tab-mqtt', array('saved' => 1, 'meldung' => implode(' ', $mv_texte)));
 }
 
 /* ---------- Einstellungen speichern ----------
  *
- * BERICHTIGT 24.08.2026: eine krumme Zeile verwirft nicht mehr das ganze
- * Formular. Gemessen an 1.0.16: eine unvollstaendige IP in Zeile 2 hat
- * Geraetename, Status-Cache, Auto-Fallback und Markt gleich mit verworfen -
- * der Anwender tippt dann alles noch einmal, wegen einer Zeile, die er
- * womoeglich gar nicht ausfuellen wollte.
- *
- * Jetzt: die betroffene Zeile wird uebergangen, alles Uebrige gespeichert,
- * und die Beanstandung erscheint daneben in einem eigenen Kasten.
+ * O2 und O4 (Durchgang 30.09.2026): ABWEISEN STATT VERBIEGEN, mit DERSELBEN
+ * Pruefung wie die Sicherung (marstek_wert_pruefen(), marstek_geraete_maengel(),
+ * marstek_cfg_kreuzmaengel()). Bis 1.1.17 wurde hier geklemmt und gecastet:
+ * Port 70000 -> 65535, "abc" -> 100, 2500.9 -> 2500, Kapazitaet "5,126" -> 0,
+ * soc_min 60 / soc_max 30 -> beide 50 (der Speicher klebte bei 50 %), Markt
+ * "ch" -> "de" - gemeldet wurde "Gespeichert.". Und was das Formular annahm,
+ * wies die eigene Sicherung danach ab.
+ * Jetzt: ist EIN Feld ungueltig, wird NICHTS gespeichert, alle Gruende stehen
+ * in der Meldung, und das Formular zeigt die abgewiesene Eingabe wieder.
+ * C13: die Zeile ist die Geraetenummer; eine geleerte Zeile rueckt nichts
+ * nach, und eine weggefallene Nummer wird abgemeldet (marstek_geraet_abmelden()).
+ * C11: liegt eine Leistungsgrenze ueber der des erkannten Modells, wird
+ * gespeichert und gelb gewarnt.
  */
 if ($mv_post && isset($_POST['save'])) {
     $alt = marstek_config();
-    $cfg = $alt;                       // Bestand uebernehmen, dann ueberschreiben.
-    $cfg['devices'] = array();
-    $names = isset($_POST['dev_name']) ? (array) $_POST['dev_name'] : array();
-    $ips   = isset($_POST['dev_ip'])   ? (array) $_POST['dev_ip']   : array();
-    $ports = isset($_POST['dev_port']) ? (array) $_POST['dev_port'] : array();
-    $pcs   = isset($_POST['dev_pc'])   ? (array) $_POST['dev_pc']   : array();
-    $pds   = isset($_POST['dev_pd'])   ? (array) $_POST['dev_pd']   : array();
-    $mbs   = isset($_POST['dev_mb'])   ? (array) $_POST['dev_mb']   : array();
-    $kwhs  = isset($_POST['dev_kwh'])  ? (array) $_POST['dev_kwh']  : array();
+    $mv_vorher = marstek_devices();
+    $mv_str = function ($feld, $i = null) {
+        if (!isset($_POST[$feld])) { return ''; }
+        $v = $_POST[$feld];
+        if ($i !== null) {
+            if (!is_array($v)) { return null; }
+            if (!isset($v[$i])) { return ''; }
+            $v = $v[$i];
+        }
+        return is_string($v) ? trim($v) : null;
+    };
+    $mv_maengel = array();
+    $mv_rueck = array('geraete' => array());
+    $mv_geraete = array();
+    $mv_pruef = array();
     for ($i = 0; $i < 4; $i++) {
-        $ip = isset($ips[$i]) && is_string($ips[$i]) ? trim($ips[$i]) : '';
-        if ($ip === '') {
-            continue;
+        $mv_nr = $i + 1;
+        $mv_roh = array();
+        foreach (array('name' => 'dev_name', 'ip' => 'dev_ip', 'port' => 'dev_port', 'pmax_charge' => 'dev_pc',
+                       'pmax_discharge' => 'dev_pd', 'modbus' => 'dev_mb', 'kwh' => 'dev_kwh') as $mv_k => $mv_feld) {
+            $v = $mv_str($mv_feld, $i);
+            if ($v === null) {
+                $mv_maengel[] = sprintf(marstek_t('MELD.EINGABE_UNGUELTIG'), $mv_nr, $mv_k);
+                $v = '';
+            }
+            $mv_roh[$mv_k] = $v;
         }
-        // Jedes Feld einzeln pruefen - 999.999.999.999 passte bis 1.0.16
-        // durch, weil nur die Form geprueft wurde, nicht der Wertebereich.
-        $teile = explode('.', $ip);
-        $gut = count($teile) === 4;
-        foreach ($teile as $t) {
-            if (!preg_match('/^\d{1,3}$/', $t) || (int) $t > 255) { $gut = false; }
+        $mv_rueck['geraete'][$mv_nr] = $mv_roh;
+        if ($mv_roh['ip'] === '') {
+            continue;   // leere Zeile: diese Nummer ist unbelegt
         }
-        if (!$gut) {
-            $mv_beanstandung[] = sprintf(marstek_t('MELD.IP_UNGUELTIG'), $i + 1, marstek_e($ip));
-            continue;
+        if (!marstek_ip_gueltig($mv_roh['ip'])) {
+            $mv_maengel[] = sprintf(marstek_t('MELD.IP_UNGUELTIG'), $mv_nr, $mv_roh['ip']);
         }
-        $kwh = isset($kwhs[$i]) && is_string($kwhs[$i]) ? str_replace(',', '.', trim($kwhs[$i])) : '';
-        $cfg['devices'][] = array(
-            'name' => isset($names[$i]) && is_string($names[$i]) ? trim($names[$i]) : '',
-            'ip' => $ip,
-            'port' => max(1, min(65535, (int) (isset($ports[$i]) ? $ports[$i] : 30000))),
-            'pmax_charge' => max(100, min(3600, (int) (isset($pcs[$i]) ? $pcs[$i] : 2500))),
-            'pmax_discharge' => max(100, min(3600, (int) (isset($pds[$i]) ? $pds[$i] : 2500))),
-            'modbus' => (isset($mbs[$i]) && $mbs[$i] === '1') ? 1 : 0,
-            // Leer bleibt leer. Ein Vorgabewert waere eine Annahme, und der
-            // gewichtete Gesamt-Ladezustand haengt daran.
-            'kwh' => (is_numeric($kwh) && (float) $kwh > 0) ? round((float) $kwh, 2) : 0,
+        $mv_kwh = str_replace(',', '.', $mv_roh['kwh']);
+        $mv_eintrag = array(
+            'name' => $mv_roh['name'],
+            'ip' => $mv_roh['ip'],
+            'port' => $mv_roh['port'] === '' ? '30000' : $mv_roh['port'],
+            'pmax_charge' => $mv_roh['pmax_charge'] === '' ? '2500' : $mv_roh['pmax_charge'],
+            'pmax_discharge' => $mv_roh['pmax_discharge'] === '' ? '2500' : $mv_roh['pmax_discharge'],
+            'modbus' => $mv_roh['modbus'] === '1' ? 1 : 0,
+            'kwh' => $mv_kwh === '' ? '0' : $mv_kwh,
+            'nr' => $mv_nr,
         );
+        $mv_geraete[] = $mv_eintrag;
+        // Die gemeinsame Pruefung bekommt die Adresse nur, wenn sie gueltig
+        // ist - sonst stuende derselbe Grund zweimal in der Meldung.
+        $mv_pruef[] = array('ip' => marstek_ip_gueltig($mv_roh['ip']) ? $mv_roh['ip'] : '') + $mv_eintrag;
     }
-    $cfg['cache_sec'] = max(5, min(300, (int) (isset($_POST['cache_sec']) ? $_POST['cache_sec'] : 40)));
-    $cfg['awattar'] = (isset($_POST['awattar']) && $_POST['awattar'] === 'at') ? 'at' : 'de';
-    $vat = isset($_POST['vat']) && is_string($_POST['vat']) ? str_replace(',', '.', trim($_POST['vat'])) : '1.19';
-    if (is_numeric($vat) && $vat > 0.5 && $vat < 2) {
-        $cfg['vat'] = (float) $vat;
-    } else {
-        $mv_beanstandung[] = sprintf(marstek_t('MELD.UST_UNGUELTIG'), marstek_e($vat));
+    foreach (marstek_geraete_maengel($mv_pruef) as $mv_g) {
+        $mv_maengel[] = $mv_g;
     }
-    $auf = isset($_POST['aufschlag_ct']) && is_string($_POST['aufschlag_ct'])
-         ? str_replace(',', '.', trim($_POST['aufschlag_ct'])) : '0';
-    if (is_numeric($auf) && $auf >= -50 && $auf <= 100) {
-        $cfg['aufschlag_ct'] = round((float) $auf, 3);
-    } else {
-        $mv_beanstandung[] = sprintf(marstek_t('MELD.AUFSCHLAG_UNGUELTIG'), marstek_e($auf));
+    $mv_felder = array('cache_sec' => 'EINST.L_CACHE', 'fallback_min' => 'EINST.L_FALLBACK',
+                       'verlauf_tage' => 'EINST.L_VERLAUF_TAGE', 'melden_ab' => 'EINST.L_MELDEN_AB',
+                       'temp_min' => 'EINST.L_TEMP_MIN', 'temp_max' => 'EINST.L_TEMP_MAX',
+                       'soc_min' => 'EINST.L_SOC_MIN', 'soc_max' => 'EINST.L_SOC_MAX',
+                       'vat' => 'EINST.L_UST', 'aufschlag_ct' => 'EINST.L_AUFSCHLAG', 'awattar' => 'EINST.L_MARKT');
+    $mv_neu = array();
+    foreach ($mv_felder as $mv_k => $mv_l) {
+        $v = $mv_str($mv_k);
+        if ($v === null) { $v = ''; }
+        if ($mv_k === 'vat' || $mv_k === 'aufschlag_ct') { $v = str_replace(',', '.', $v); }
+        $mv_rueck[$mv_k] = $v;
+        $mv_g = marstek_wert_pruefen($mv_k, $v);
+        if ($mv_g !== '') {
+            if ($mv_k === 'vat') {
+                $mv_maengel[] = sprintf(marstek_t('MELD.UST_UNGUELTIG'), $v);
+            } elseif ($mv_k === 'aufschlag_ct') {
+                $mv_maengel[] = sprintf(marstek_t('MELD.AUFSCHLAG_UNGUELTIG'), $v);
+            } else {
+                $mv_maengel[] = marstek_t($mv_l) . ': ' . $v . ' - ' . $mv_g;
+            }
+            continue;
+        }
+        if ($mv_k === 'vat') {
+            $mv_neu[$mv_k] = (float) $v;
+        } elseif ($mv_k === 'aufschlag_ct') {
+            $mv_neu[$mv_k] = round((float) $v, 3);
+        } elseif ($mv_k === 'awattar') {
+            $mv_neu[$mv_k] = $v;
+        } else {
+            $mv_neu[$mv_k] = (int) $v;
+        }
     }
-    $cfg['fallback_min'] = max(0, min(1440, (int) (isset($_POST['fallback_min']) ? $_POST['fallback_min'] : 0)));
-    $cfg['verlauf_tage'] = max(1, min(365, (int) (isset($_POST['verlauf_tage']) ? $_POST['verlauf_tage'] : 8)));
-    $cfg['steuerung_ein'] = isset($_POST['steuerung_ein']) ? 1 : 0;
-    $cfg['verteilen_ein'] = isset($_POST['verteilen_ein']) ? 1 : 0;
-    $cfg['melden_ein'] = isset($_POST['melden_ein']) ? 1 : 0;
-    $cfg['melden_ab'] = max(1, min(20, (int) (isset($_POST['melden_ab']) ? $_POST['melden_ab'] : 3)));
-    $cfg['schutz_ein'] = isset($_POST['schutz_ein']) ? 1 : 0;
-    $cfg['temp_min'] = max(-20, min(20, (int) (isset($_POST['temp_min']) ? $_POST['temp_min'] : 0)));
-    $cfg['temp_max'] = max(20, min(80, (int) (isset($_POST['temp_max']) ? $_POST['temp_max'] : 45)));
-    $cfg['soc_min'] = max(0, min(50, (int) (isset($_POST['soc_min']) ? $_POST['soc_min'] : 5)));
-    $cfg['soc_max'] = max(50, min(100, (int) (isset($_POST['soc_max']) ? $_POST['soc_max'] : 98)));
-    // MQTT und Aktionstoken kommen aus dem Bestand ($cfg = $alt oben) und
-    // werden hier nicht angefasst. Bis 1.0.10 fehlte das fuer aktionstoken:
-    // jedes Speichern warf es still weg, und alle Loxone-Adressen liefen
-    // danach auf 403.
-    if (marstek_cfg_schreiben($cfg)) {
-        $mv_saved = true;
-    } else {
-        $mv_save_error = marstek_t('MELD.SPEICHERN_FEHLGESCHLAGEN');
+    foreach (array('steuerung_ein', 'verteilen_ein', 'melden_ein', 'schutz_ein') as $mv_k) {
+        $mv_neu[$mv_k] = isset($_POST[$mv_k]) ? 1 : 0;
+        $mv_rueck[$mv_k] = $mv_neu[$mv_k];
     }
-    $mv_active_tab = 'tab-settings';
+    foreach (marstek_cfg_kreuzmaengel($mv_neu + $alt) as $mv_g) {
+        $mv_maengel[] = $mv_g;
+    }
+    if ($mv_maengel) {
+        mv_weiter('tab-settings', array('beanstandung' => $mv_maengel, 'form' => $mv_rueck));
+    }
+    // Ab hier ist alles geprueft; erst jetzt werden die Typen gesetzt.
+    $mv_norm = array();
+    $mv_warn = array();
+    foreach ($mv_geraete as $g) {
+        $e = array('name' => $g['name'], 'ip' => $g['ip'], 'port' => (int) $g['port'],
+                   'pmax_charge' => (int) $g['pmax_charge'], 'pmax_discharge' => (int) $g['pmax_discharge'],
+                   'modbus' => (int) $g['modbus'], 'kwh' => round((float) $g['kwh'], 2), 'nr' => (int) $g['nr']);
+        $mv_norm[] = $e;
+        // C11: nur, wenn unter dieser Nummer schon DIESER Speicher lief - das
+        // Modell stammt aus seinem Zwischenspeicher.
+        if (isset($mv_vorher[$e['nr']]) && $mv_vorher[$e['nr']]['ip'] === $e['ip']) {
+            $mv_modell = marstek_modell_von($e['nr']);
+            $mv_gr = marstek_modell_grenzen($mv_modell);
+            if ($mv_gr !== null && ($e['pmax_charge'] > $mv_gr[0] || $e['pmax_discharge'] > $mv_gr[1])) {
+                $mv_warn[] = sprintf(marstek_t('MELD.MODELL_GRENZE'), $e['nr'], $mv_modell, $mv_gr[0], $mv_gr[1],
+                                     $e['pmax_charge'], $e['pmax_discharge']);
+            }
+        }
+    }
+    $cfg = $alt;                       // Bestand uebernehmen, dann ueberschreiben.
+    foreach ($mv_neu as $mv_k => $v) { $cfg[$mv_k] = $v; }
+    $cfg['devices'] = $mv_norm;
+    // MQTT und Aktionstoken kommen aus dem Bestand und werden hier nicht
+    // angefasst. Bis 1.0.10 fehlte das fuer aktionstoken: jedes Speichern
+    // warf es still weg, und alle Loxone-Adressen liefen danach auf 403.
+    if (!marstek_cfg_schreiben($cfg)) {
+        mv_weiter('tab-settings', array('fehler' => marstek_t('MELD.SPEICHERN_FEHLGESCHLAGEN'), 'form' => $mv_rueck));
+    }
+    $mv_texte = array();
+    foreach (array_diff(array_keys($mv_vorher), array_keys(marstek_devices())) as $mv_n) {
+        $mv_a = marstek_geraet_abmelden($mv_n);
+        $mv_texte[] = sprintf(marstek_t('MELD.GERAET_AUSGETRAGEN'), $mv_n,
+            $mv_a['mqtt'] >= 0 ? sprintf(marstek_t('MELD.AUSGETRAGEN_MQTT'), $mv_a['mqtt'])
+                               : marstek_t('MELD.AUSGETRAGEN_OHNE_MQTT'), $mv_a['alt']);
+    }
+    mv_weiter('tab-settings', array('saved' => 1, 'warnungen' => $mv_warn, 'meldung' => implode(' ', $mv_texte)));
 }
 
 /* ---------- Laden ---------- */
@@ -408,6 +608,19 @@ if (empty($mv_cfg['aktionstoken'])) {
         marstek_log('Es wurde KEIN neues Aktionstoken erzeugt: die Konfiguration traegt '
             . 'keines, aber die Zweitschrift neben dem Plugin-Ordner tut es. Sonst waeren '
             . 'alle Loxone-Adressen still auf HTTP 403 gelaufen.');
+    }
+}
+
+// O4: nach einer Abweisung zeigt das Formular die abgewiesene Eingabe wieder,
+// nicht den gespeicherten Stand - sonst tippt der Anwender alles noch einmal.
+// Nur die Felder des Einstellungsformulars; Token und MQTT bleiben unberuehrt.
+if (is_array($mv_form_rueck)) {
+    foreach (array('cache_sec', 'fallback_min', 'verlauf_tage', 'melden_ab', 'temp_min', 'temp_max',
+                   'soc_min', 'soc_max', 'vat', 'aufschlag_ct', 'awattar',
+                   'steuerung_ein', 'verteilen_ein', 'melden_ein', 'schutz_ein') as $mv_k) {
+        if (array_key_exists($mv_k, $mv_form_rueck) && is_scalar($mv_form_rueck[$mv_k])) {
+            $mv_cfg[$mv_k] = $mv_form_rueck[$mv_k];
+        }
     }
 }
 
@@ -447,6 +660,11 @@ function mv_soc_svg($points, $tag = '') {
     $w = 720; $h = 150; $x0 = 34; $y0 = 8; $pw = $w - $x0 - 34; $ph = $h - $y0 - 20;
     $day0 = $tag !== '' ? (int) strtotime(substr($tag, 0, 4) . '-' . substr($tag, 4, 2) . '-' . substr($tag, 6, 2) . ' 00:00')
                         : (int) strtotime('today 00:00');
+    // O12 (30.09.2026): ein Tag hat 23, 24 oder 25 Stunden. Bis 1.1.17 wurde
+    // mit 86400 s gerechnet - am 25.10.2026 standen 25 Stundenpunkte in der
+    // Datei, gezeichnet wurden 24, und die Achse lag ab 03:00 eine Stunde daneben.
+    $day1 = (int) strtotime('+1 day', $day0);
+    $tlen = max(1, $day1 - $day0);
     $svg = '<svg viewBox="0 0 ' . $w . ' ' . $h . '" style="width:100%;max-width:' . $w . 'px;height:auto;background:#fafafa;border:1px solid #e0e0e0;border-radius:8px;" xmlns="http://www.w3.org/2000/svg">';
     // Grenzen der Leistungsachse aus den Daten - eine feste Achse waere bei
     // einem Venus E Mini (800 W) genauso falsch wie bei zwei Gen 3.0.
@@ -466,13 +684,14 @@ function mv_soc_svg($points, $tag = '') {
         $svg .= '<text x="' . ($x0 + $pw + 4) . '" y="' . ($y + 3) . '" font-size="9" fill="#c47b1a" text-anchor="start">' . (int) $wt . '</text>';
     }
     foreach (array(0, 6, 12, 18, 24) as $hh) {
-        $x = $x0 + $pw * $hh / 24;
+        $tsh = $hh === 24 ? $day1 : (int) strtotime(date('Y-m-d', $day0) . sprintf(' %02d:00', $hh));
+        $x = $x0 + $pw * ($tsh - $day0) / $tlen;
         $svg .= '<line x1="' . $x . '" y1="' . $y0 . '" x2="' . $x . '" y2="' . ($y0 + $ph) . '" stroke="#eeeeee" stroke-width="1"/>';
         $svg .= '<text x="' . $x . '" y="' . ($h - 6) . '" font-size="9" fill="#999" text-anchor="middle">' . $hh . ':00</text>';
     }
     $poly = array(); $polyp = array();
     foreach ($points as $pt) {
-        $frac = ($pt[0] - $day0) / 86400;
+        $frac = ($pt[0] - $day0) / $tlen;
         if ($frac < 0 || $frac > 1) {
             continue;
         }
@@ -605,8 +824,11 @@ $mv_verlauf_tag = isset($_GET['vtag']) && is_string($_GET['vtag']) ? preg_replac
 <?php if ($mv_saved) { ?><div class="sm-alert sm-ok"><b><?= marstek_e(marstek_t('MELD.GESPEICHERT')) ?></b> <?= marstek_e(marstek_t('MELD.GESPEICHERT_ZUSATZ')) ?></div><?php } ?>
 <?php if ($mv_meldung !== '') { ?><div class="sm-alert sm-ok"><?= marstek_e($mv_meldung) ?></div><?php } ?>
 <?php if ($mv_save_error !== '') { ?><div class="sm-alert sm-err"><b><?= marstek_e(marstek_t('MELD.FEHLER')) ?></b> <?= marstek_e($mv_save_error) ?></div><?php } ?>
-<?php if ($mv_beanstandung) { ?><div class="sm-alert sm-warn"><b><?= marstek_e(marstek_t('MELD.BEANSTANDUNG')) ?></b><ul style="margin:6px 0 0 18px;padding:0;">
+<?php if ($mv_beanstandung) { ?><div class="sm-alert sm-err"><b><?= marstek_e(marstek_t('MELD.BEANSTANDUNG')) ?></b><ul style="margin:6px 0 0 18px;padding:0;">
 <?php foreach ($mv_beanstandung as $b) { ?><li><?= marstek_e($b) ?></li><?php } ?>
+</ul></div><?php } ?>
+<?php if ($mv_warnungen) { ?><div class="sm-alert sm-warn"><b><?= marstek_e(marstek_t('MELD.WARNUNG_KOPF')) ?></b><ul style="margin:6px 0 0 18px;padding:0;">
+<?php foreach ($mv_warnungen as $b) { ?><li><?= marstek_e($b) ?></li><?php } ?>
 </ul></div><?php } ?>
 <?php if ($mv_fehlten) { ?><div class="sm-alert sm-info"><?= marstek_e(sprintf(marstek_t('MELD.KONFIG_ERGAENZT'), implode(', ', $mv_fehlten))) ?></div><?php } ?>
 
@@ -694,17 +916,30 @@ $mv_verlauf_tag = isset($_GET['vtag']) && is_string($_GET['vtag']) ? preg_replac
 <th style="width:88px;"><?= marstek_e(marstek_t('EINST.SP_PORT')) ?></th><th style="width:104px;"><?= marstek_e(marstek_t('EINST.SP_PMAX_LADEN')) ?></th>
 <th style="width:104px;"><?= marstek_e(marstek_t('EINST.SP_PMAX_ENTLADEN')) ?></th><th style="width:96px;"><?= marstek_e(marstek_t('EINST.SP_KWH')) ?></th>
 <th style="width:110px;"><?= marstek_e(marstek_t('EINST.SP_MODBUS')) ?></th></tr>
-<?php for ($i = 0; $i < 4; $i++) {
-    $d = isset($mv_cfg['devices'][$i]) && is_array($mv_cfg['devices'][$i]) ? $mv_cfg['devices'][$i] : array();
-    $d += array('name' => '', 'ip' => '', 'port' => 30000, 'pmax_charge' => 2500, 'pmax_discharge' => 2500, 'modbus' => 1, 'kwh' => 0); ?>
+<?php
+// C13 (30.09.2026): Zeile N ist Geraet N - die Nummer haengt am Speicher,
+// nicht an der Stelle in der Liste (marstek_geraete_nummern()).
+$mv_zeilen = marstek_geraete_nummern(isset($mv_cfg['devices']) ? $mv_cfg['devices'] : array());
+$mv_s = function ($v) { return is_scalar($v) ? (string) $v : ''; };
+for ($i = 0; $i < 4; $i++) {
+    if (is_array($mv_form_rueck) && isset($mv_form_rueck['geraete']) && is_array($mv_form_rueck['geraete'])) {
+        $d = (isset($mv_form_rueck['geraete'][$i + 1]) && is_array($mv_form_rueck['geraete'][$i + 1]))
+            ? $mv_form_rueck['geraete'][$i + 1] : array();
+        if (isset($d['modbus'])) { $d['modbus'] = ($d['modbus'] === '1' || $d['modbus'] === 1) ? 1 : 0; }
+    } else {
+        $d = (isset($mv_zeilen[$i + 1]) && is_array($mv_zeilen[$i + 1])) ? $mv_zeilen[$i + 1] : array();
+    }
+    $d += array('name' => '', 'ip' => '', 'port' => 30000, 'pmax_charge' => 2500, 'pmax_discharge' => 2500, 'modbus' => 1, 'kwh' => 0);
+    $mv_kwh_anz = $mv_s($d['kwh']);
+    if (is_numeric($mv_kwh_anz) && (float) $mv_kwh_anz <= 0) { $mv_kwh_anz = ''; } ?>
 <tr>
 <td><?= $i + 1 ?></td>
-<td><input data-role="none" type="text" name="dev_name[]" value="<?= marstek_e($d['name']) ?>" placeholder="<?= marstek_e($i === 0 ? marstek_t('EINST.PH_NAME') : marstek_t('EINST.PH_LEER')) ?>"></td>
-<td><input data-role="none" type="text" name="dev_ip[]" value="<?= marstek_e($d['ip']) ?>" placeholder="<?= marstek_e($i === 0 ? '192.168.1.25' : '') ?>"></td>
-<td><input data-role="none" type="number" name="dev_port[]" value="<?= (int) $d['port'] ?>" min="1" max="65535"></td>
-<td><input data-role="none" type="number" name="dev_pc[]" value="<?= (int) $d['pmax_charge'] ?>" min="100" max="3600"></td>
-<td><input data-role="none" type="number" name="dev_pd[]" value="<?= (int) $d['pmax_discharge'] ?>" min="100" max="3600"></td>
-<td><input data-role="none" type="text" name="dev_kwh[]" value="<?= $d['kwh'] > 0 ? marstek_e($d['kwh']) : '' ?>" placeholder="5.12"></td>
+<td><input data-role="none" type="text" name="dev_name[]" value="<?= marstek_e($mv_s($d['name'])) ?>" placeholder="<?= marstek_e($i === 0 ? marstek_t('EINST.PH_NAME') : marstek_t('EINST.PH_LEER')) ?>"></td>
+<td><input data-role="none" type="text" name="dev_ip[]" value="<?= marstek_e($mv_s($d['ip'])) ?>" placeholder="<?= marstek_e($i === 0 ? '192.168.1.25' : '') ?>"></td>
+<td><input data-role="none" type="number" name="dev_port[]" value="<?= marstek_e($mv_s($d['port'])) ?>" min="1" max="65535"></td>
+<td><input data-role="none" type="number" name="dev_pc[]" value="<?= marstek_e($mv_s($d['pmax_charge'])) ?>" min="100" max="3600"></td>
+<td><input data-role="none" type="number" name="dev_pd[]" value="<?= marstek_e($mv_s($d['pmax_discharge'])) ?>" min="100" max="3600"></td>
+<td><input data-role="none" type="text" name="dev_kwh[]" value="<?= marstek_e($mv_kwh_anz) ?>" placeholder="5.12"></td>
 <td><select data-role="none" class="sm-auswahl" name="dev_mb[]">
 <option value="0"<?= empty($d['modbus']) ? ' selected' : '' ?>><?= marstek_e(marstek_t('EINST.AUS')) ?></option>
 <option value="1"<?= !empty($d['modbus']) ? ' selected' : '' ?>><?= marstek_e(marstek_t('EINST.EIN')) ?></option>
@@ -860,7 +1095,7 @@ if ($mv_gwf >= 2) { ?>
 <div class="sm-hinweis"><?= marstek_t('MQTT.ABO_V2') ?></div>
 <div class="sm-hilfe"><?= marstek_t('MQTT.ABO_UNBEKANNT') ?></div>
 <?php } ?>
-<p><?= marstek_e(marstek_t('MQTT.ABO_EINTRAG')) ?> <span class="sm-mono"><?= marstek_e($mv_cfg['mqtt_topic']) ?>/#</span></p>
+<p><?= marstek_e(marstek_t('MQTT.ABO_EINTRAG')) ?> <span class="sm-mono"><?= marstek_e(marstek_mqtt_prefix(1)) ?>/#</span></p>
 
 <h2><?= marstek_e(marstek_t('MQTT.H_THEMEN')) ?></h2>
 <div class="sm-hinweis"><?= marstek_t('MQTT.THEMEN_ERKLAERUNG') ?></div>
@@ -870,7 +1105,7 @@ if ($mv_gwf >= 2) { ?>
 <?php $mv_ret = 0; foreach (marstek_mqtt_themen(true) as $thema => $bedeutung) {
     $mv_r = marstek_mqtt_retain(preg_replace('/_\d+$/', '', $thema));
     if ($mv_r) { $mv_ret++; } ?>
-<tr><td><span class="sm-mono"><?= marstek_e($mv_cfg['mqtt_topic']) ?>/<?= marstek_e($thema) ?></span></td><td><?= $mv_r ? marstek_e(marstek_t('MQTT.RETAIN_JA')) : marstek_e(marstek_t('MQTT.RETAIN_NEIN')) ?></td><td><?= marstek_e($bedeutung) ?></td></tr>
+<tr><td><span class="sm-mono"><?= marstek_e(marstek_mqtt_prefix(1)) ?>/<?= marstek_e($thema) ?></span></td><td><?= $mv_r ? marstek_e(marstek_t('MQTT.RETAIN_JA')) : marstek_e(marstek_t('MQTT.RETAIN_NEIN')) ?></td><td><?= marstek_e($bedeutung) ?></td></tr>
 <?php } ?>
 </table>
 </div>
@@ -878,7 +1113,7 @@ if ($mv_gwf >= 2) { ?>
  <?= marstek_e(sprintf(marstek_t('MQTT.RETAIN_ANZAHL'), $mv_ret, count(marstek_mqtt_themen(true)) - $mv_ret)) ?></div>
 <div class="sm-hinweis"><?= marstek_t('MQTT.RETAIN_ERKLAERUNG') ?></div>
 <?php if (count($mv_devices) > 1) { ?>
-<div class="sm-hilfe"><?= marstek_e(sprintf(marstek_t('MQTT.MEHRERE_GERAETE'), $mv_cfg['mqtt_topic'], $mv_cfg['mqtt_topic'])) ?></div>
+<div class="sm-hilfe"><?= marstek_e(sprintf(marstek_t('MQTT.MEHRERE_GERAETE'), marstek_mqtt_prefix(1), marstek_mqtt_prefix(1))) ?></div>
 <?php } ?>
 </div>
 
@@ -956,7 +1191,7 @@ foreach ($mv_saetze as $mv_s => $mv_unused) {
 <table class="sm-tbl">
 <tr><th style="width:22%;"><?= marstek_e(marstek_t('LOX.SP_SUCHTEXT')) ?></th><th style="width:10%;"><?= marstek_e(marstek_t('LOX.SP_EINHEIT')) ?></th><th><?= marstek_e(marstek_t('LOX.SP_BEDEUTUNG')) ?></th></tr>
 <?php foreach (marstek_felder($satz) as $name => $f) { ?>
-<tr><td><span class="sm-mono">\i;<?= marstek_e($name) ?>=\i\v</span></td><td><?= marstek_e($f['einheit']) ?></td><td><?= marstek_e($f['text']) ?></td></tr>
+<tr><td><span class="sm-mono">\i;<?= marstek_e($name) ?>=\i\v</span></td><td><?= marstek_e($f['einheit']) ?></td><td><?= marstek_e(marstek_feldtext($satz, $name)) ?></td></tr>
 <?php } ?>
 </table>
 </div>
@@ -995,8 +1230,13 @@ $mv_bausteine = array(
     array('LOX.T_VE_ZAHL', 'LOX.B_ANZ_GUENSTIG', 'LOX.P_0_24', 'LOX.E_VISU'),
     array('LOX.T_VE_ZAHL', 'LOX.B_ANZ_TEUER', 'LOX.P_0_24', 'LOX.E_VISU'),
     array('LOX.T_VE_ZAHL', 'LOX.B_RESERVE', 'LOX.P_0_100', 'LOX.E_VISU'),
-    array('LOX.T_FORMEL', 'LOX.B_EXPORT', 'max(0;I1)', 'LOX.E_NETZ'),
-    array('LOX.T_FORMEL', 'LOX.B_BEZUG', 'max(0;-I1)', 'LOX.E_NETZ'),
+    // O10 (30.09.2026): Bezug positiv, Einspeisung negativ (Vortext) - also
+    // ist der Export max(0;-I1) und der Bezug max(0;I1). Bis 1.1.17 standen
+    // die beiden vertauscht da: wer die Liste nachbaute, lud bei Bezug aus dem
+    // Netz und entlud bei Einspeisung. Die Anlage des Hausherrn rechnet
+    // richtig ("Formel Export-Leistung (W)" = MAX(0;-I1)).
+    array('LOX.T_FORMEL', 'LOX.B_EXPORT', 'max(0;-I1)', 'LOX.E_NETZ'),
+    array('LOX.T_FORMEL', 'LOX.B_BEZUG', 'max(0;I1)', 'LOX.E_NETZ'),
     array('LOX.T_SCHWELLE', 'LOX.B_EXPORT_UEBER', 'LOX.P_EIN150', 'LOX.E_NR8'),
     array('LOX.T_FORMEL', 'LOX.B_PV_LADE', 'min(I1-100;2500)*I2', 'LOX.E_NR8_NR10'),
     array('LOX.T_VERGLEICH', 'LOX.B_RANG_LADE', 'LOX.P_Q1_KLEINER', 'LOX.E_NR5_RANK'),
@@ -1070,6 +1310,7 @@ foreach ($mv_bausteine as $i => $b) {
     <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="token_neu" value="1"><?= marstek_e(marstek_t('LOX.K_TOKEN_NEU')) ?></button>
   </form>
 </div>
+<div class="sm-hilfe"><?= marstek_e(marstek_t('LOX.TOKEN_NEU_HINWEIS')) ?></div>
 
 <h2><?= marstek_e(marstek_t('LOX.H_VORLAGEN')) ?></h2>
 <div class="sm-hinweis"><?= marstek_t('LOX.VORLAGEN_ERKLAERUNG') ?></div>

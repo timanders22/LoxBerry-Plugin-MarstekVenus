@@ -10,12 +10,14 @@
 # ===================================================================
 #
 # LoxBerry raeumt die Plugin-Ordner weg und entfernt den Cron-Eintrag.
-# Vier Dinge bleiben sonst liegen:
+# Sechs Dinge bleiben sonst liegen:
 #
 #   1. config/plugins/<ordner>.backup.json
 #      Die Sicherung der Konfiguration liegt bewusst NEBEN dem
-#      Konfigordner, damit sie Update und Neuinstallation uebersteht
-#      (marstek_paths()['backup']). Beim Deinstallieren ist genau das
+#      Konfigordner, damit sie ein Update uebersteht
+#      (marstek_paths()['backup']). Bei einer Neuinstallation legt
+#      preinstall.sh sie nach .alt (Entscheidung 1 vom 29.09.2026; bis 1.1.17
+#      stand hier "Update und Neuinstallation"). Beim Deinstallieren ist sie
 #      falsch - darin stehen die Geraete-Adressen und das Aktionstoken.
 #   2. data/plugins/<ordner>.verlauf
 #      SOC-Verlauf, Tagesbilanz, Herzschlag und das Formularmerkmal.
@@ -31,6 +33,9 @@
 #      erreichbar, dauert ein Durchgang bis zu anderthalb Minuten; er
 #      wuerde ins Leere weiterlaufen.
 #   5. Die zurueckbehaltenen MQTT-Themen der Linie (seit 1.1.16 geleert).
+#   6. Die .alt einer frueheren Installation und einer frueheren
+#      Update-Sicherung sowie die Marke <ordner>.upgrade_laeuft (seit dem
+#      Durchgang 30.09.2026, I1).
 #
 # ZUR PROZESSSUCHE: "pkill -f cron.php" waere falsch - so heissen die
 # Cron-Skripte etlicher Plugins. Verglichen wird argumentweise
@@ -198,4 +203,22 @@ if [ -n "$PDIR" ] && [ -n "$BASE" ] && [ -d "$BASE/data/plugins" ]; then
         rm -rf "$SICHER" && echo "<OK> Update-Sicherung entfernt: $PDIR.upgrade_sicherung"
     fi
 fi
+
+# ---------- I1 (Durchgang 30.09.2026): .alt und Marke ----------
+# preinstall.sh legt bei einer Neuinstallation die Reste einer frueheren
+# Installation nach .alt, preupgrade.sh eine alte Update-Sicherung ebenso;
+# die Marke entsteht in preupgrade.sh. Alles liegt NEBEN den Ordnern, die
+# LoxBerry wegraeumt - die .alt der Zweitschrift traegt das Aktionstoken.
+case "$PDIR" in
+    ''|*/*|*..*) echo "<WARNING> Unzulaessiger Ordnername '$PDIR' - .alt nicht abgeraeumt."; exit 0 ;;
+esac
+for ALT in "$BASE/config/plugins/$PDIR.backup.json.alt" \
+           "$BASE/data/plugins/$PDIR.verlauf.alt" \
+           "$BASE/data/plugins/$PDIR.upgrade_sicherung.alt" \
+           "$BASE/data/plugins/$PDIR.upgrade_sicherung.neu" \
+           "$BASE/data/plugins/$PDIR.upgrade_laeuft"; do
+    if [ -e "$ALT" ] || [ -L "$ALT" ]; then
+        rm -rf "${ALT:?}" && echo "<OK> Entfernt: $(basename "$ALT")"
+    fi
+done
 exit 0

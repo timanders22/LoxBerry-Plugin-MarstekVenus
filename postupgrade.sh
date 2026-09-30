@@ -104,9 +104,29 @@ if mv_hat_token "$BK" && ! mv_hat_token "$CF"; then
     chmod 600 "$CF" 2>/dev/null
     echo "<OK> Die Konfiguration trug kein lesbares Aktionstoken und wurde aus der Zweitschrift wiederhergestellt."
 fi
+# I5 (Durchgang 30.09.2026): das gesicherte Protokoll wird VOR die Zeilen
+# aus der Luecke gesetzt, nicht darueber kopiert. Bis 1.1.17 ersetzte es das
+# laufende Protokoll immer - gemessen (U1, U6): die Zeilen aus der Luecke,
+# darunter ein nachgeholter Sollwert, waren danach fort. Beginnt das laufende
+# Protokoll schon mit dem gesicherten (log/ ueberlebt ein Update in der Regel),
+# fehlt nichts, und es bleibt, wie es ist.
+LOGD="$BASE/log/plugins/$PFOLDER"
+LOGF="$LOGD/marstek.log"
 if [ -f "$SICHER/marstek.log" ]; then
-    mkdir -p "$BASE/log/plugins/$PFOLDER"
-    cp -p "$SICHER/marstek.log" "$BASE/log/plugins/$PFOLDER/marstek.log"
+    mkdir -p "$LOGD"
+    if [ ! -s "$LOGF" ]; then
+        cp -p "$SICHER/marstek.log" "$LOGF"
+    elif cmp -s -n "$(stat -c %s "$SICHER/marstek.log" 2>/dev/null || echo 0)" "$SICHER/marstek.log" "$LOGF"; then
+        :
+    else
+        T="$LOGF.postupgrade.$$"
+        if cat "$SICHER/marstek.log" "$LOGF" > "$T" 2>/dev/null && mv -f "$T" "$LOGF"; then
+            :
+        else
+            rm -f "$T" 2>/dev/null
+            echo "<WARNING> Das gesicherte Protokoll liess sich nicht vor das laufende setzen: $LOGF"
+        fi
+    fi
 fi
 
 # Altlast aus 1.0.4 und frueher: cron.php lag im HTML-Verzeichnis und war damit
@@ -137,6 +157,17 @@ if [ $MV_VORHER = 0 ] && [ $MV_GESICHERT = 1 ]; then
     fi
 fi
 
+# I6 (Durchgang 30.09.2026): eine vor dem Update UNLESBARE Konfiguration hat
+# preupgrade.sh als marstek.json.kaputt gesichert. Sie wird nie eingespielt,
+# aber auch nicht mit der Update-Sicherung weggeworfen - aus den Bruchstuecken
+# laesst sich das alte Aktionstoken womoeglich noch ablesen (Bauform
+# marstek_cfg_schreiben(), die ebenfalls <datei>.kaputt ablegt).
+if [ -f "$SICHER/marstek.json.kaputt" ]; then
+    if cp -p "$SICHER/marstek.json.kaputt" "$CF.kaputt" 2>/dev/null && chmod 600 "$CF.kaputt" 2>/dev/null; then
+        echo "<WARNING> Die vor dem Update unlesbare Konfiguration liegt unter $CF.kaputt - dort steht womoeglich das alte Aktionstoken."
+    fi
+fi
+
 # Der Nachbar hat seinen Zweck erfuellt. Was neben dem Ordner liegt,
 # raeumt niemand sonst weg - und er traegt die Zugangsdaten mit.
 #
@@ -153,4 +184,7 @@ if [ -d "$SICHER" ] && mv_inhalt "$SICHER/marstek.json" && ! cmp -s "$SICHER/mar
 else
     rm -rf "$SICHER" 2>/dev/null
 fi
+# Die Marke hat postinstall.sh schon entfernt; bricht dessen trap einmal nicht,
+# faellt sie spaetestens hier (I1).
+rm -f "$BASE/data/plugins/$PFOLDER.upgrade_laeuft" 2>/dev/null
 exit 0

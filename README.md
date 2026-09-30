@@ -13,6 +13,77 @@ den Auto-Modus des Geräts zurück.
 
 Kompatibel mit LoxBerry 3.x und **LoxBerry 4** (reines PHP, läuft mit PHP 7.4 und 8.x).
 
+## Neu in 1.1.17
+
+Durchgang vom 30.09.2026 mit vier Prüfern (Code, Oberfläche, Installer, MQTT).
+Gemessen an einer Attrappe mit zwei Speichern (Venus E und Mini) und an einer
+Broker-Attrappe unter PHP 7.4, 8.3 und 8.5; nicht am Gerät. Befunde mit
+Datei:Zeile: `Pruefung-Durchgang-2026-09-29/MarstekVenus_BEFUNDE_UND_VERBESSERUNGEN.md`.
+Die Abschnitte zu älteren Fassungen darunter beschreiben den damaligen Stand.
+
+**Sollwerte**
+
+* **Kein Sollwert mehr an einen fremden Speicher.** Schwieg ein Speicher kurz,
+  ging der Befehl per Rundruf an alle Speicher im Netz, und zwar dauerhaft.
+  An der Attrappe lud so ein Mini mit 2000 W. Jetzt gehen Schaltbefehle bei
+  mehr als einem Speicher nie per Rundruf; eine Antwort zählt nur von der
+  eingetragenen Adresse, und jeder Abruf versucht zuerst Unicast.
+* Ein nachgeholter Sollwert verlängert den Watchdog nicht mehr: Er geht mit
+  der Restzeit hinaus oder wird verworfen, wenn seine Zeit abgelaufen ist.
+* Ein älterer Befehl kann einen neueren nicht mehr überholen.
+* Werte außerhalb der Grenzen (`t` 30–3600 s, `p` bis zur Leistungsgrenze)
+  werden weiter begrenzt, die Antwort sagt es jetzt mit `BEGRENZT=1`.
+* Jede Abweisung und jeder Schaltbefehl steht gebremst mit dem Anrufer im
+  Protokoll.
+* „Übernehmen“ aus der Gerätesuche belegt die Grenzen des Modells vor (Mini
+  1500/800 W). Über der Modellgrenze warnt die Seite.
+
+**Endpunkt**
+
+* `?status`, `?summe` und `?energy` antworten mit HTTP 503, solange noch nie
+  gemessen wurde oder kein Speicher eingetragen ist.
+* `OK=0`, sobald die Werte älter als das Dreifache des Takts sind.
+* Bei einem schweigenden Speicher antwortet `?status` aus dem Stand des Takts
+  in 0,1 s statt nach bis zu 24 s.
+
+**MQTT**
+
+* Nach einem Neustart mit schweigendem Speicher gehen keine erfundenen Nullen
+  mehr retained hinaus (SOC, Firmware, Energiezähler); bei einer Störung geht
+  nur das Signal hinaus, nicht die alten Werte.
+* **Gerätenummern bleiben fest.** Wird ein Speicher entfernt, rücken die
+  übrigen nicht mehr nach; die Themen des entfernten Speichers bekommen
+  einmal `-1`.
+* Ein Präfixwechsel räumt das alte Präfix ab und sendet unter dem neuen alles
+  vollständig. Präfixe mit `/` am Rand, Leerzeichen oder Umlauten werden
+  abgewiesen statt still umgeschrieben.
+* 5 ms Pause zwischen den Nachrichten eines Stoßes.
+
+**Oberfläche**
+
+* Nach jedem Knopf leitet die Seite um; F5 würfelt kein neues Token mehr.
+* Eingaben werden abgewiesen statt still verbogen. Formular und Sicherung
+  prüfen gleich, die eigene Sicherung lässt sich immer zurückspielen. Eine
+  Sicherung mit leerem Token lässt das laufende Token in Kraft.
+* **Baustein-Liste:** #8 Export ist jetzt `max(0;-I1)`, #9 Bezug `max(0;I1)`.
+  Bisher waren die Vorzeichen vertauscht; wer die Liste nachgebaut hat, bitte
+  prüfen.
+* Die Schaltknöpfe im Reiter Test senden per Formular; Neuladen schickt nichts
+  erneut. Der Trockenlauf hat keine Nebenwirkung mehr.
+* Die englische Oberfläche ist vollständig englisch; am Tag der Zeitumstellung
+  zeigt die Tageskurve 25 bzw. 23 Stunden.
+
+**Installation**
+
+* Eine Neuinstallation übernimmt Token und Speicher einer früheren
+  Installation nicht mehr (neu: `preinstall.sh`, Reste nach `.alt`). Bisher
+  konnte ein Takt während der Installation einen alten Sollwert an den
+  Speicher schicken.
+* Während eines Updates pausiert der Takt; der Endpunkt nimmt Sollwerte aus
+  Loxone trotzdem an.
+* Eine abgeschnittene Konfiguration meldet beim Update eine Warnung und bleibt
+  als `.kaputt` liegen.
+
 ## Neu in 1.1.16
 
 **Ein nachgeholter Sollwert geht nicht mehr hinaus, wenn er zu alt ist oder Loxone inzwischen
@@ -518,7 +589,7 @@ Rundruf und Gerätesuche aus, und der Reiter Test sagt das ausdrücklich.
 | **Summe über alle Speicher** (`?summe`) | Ladezustand **nach Kapazität gewichtet** — bei einem Gen 3.0 neben einem Mini ist ein ungewichteter Mittelwert falsch. Fail closed: fehlt bei einem die Kapazität oder antwortet einer nicht, kommt `-1` statt einer Teilsumme. |
 | **Tagesbilanz** | Das Gerät setzt seine Tages- und Monatszähler zurück; der Wert vom 31. ist am 1. weg. Das Plugin schreibt die Tagesabschlüsse jetzt selbst fort. Ein Tag ohne Messung bekommt **keine** Nullzeile. |
 | **Gerätesuche im Netz** | Rundruf in das eigene Netz, Liste der Antworten mit Adresse, Modell und Firmware, je Zeile ein Knopf „in die Geräteliste übernehmen“. Ersetzt den Gang in die Geräteliste des Routers. |
-| **Trockenlauf** (`&dry=1`) | Rechnet einen Sollwert vollständig fertig — Grenzen, Totzone, Vorzeichen, Watchdog, Schutzschwellen — und sendet ihn **nicht**. Derselbe Programmcode wie im Ernstfall, nur ohne die letzte Zeile. |
+| **Trockenlauf** (`&dry=1`) | Rechnet einen Sollwert vollständig fertig — Grenzen, Totzone, Vorzeichen, Watchdog, Schutzschwellen — und sendet ihn **nicht**. Derselbe Programmcode wie im Ernstfall, nur ohne die letzte Zeile — und seit dem Durchgang vom 30.09.2026 ohne Nebenwirkung: kein offener Sollwert wird verworfen, keine Protokollzeile geschrieben. |
 | **Schutzschwellen** | Temperatur- und SOC-Grenzen, die einen Sollwert abweisen. Bewertet wird **nur, was gemessen vorliegt**; ein fehlender oder über 15 Minuten alter Wert erzeugt weder Sperre noch Freigabe. Ab Werk aus. |
 | **Hauptschalter „Steuerung aktiv“** | Den Speicher vorübergehend in Ruhe lassen, ohne alle Loxone-Adressen anzufassen. |
 | **Sollwert auf alle Speicher verteilen** (`&dev=alle`) | Im Verhältnis der Leistungsgrenzen. Ab Werk aus. |
@@ -567,11 +638,16 @@ Rundruf und Gerätesuche aus, und der Reiter Test sagt das ausdrücklich.
 - Optionales MQTT-Publish über das LoxBerry MQTT Gateway — Status,
   Energiezähler (`energie_*`), Spotpreis-Ränge (`rang_*`) und der Takt
 - Anschluss an den LoxBerry-Healthcheck und an das Benachrichtigungszentrum
-- Die **Konfiguration** übersteht Plugin-Updates und eine Neuinstallation
-  (Zweitschrift außerhalb des Plugin-Ordners, `postinstall.sh` holt sie
-  zurück).
+- Die **Konfiguration** übersteht Plugin-Updates (Zweitschrift außerhalb des
+  Plugin-Ordners; `preinstall.sh` spielt sie bei einer Aktualisierung schon vor
+  der Cron-Kopie aus der Update-Sicherung zurück, und der Minutentakt pausiert,
+  bis `postinstall.sh` durch ist). Eine **Neuinstallation** beginnt leer:
+  Zweitschrift, Verlauf und Update-Sicherung einer früheren Installation legt
+  `preinstall.sh` nach `<name>.alt` und meldet das einmal; die Deinstallation
+  räumt sie ab.
 - Das **Protokoll** übersteht ein Update — `preupgrade.sh` sichert es,
-  `postupgrade.sh` spielt es zurück —, eine Neuinstallation aber nicht.
+  `postupgrade.sh` setzt die gesicherten Zeilen vor die Zeilen aus dem Update,
+  statt sie zu ersetzen —, eine Neuinstallation aber nicht.
   **Dauerhaft ist es trotzdem nicht:** `log/plugins/` liegt auf einer
   RAM-Platte (auf dem Prüfgerät `/dev/zram0`), und LoxBerrys eigene
   Protokollpflege räumt dort auf. Am 06.09.2026 gemessen: drei Stunden nach
@@ -589,9 +665,12 @@ Rundruf und Gerätesuche aus, und der Reiter Test sagt das ausdrücklich.
   antworten nur auf **Rundruf**-Pakete statt auf Unicast — das Plugin erkennt
   und nutzt das automatisch. Der Rundruf ist die einzige Stelle, die die
   PHP-Erweiterung `sockets` braucht; sie steht in `dpkg/apt` und wird bei der
-  Installation nachgezogen. Hinweis: Bei mehreren Venus-Geräten im selben Netz
-  erreichen Rundruf-Befehle alle Geräte — dann sollten alle eine Firmware haben,
-  die Unicast beantwortet.
+  Installation nachgezogen. Jeder Abruf versucht zuerst Unicast; der Rundruf
+  ist nur Rückfall, und eine Antwort zählt nur von der eingetragenen Adresse.
+  **Bei mehreren eingetragenen Speichern gehen Schaltbefehle nie per Rundruf** —
+  ein Speicher, der nur auf Rundruf antwortet, lässt sich dann nicht schalten
+  (bis 1.1.17 ging ein Sollwert in jedem Schweigefenster an alle Speicher im
+  Netz).
 
 ## Endpunkte (für Loxone)
 
@@ -601,14 +680,23 @@ Rundruf und Gerätesuche aus, und der Reiter Test sagt das ausdrücklich.
 | `?ranks` | `RANKS;OK=..;N=..;RANK=..;RANKD=..;CURP=..;NEG=..;MINP=..;MAXP=..;SPREAD=..;NEXTP=..;HBIS=..;HBISMAX=..;ERRC=..` |
 | `?energy[&dev=N]` | `ENERGY;OK=..;CHGT=..;DIST=..;CHGD=..;DISD=..;CHGM=..;DISM=..;CYC=..;EFF=..;ALTER=..` (Modbus TCP, je Gerät zu aktivieren) |
 | `?summe` | `SUMME;OK=..;N=..;NOK=..;SOC=..;KAPAZ=..;RESTKWH=..;BATP=..;ALTER=..` |
-| `?p=WATT&t=SEK&token=T[&dev=N\|&dev=alle][&dry=1]` | Passiv-Sollwert (+ = laden, − = entladen, 0 = Leerlauf; t = Watchdog) |
+| `?p=WATT&t=SEK&token=T[&dev=N\|&dev=alle][&dry=1]` | Passiv-Sollwert (+ = laden, − = entladen, 0 = Leerlauf; t = Watchdog). `t` gilt von 30 bis 3600 s, `p` bis zur Leistungsgrenze des Speichers; darüber wird begrenzt, und die Antwort trägt `BEGRENZT=1` |
 | `?mode=auto\|ai&token=T[&dev=N][&dry=1]` | Regie an den Speicher zurückgeben |
 | `?selftest=1&token=T` | prüft nur das Token, ohne den Speicher anzufassen |
 | `?diag=1&token=T` | Diagnose: Unicast, Rundruf, Modbus einzeln |
 | `?debug=1&token=T` | Rohdaten. Tokenpflichtig seit 1.1.5: der Schalter umgeht den Zwischenspeicher, gemessen 30 s je Aufruf gegen ein stummes Gerät |
 
+**`OK` am Endpunkt** ist `0`, sobald `ALTER` größer ist als das Dreifache des
+Abfragetakts (Status und Summe 180 s, Energie 900 s); `ALTER` steht daneben.
+**Ohne eingetragenen Speicher oder ohne je eine Messung** antworten `?status`
+und `?summe` mit HTTP 503 und dem Grund in der Zeile (`GRUND=KEIN_SPEICHER`,
+`GRUND=NIE_GEMESSEN`). Läuft der Minutentakt, beantwortet `?status` aus dessen
+Zwischenspeicher, ohne den Speicher selbst zu fragen.
+
 Alle Ausgaben sind abwärtskompatibel zu Ein-Geräte-Installationen — ohne
-`&dev=` wird immer Gerät 1 angesprochen. **Welche Felder ein Satz trägt, steht
+`&dev=` wird immer Gerät 1 angesprochen. Die Gerätenummer hängt am Speicher,
+nicht an der Stelle in der Liste: eine geleerte Zeile lässt die übrigen auf
+ihrer Nummer. **Welche Felder ein Satz trägt, steht
 seit 1.1.0 an genau einer Stelle** (`marstek_felder()`); Antwortzeile,
 Loxone-Vorlage, MQTT-Themenliste und die Tabellen in der Oberfläche entstehen
 daraus. Eine Zeile, die der Vorlage widerspricht, kann so nicht mehr entstehen.
@@ -631,7 +719,7 @@ Es sind **keine persönlichen Daten** im Plugin enthalten. IP-Adressen,
 Einstellungen und das Aktionstoken bleiben auf dem LoxBerry; externe
 Verbindungen gibt es nur zur aWATTar-Preis-API (ohne Kennung).
 
-Sie liegen dabei an **drei** Orten, alle mit Rechten 0600 — das ist Absicht
+Sie liegen dabei an **drei** Orten (nach einer Neuinstallation über Resten an einem vierten), alle mit Rechten 0600 — das ist Absicht
 und in 1.1.5 richtiggestellt, denn bis dahin stand hier „ausschließlich in
 der lokalen Konfiguration":
 
@@ -640,8 +728,10 @@ der lokalen Konfiguration":
 | `config/plugins/marstekvenus/marstek.json` | die Konfiguration selbst |
 | `config/plugins/marstekvenus.backup.json` | die Zweitschrift; sie liegt **neben** dem Ordner, den der Installer bei jedem Update abräumt |
 | `data/plugins/marstekvenus.upgrade_sicherung/` | nur **während** eines Updates; `postupgrade.sh` entfernt sie danach |
+| `config/plugins/marstekvenus.backup.json.alt` | nur nach einer Neuinstallation über Resten: die Zweitschrift der früheren Installation, von `preinstall.sh` beiseitegelegt |
 
-`uninstall/uninstall` räumt alle drei weg und sagt das auch.
+`uninstall/uninstall` räumt alle weg, dazu die `.alt` von Verlauf und
+Update-Sicherung, und sagt das auch.
 
 ## Ältere Fassungen
 

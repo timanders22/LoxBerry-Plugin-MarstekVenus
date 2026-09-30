@@ -137,6 +137,23 @@ if (in_array('--mqtt-leeren', $argv, true)) {
  * den Speicher, und es schrieb deren Herzschlag (Faelle B1 bis B3, B7). */
 marstek_keine_wurzel_abbruch('cron.php');
 
+/* I2 (Durchgang 30.09.2026): waehrend einer Aktualisierung NICHTS tun.
+ *
+ * preupgrade.sh legt data/plugins/<ordner>.upgrade_laeuft als Erstes an,
+ * postinstall.sh entfernt sie. Dazwischen liegt die Luecke, in der der
+ * Installer config/, data/ und bin/ dieses Plugins abraeumt und neu kopiert -
+ * rund eine Minute mit dem apt-Lauf. In WSL gemessen (Installer-Pruefer,
+ * Befunde 2, 6, 7): ein Takt in dieser Luecke heilte aus der Zweitschrift
+ * (Fehlalarm in der Ereignisliste nach fast jedem Update), schrieb blanke
+ * Vorgaben in die Zweitschrift und holte bei einer Neuinstallation den
+ * offenen Sollwert der frueheren Anlage nach. Die Marke gilt hoechstens eine
+ * Stunde (marstek_takt_pausiert()), eine vergessene haelt den Takt nicht auf.
+ * Der Endpunkt nimmt in der Luecke weiter Sollwerte an: preinstall.sh hat
+ * die Konfiguration schon vor der Cron-Kopie zurueckgespielt. */
+if (marstek_takt_pausiert()) {
+    exit(0);
+}
+
 $sperre = marstek_tmpdir() . '/cron.lock';
 $fp = @fopen($sperre, 'c');
 if ($fp === false) {

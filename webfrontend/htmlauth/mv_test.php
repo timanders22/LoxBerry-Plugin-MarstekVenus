@@ -2,9 +2,12 @@
 /**
  * Marstek Venus E - Selbstpruefung fuer den Reiter Test
  *
- * Je Zeile eine Frage, die sich OHNE Loxone beantworten laesst. Ein Hinweis
- * ist fuer "geht mich nichts an" da, nicht fuer "ich weiss es nicht":
- * Unklarheit ist ein Kreuz.
+ * Je Zeile eine Frage, die sich OHNE Loxone beantworten laesst. Ein Kreuz
+ * heisst: nachweislich nicht in Ordnung. Ein Punkt ist ein Hinweis: die Zeile
+ * betrifft diese Anlage nicht, oder sie konnte es von hier aus NICHT
+ * FESTSTELLEN (Regeln/04 - so haelt es der Code seit jeher, etwa beim
+ * Endpunktaufruf). BERICHTIGT 30.09.2026: bis 1.1.17 stand hier und in der
+ * Hilfe (K39) "Unklarheit ist ein Kreuz" - der Text, nicht der Code war falsch.
  *
  * Drei Bedingungen, alle aus schon vorhandenen Hausregeln:
  *
@@ -48,29 +51,47 @@ function mv_pruefzeile($frage, $ok, $bemerkung = '')
  */
 function mv_endpunkt_probe($plugindir, $token)
 {
+    // O8 (30.09.2026): der Zwischenspeicher haelt Zustand und Rohantwort, der
+    // Satz entsteht beim Anzeigen in der Sprache der Oberflaeche. Bis 1.1.17
+    // lag der deutsche Satz im Zwischenspeicher und stand so auch in der
+    // englischen Oberflaeche.
     $cache = marstek_tmpdir() . '/selbsttest_endpunkt.json';
+    $c = null;
+    $alt = -1;
     if (is_file($cache) && time() - filemtime($cache) < 300) {
         $c = json_decode((string) @file_get_contents($cache), true);
         if (is_array($c) && isset($c['zustand'])) {
-            return array($c['zustand'], $c['text'] . ' (' . (time() - (int) filemtime($cache)) . ' s alt)');
+            $alt = time() - (int) filemtime($cache);
+        } else {
+            $c = null;
         }
     }
-    $url = 'http://127.0.0.1/plugins/' . rawurlencode($plugindir) . '/marstek.php?selftest=1&token=' . rawurlencode($token);
-    $ctx = stream_context_create(array('http' => array(
-        'timeout' => 3, 'ignore_errors' => true, 'user_agent' => 'LoxBerry Marstek Selbsttest')));
-    $antwort = @file_get_contents($url, false, $ctx);
-    if ($antwort === false) {
-        $erg = array('zustand' => 'unbekannt',
-            'text' => 'Der Aufruf über 127.0.0.1 war nicht möglich. Das heißt NICHT, '
-                    . 'dass der Endpunkt kaputt ist - der Webserver kann sich selbst abweisen.');
-    } elseif (strpos($antwort, 'SELFTEST;OK=1') !== false) {
-        $erg = array('zustand' => 'ok', 'text' => 'Antwort: ' . trim(substr($antwort, 0, 60)));
-    } else {
-        $erg = array('zustand' => 'falsch', 'text' => 'Der Endpunkt antwortet, aber nicht wie erwartet: '
-                    . trim(substr((string) $antwort, 0, 120)));
+    if ($c === null) {
+        $url = 'http://127.0.0.1/plugins/' . rawurlencode($plugindir) . '/marstek.php?selftest=1&token=' . rawurlencode($token);
+        $ctx = stream_context_create(array('http' => array(
+            'timeout' => 3, 'ignore_errors' => true, 'user_agent' => 'LoxBerry Marstek Selbsttest')));
+        $antwort = @file_get_contents($url, false, $ctx);
+        if ($antwort === false) {
+            $c = array('zustand' => 'unbekannt', 'roh' => '');
+        } elseif (strpos($antwort, 'SELFTEST;OK=1') !== false) {
+            $c = array('zustand' => 'ok', 'roh' => trim(substr($antwort, 0, 60)));
+        } else {
+            $c = array('zustand' => 'falsch', 'roh' => trim(substr((string) $antwort, 0, 120)));
+        }
+        marstek_write_json($cache, $c);
     }
-    marstek_write_json($cache, $erg);
-    return array($erg['zustand'], $erg['text']);
+    $roh = isset($c['roh']) ? (string) $c['roh'] : '';
+    if ($c['zustand'] === 'ok') {
+        $text = sprintf(marstek_t('TEST.ENDPUNKT_OK'), $roh);
+    } elseif ($c['zustand'] === 'falsch') {
+        $text = sprintf(marstek_t('TEST.ENDPUNKT_FALSCH'), $roh);
+    } else {
+        $text = marstek_t('TEST.ENDPUNKT_UNBEKANNT');
+    }
+    if ($alt >= 0) {
+        $text .= ' ' . sprintf(marstek_t('TEST.ENDPUNKT_ALTER'), $alt);
+    }
+    return array((string) $c['zustand'], $text);
 }
 
 /**
@@ -111,8 +132,28 @@ function mv_oberflaeche_zaehlen()
         preg_match_all("/'(tab-[a-z]+)'/", $c[1], $d);
         $liste = $d[1];
     }
-    $formulare = preg_match_all('/<form\b/', $s);
-    $mit_token = preg_match_all('/name="formtoken"/', $s);
+    /* O13 (30.09.2026): je Formular GEPAART - jedes Formular-Element muss
+     * bis zu seinem Ende das Merkmal tragen. Bis 1.1.17 wurden beide Zahlen getrennt ueber die
+     * ganze Datei gezaehlt; ein Formular ohne Merkmal neben einem mit
+     * doppeltem ergab einen Haken, und die Suchmuster zaehlten sich selbst
+     * mit. Gezaehlt wird im Quelltext, nicht am ausgelieferten HTML - die
+     * Zeile sagt das. Die Muster sind zusammengesetzt, damit diese Datei
+     * nicht sich selbst zaehlt. */
+    $mv_auf = '<' . 'form';
+    $mv_zu = '</' . 'form>';
+    $mv_mk = 'name="form' . 'token"';
+    $formulare = 0;
+    $mit_token = 0;
+    foreach (array_slice(explode($mv_auf, $s), 1) as $mv_teil) {
+        if (!preg_match('/^[\s>]/', $mv_teil)) {
+            continue;   // "<formular" o. ae. ist kein Formular
+        }
+        $formulare++;
+        $mv_bis = strpos($mv_teil, $mv_zu);
+        if (strpos($mv_bis === false ? $mv_teil : substr($mv_teil, 0, $mv_bis), $mv_mk) !== false) {
+            $mit_token++;
+        }
+    }
     return array(count(array_unique($a[1])), count(array_unique($b[1])), count(array_unique($liste)),
                  $formulare, $mit_token);
 }
@@ -452,6 +493,7 @@ function mv_test_seite($ft, $plugindir, array $cfg, array $devices, $suchergebni
 <td><form action="index.php" method="post" style="margin:0;">
 <input data-role="none" type="hidden" name="formtoken" value="<?= marstek_e($ft) ?>">
 <input data-role="none" type="hidden" name="activetab" value="tab-test">
+<input data-role="none" type="hidden" name="modell" value="<?= marstek_e($g['model']) ?>">
 <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="uebernehmen" value="<?= marstek_e($g['ip']) ?>" style="min-width:180px;"><?= marstek_e(marstek_t('TEST.K_UEBERNEHMEN')) ?></button>
 </form></td></tr>
 <?php } ?>
@@ -492,10 +534,18 @@ foreach ($mv_testdevs as $n => $d) {
 <?php foreach ($mv_testdevs as $n => $d) { $q = $n > 1 ? '&amp;dev=' . (int) $n : ''; ?>
 <div class="sm-small" style="margin-top:10px;"><b><?= marstek_e($d['name']) ?></b></div>
 <div class="sm-knopfreihe">
-<a class="sm-btn sm-b-aktion" href="/plugins/<?= marstek_e($plugindir) ?>/marstek.php?p=0&amp;t=60<?= $q ?>&amp;token=<?= $mv_tok ?>" target="_blank"><?= marstek_e(marstek_t('TEST.K_LEERLAUF')) ?></a>
-<a class="sm-btn sm-b-aktion" href="/plugins/<?= marstek_e($plugindir) ?>/marstek.php?p=-800&amp;t=120<?= $q ?>&amp;token=<?= $mv_tok ?>" target="_blank"><?= marstek_e(marstek_t('TEST.K_ENTLADEN')) ?></a>
-<a class="sm-btn sm-b-aktion" href="/plugins/<?= marstek_e($plugindir) ?>/marstek.php?p=800&amp;t=120<?= $q ?>&amp;token=<?= $mv_tok ?>" target="_blank"><?= marstek_e(marstek_t('TEST.K_LADEN')) ?></a>
-<a class="sm-btn sm-b-aktion" href="/plugins/<?= marstek_e($plugindir) ?>/marstek.php?mode=auto<?= $q ?>&amp;token=<?= $mv_tok ?>" target="_blank"><?= marstek_e(marstek_t('TEST.K_AUTO')) ?></a>
+<?php /* O6 (30.09.2026): POST mit Merkmal statt eines Verweises mit dem
+       * Token in der Adresse - F5 im Ergebnisreiter schaltete bis 1.1.17 den
+       * Speicher erneut. Danach leitet index.php auf den Reiter Test um. */
+    foreach (array('leerlauf' => 'TEST.K_LEERLAUF', 'entladen' => 'TEST.K_ENTLADEN',
+                   'laden' => 'TEST.K_LADEN', 'auto' => 'TEST.K_AUTO') as $mv_was => $mv_kn) { ?>
+  <form action="index.php" method="post">
+    <input data-role="none" type="hidden" name="formtoken" value="<?= marstek_e($ft) ?>">
+    <input data-role="none" type="hidden" name="activetab" value="tab-test">
+    <input data-role="none" type="hidden" name="schalt_dev" value="<?= (int) $n ?>">
+    <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="schalten" value="<?= marstek_e($mv_was) ?>"><?= marstek_e(marstek_t($mv_kn)) ?></button>
+  </form>
+<?php } ?>
 </div>
 <?php } ?>
 
