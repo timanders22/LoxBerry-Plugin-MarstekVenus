@@ -26,6 +26,12 @@
  * marstek_lib.php oder index.php schon gibt.
  */
 
+/** Schreiber-Wache: ein Schreiber als "Kennung @ Absender" fuer den Reiter Test. */
+function mv_schreiber_name(array $x)
+{
+    return ($x['von'] !== '' ? $x['von'] : marstek_t('TEST.OHNE_KENNUNG')) . ' @ ' . ($x['ip'] !== '' ? $x['ip'] : '?');
+}
+
 /** Eine Zeile der Selbstpruefung. $ok: true = Haken, false = Kreuz, null = Hinweis. */
 function mv_pruefzeile($frage, $ok, $bemerkung = '')
 {
@@ -461,6 +467,74 @@ function mv_test_seite($ft, $plugindir, array $cfg, array $devices, $suchergebni
     mv_pruefzeile(marstek_t('TEST.Z_SPOT'), !empty($r['ok']),
         !empty($r['ok']) ? sprintf(marstek_t('TEST.SPOT_OK'), $r['n'], $r['rank'], $r['curp'])
                          : marstek_ranks_grund($r['errc']));
+
+    // --- Schreiber-Wache (Energie-1 C1, Entscheidung Nr. 25). Die Einstellungen
+    //     frisch aus der Datei: $cfg traegt nach einer Beanstandung die
+    //     abgewiesene Eingabe (X-2). Ueber eine leere Menge wird nicht geurteilt.
+    $mv_w = marstek_wache_einstellungen(marstek_config());
+    $mv_wfs = 60 * $mv_w['wache_fenster_min'];
+    $mv_wliste = array();
+    if ($mv_w['wache_ein'] !== 1) {
+        mv_pruefzeile(marstek_t('TEST.Z_WACHE'), null, marstek_t('TEST.WACHE_AUS'));
+    } elseif (!$devices) {
+        mv_pruefzeile(marstek_t('TEST.Z_WACHE'), null, marstek_t('TEST.KEIN_GERAET'));
+    }
+    foreach ($devices as $mv_n => $mv_d) {
+        list($mv_wz, $mv_we) = marstek_wache_lesen($mv_n);
+        $mv_wliste[$mv_n] = $mv_we;
+        if ($mv_w['wache_ein'] !== 1) {
+            continue;
+        }
+        $mv_wf = array();
+        foreach ($mv_we as $mv_x) {
+            if (abs(time() - $mv_x['zuletzt']) < $mv_wfs) {
+                $mv_wf[] = mv_schreiber_name($mv_x);
+            }
+        }
+        $mv_wfrage = sprintf(marstek_t('TEST.Z_WACHE_GERAET'), $mv_d['name']);
+        if ($mv_wz === 'merker') {
+            mv_pruefzeile($mv_wfrage, false, marstek_t('TEST.WACHE_MERKER'));
+        } elseif (!$mv_wf) {
+            mv_pruefzeile($mv_wfrage, null, sprintf(marstek_t('TEST.WACHE_KEINE'), $mv_w['wache_fenster_min']));
+        } elseif (count($mv_wf) === 1) {
+            mv_pruefzeile($mv_wfrage, true, sprintf(marstek_t('TEST.WACHE_EINER'), $mv_w['wache_fenster_min'], $mv_wf[0]));
+        } else {
+            mv_pruefzeile($mv_wfrage, null, sprintf(marstek_t('TEST.WACHE_MEHRERE'), count($mv_wf),
+                $mv_w['wache_fenster_min'], implode(', ', $mv_wf)));
+        }
+    }
+    list(, , $mv_wsf) = marstek_wache_sperre_urteil($mv_w, '', '');
+    if ($mv_w['wache_sperren_ein'] !== 1) {
+        mv_pruefzeile(marstek_t('TEST.Z_WACHE_SPERRE'), null, marstek_t('TEST.WACHE_SPERRE_AUS'));
+    } elseif ($mv_wsf !== '') {
+        mv_pruefzeile(marstek_t('TEST.Z_WACHE_SPERRE'), false, marstek_t('TEST.WACHE_SPERRE_LISTE'));
+    } else {
+        mv_pruefzeile(marstek_t('TEST.Z_WACHE_SPERRE'), true, sprintf(marstek_t('TEST.WACHE_SPERRE_AN'), $mv_w['wache_erlaubt']));
+    }
+    ?>
+</table>
+
+<h3 class="sm-h3"><?= marstek_e(marstek_t('TEST.H_SCHREIBER')) ?></h3>
+<div class="sm-hilfe"><?= marstek_e(sprintf(marstek_t('TEST.SCHREIBER_ERKLAERUNG'), $mv_w['wache_fenster_min'])) ?></div>
+<table class="sm-tbl">
+<tr><th><?= marstek_e(marstek_t('TEST.SP_GERAET')) ?></th><th><?= marstek_e(marstek_t('TEST.SP_KENNUNG')) ?></th><th><?= marstek_e(marstek_t('TEST.SP_ABSENDER')) ?></th><th><?= marstek_e(marstek_t('TEST.SP_ZUERST')) ?></th><th><?= marstek_e(marstek_t('TEST.SP_ZULETZT')) ?></th><th><?= marstek_e(marstek_t('TEST.SP_ANZAHL')) ?></th><th><?= marstek_e(marstek_t('TEST.SP_ABGEWIESEN')) ?></th><th><?= marstek_e(marstek_t('TEST.SP_FENSTER')) ?></th></tr>
+<?php
+    $mv_wzeilen = 0;
+    foreach ($mv_wliste as $mv_n => $mv_we) {
+        foreach ($mv_we as $mv_x) {
+            $mv_wzeilen++;
+            echo '<tr><td>' . marstek_e($devices[$mv_n]['name']) . '</td><td>'
+               . marstek_e($mv_x['von'] !== '' ? $mv_x['von'] : marstek_t('TEST.OHNE_KENNUNG')) . '</td><td>'
+               . marstek_e($mv_x['ip'] !== '' ? $mv_x['ip'] : '?') . '</td><td>'
+               . marstek_e($mv_x['erst'] > 0 ? date('d.m. H:i:s', $mv_x['erst']) : '-') . '</td><td>'
+               . marstek_e(date('d.m. H:i:s', $mv_x['zuletzt'])) . '</td><td>' . (int) $mv_x['n'] . '</td><td>'
+               . (int) $mv_x['abgewiesen'] . '</td><td>'
+               . marstek_e(abs(time() - $mv_x['zuletzt']) < $mv_wfs ? marstek_t('TEST.JA') : marstek_t('TEST.NEIN')) . '</td></tr>';
+        }
+    }
+    if ($mv_wzeilen === 0) {
+        echo '<tr><td colspan="8">' . marstek_e(marstek_t('TEST.SCHREIBER_KEINE')) . '</td></tr>';
+    }
     ?>
 </table>
 <?php } ?>

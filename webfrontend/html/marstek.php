@@ -71,6 +71,16 @@
  *   Einstellung bremse_abstand_ein (ab Werk aus, Entscheidung Nr. 14). Merker nicht
  *   zu oeffnen: HTTP 503, ERR=BREMSE_MERKER. Der Trockenlauf geht an der
  *   Bremse vorbei (er sendet nichts).
+ *
+ * SCHREIBER-WACHE (Energie-1 C1, Entscheidung Nr. 25): ?p= und ?mode= tragen
+ *   optional &von=<kennung> (die Vorlage setzt von=loxone); gemerkt wird
+ *   Kennung@Absender. Mehr als ein Schreiber im Fenster (ab Werk 15 min):
+ *   Protokoll, Reiter Test, Antwort ;SCHREIBER=n - abgewiesen wird nichts.
+ *   Nur mit "Fremde Schreiber abweisen" (ab Werk aus) bekommt ein Sollwert
+ *   eines nicht erlaubten Schreibers HTTP 409 GRUND=FREMDSCHREIBER und wird
+ *   nicht gesendet; ?mode= nie. Merker nicht nutzbar: der Befehl geht
+ *   trotzdem, die Antwort traegt ;WACHE=MERKER. Eine ungueltige Kennung:
+ *   HTTP 400 ERR=VON. &dry=1 geht an der Wache vorbei.
  */
 
 require_once __DIR__ . '/marstek_lib.php';
@@ -102,6 +112,53 @@ function mv_abweisen($code, $zeile, $grund) {
     echo $zeile;
     marstek_anruf_log($grund, trim($zeile) . ' (HTTP ' . (int) $code . ')');
     exit;
+}
+
+/** Schreiber-Wache: &von= lesen. Fehlt es: '' (ohne Kennung). Eine Kennung,
+ *  die nicht ins Muster passt, wird abgewiesen wie ein falsches t - abweisen
+ *  statt zurechtbiegen (Nr. 19); ein Tippfehler faellt beim Einrichten auf. */
+function mv_von($satz) {
+    if (!isset($_GET['von'])) {
+        return '';
+    }
+    $v = mv_par('von');
+    if ($v === null || !marstek_wache_kennung_gueltig($v)) {
+        mv_abweisen(400, $satz . ";OK=0;ERR=VON\n", 'abweisung');
+    }
+    return $v;
+}
+
+/** Schreiber-Wache (Energie-1 C1, Entscheidung Nr. 25; Kopf der Funktionen in
+ *  marstek_lib.php): merken und melden, und nur mit "Sperren" einen fremden
+ *  Sollwert mit 409 abweisen, bevor etwas gesendet wird. Rueckgabe: Zusatz
+ *  fuer die Antwortzeile - ;SCHREIBER=n ab zwei Schreibern im Fenster,
+ *  ;WACHE=MERKER, wenn das Merken nicht ging (der Befehl geht trotzdem). */
+function mv_wache(array $devs, $art, $satz, $devtext, $von) {
+    $w = marstek_wache_einstellungen(marstek_config(false));
+    $ip = marstek_wache_absender();
+    list($aktiv, $erlaubt, $fehler) = marstek_wache_sperre_urteil($w, $von, $ip);
+    if ($fehler !== '') {
+        marstek_log_if_changed('wache_liste', 'Fremde Schreiber abweisen ist eingeschaltet, aber die Liste der '
+            . 'erlaubten Schreiber ist leer oder unbrauchbar - die Sperre wirkt NICHT, bis die Liste im Reiter '
+            . 'Einstellungen berichtigt ist.', 'liste');
+    } elseif ($w['wache_sperren_ein'] === 1 && is_file(marstek_tmpdir() . '/last_wache_liste.txt')) {
+        marstek_log_if_changed('wache_liste', 'Die Liste der erlaubten Schreiber ist brauchbar, die Sperre wirkt.', 'ok');
+    }
+    $abweisen = $aktiv && !$erlaubt && $art === 'p';
+    $zusatz = '';
+    if ($w['wache_ein'] === 1 && $devs) {
+        $m = marstek_wache_merken($devs, $von, $ip, $art, $abweisen, $w);
+        if ($m['anzahl'] > 1) {
+            $zusatz .= ';SCHREIBER=' . (int) $m['anzahl'];
+        }
+        if (!$m['merker']) {
+            $zusatz .= ';WACHE=MERKER';
+        }
+    }
+    if ($abweisen) {
+        mv_abweisen(409, $satz . ';OK=0;GRUND=FREMDSCHREIBER;DEV=' . $devtext . "\n", 'fremdschreiber');
+    }
+    return $zusatz;
 }
 
 // Auf den WERT sehen, nicht nur auf das Vorhandensein: ?debug=0 schaltete
@@ -189,11 +246,16 @@ if (isset($_GET['p'])) {
         mv_abweisen(400, "SET;OK=0;ERR=T\n", 'abweisung');
     }
     if ($mv_t === null) { $mv_t = '240'; }
+    $mv_von = mv_von('SET');
+    $mv_wz = '';
 
     if ($mv_alle) {
         $mv_cfg_v = marstek_config(false);
         if (empty($mv_cfg_v['verteilen_ein'])) {
             mv_abweisen(400, "SET;OK=0;ERR=VERTEILEN_AUS\n", 'abweisung');
+        }
+        if (!$mv_trocken) {
+            $mv_wz = mv_wache(array_keys(marstek_devices()), 'p', 'SET', 'alle', $mv_von);
         }
         list($ok, $angenommen, $gesamt, $zeilen) = marstek_set_passive_alle($mv_p, $mv_t, $mv_trocken);
         $txt = '';
@@ -216,7 +278,7 @@ if (isset($_GET['p'])) {
             }
         }
         $mv_zeile = 'SET;OK=' . $ok . ';N=' . $angenommen . ';GES=' . $gesamt . ';DEV=alle'
-           . ($mv_begr ? ';BEGRENZT=1' : '') . ($mv_trocken ? ';DRY=1' : '') . $txt . "\n";
+           . ($mv_begr ? ';BEGRENZT=1' : '') . ($mv_trocken ? ';DRY=1' : '') . $txt . $mv_wz . "\n";
         // Alle Geraete gebremst: 429; alle ohne Merker: 503 (faellt geschlossen aus).
         if ($gesamt > 0 && $mv_merker === $gesamt) {
             mv_abweisen(503, $mv_zeile, 'bremse');
@@ -236,6 +298,9 @@ if (isset($_GET['p'])) {
     if ($mv_trocken) {
         list($ok, $p, $t, $hinweis, $mv_begr) = marstek_set_passive($mv_p, $mv_t, $dev, true);
     } else {
+        // Energie-1 C1: die Schreiber-Wache vor der Bremse - auch ein Sollwert,
+        // den die Bremse als unveraendert beantwortet, kommt von einem Schreiber.
+        $mv_wz = mv_wache(array($dev), 'p', 'SET', (string) $dev, $mv_von);
         // a1 / X-7: durch die Befehlsbremse (siehe Kopf).
         $mv_gb = marstek_gebremst($dev, 'p', (int) $mv_p, (int) $mv_t, function () use ($mv_p, $mv_t, $dev) {
             return marstek_set_passive($mv_p, $mv_t, $dev, false);
@@ -248,14 +313,14 @@ if (isset($_GET['p'])) {
         }
         if ($mv_gb['bremse'] === 'UNVERAENDERT') {
             echo 'SET;OK=1;P=' . (int) $mv_gb['gemerkt']['p_ist'] . ';T=' . (int) $mv_gb['gemerkt']['t']
-               . ';DEV=' . $dev . ";UNVERAENDERT=1\n";
+               . ';DEV=' . $dev . ';UNVERAENDERT=1' . $mv_wz . "\n";
             exit;
         }
         list($ok, $p, $t, $hinweis, $mv_begr) = $mv_gb['erg'];
     }
     $mv_zeile = 'SET;OK=' . $ok . ';P=' . $p . ';T=' . $t . ';DEV=' . $dev
        . ($mv_begr ? ';BEGRENZT=1' : '')
-       . ($hinweis !== '' ? ';HINWEIS=' . $hinweis : '') . "\n";
+       . ($hinweis !== '' ? ';HINWEIS=' . $hinweis : '') . $mv_wz . "\n";
     echo $mv_zeile;
     // Der Trockenlauf schreibt nichts (O5).
     if (!$mv_trocken) {
@@ -276,9 +341,13 @@ if (isset($_GET['mode'])) {
         mv_abweisen(400, "MODE;OK=0;ERR=MODE\n", 'abweisung');
     }
     $mv_mk = strtolower($mv_m);
+    $mv_von = mv_von('MODE');
+    $mv_wz = '';
     if ($mv_trocken || !in_array($mv_mk, array('auto', 'ai'), true)) {
         list($ok, $m, $hinweis) = marstek_set_mode($mv_m, $dev, $mv_trocken);
     } else {
+        // Energie-1 C1: gemerkt, nie abgewiesen (eine Rueckgabe ist kein zweiter Regler).
+        $mv_wz = mv_wache(array($dev), 'mode', 'MODE', (string) $dev, $mv_von);
         // a1 / X-7: auch der Moduswechsel durch die Befehlsbremse.
         $mv_gb = marstek_gebremst($dev, 'mode', $mv_mk, 0, function () use ($mv_m, $dev) {
             return marstek_set_mode($mv_m, $dev, false);
@@ -290,7 +359,7 @@ if (isset($_GET['mode'])) {
             mv_abweisen(429, 'MODE;OK=0;ERR=BREMSE;WARTEN_S=' . (int) $mv_gb['warten_s'] . ';DEV=' . $dev . "\n", 'bremse');
         }
         if ($mv_gb['bremse'] === 'UNVERAENDERT') {
-            echo 'MODE;OK=1;M=' . ($mv_mk === 'ai' ? 'AI' : 'Auto') . ';DEV=' . $dev . ";UNVERAENDERT=1\n";
+            echo 'MODE;OK=1;M=' . ($mv_mk === 'ai' ? 'AI' : 'Auto') . ';DEV=' . $dev . ';UNVERAENDERT=1' . $mv_wz . "\n";
             exit;
         }
         list($ok, $m, $hinweis) = $mv_gb['erg'];
@@ -299,7 +368,7 @@ if (isset($_GET['mode'])) {
         mv_abweisen(400, "MODE;OK=0;ERR=MODE\n", 'abweisung');
     }
     $mv_zeile = 'MODE;OK=' . $ok . ';M=' . $m . ';DEV=' . $dev
-       . ($hinweis !== '' ? ';HINWEIS=' . $hinweis : '') . "\n";
+       . ($hinweis !== '' ? ';HINWEIS=' . $hinweis : '') . $mv_wz . "\n";
     echo $mv_zeile;
     if (!$mv_trocken) {
         marstek_anruf_log('modus_dev' . $dev, trim($mv_zeile));

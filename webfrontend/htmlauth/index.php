@@ -560,7 +560,9 @@ if ($mv_post && isset($_POST['save'])) {
                        'verlauf_tage' => 'EINST.L_VERLAUF_TAGE', 'melden_ab' => 'EINST.L_MELDEN_AB',
                        'temp_min' => 'EINST.L_TEMP_MIN', 'temp_max' => 'EINST.L_TEMP_MAX',
                        'soc_min' => 'EINST.L_SOC_MIN', 'soc_max' => 'EINST.L_SOC_MAX',
-                       'vat' => 'EINST.L_UST', 'aufschlag_ct' => 'EINST.L_AUFSCHLAG', 'awattar' => 'EINST.L_MARKT');
+                       'vat' => 'EINST.L_UST', 'aufschlag_ct' => 'EINST.L_AUFSCHLAG', 'awattar' => 'EINST.L_MARKT',
+                       // Energie-1 C1: die Schreiber-Wache (Nr. 16/19: abweisen, nichts speichern, Eingabe zurueck)
+                       'wache_fenster_min' => 'EINST.L_WACHE_FENSTER', 'wache_erlaubt' => 'EINST.L_WACHE_ERLAUBT');
     $mv_neu = array();
     foreach ($mv_felder as $mv_k => $mv_l) {
         $v = $mv_str($mv_k);
@@ -583,13 +585,14 @@ if ($mv_post && isset($_POST['save'])) {
             $mv_neu[$mv_k] = (float) $v;
         } elseif ($mv_k === 'aufschlag_ct') {
             $mv_neu[$mv_k] = round((float) $v, 3);
-        } elseif ($mv_k === 'awattar') {
+        } elseif ($mv_k === 'awattar' || $mv_k === 'wache_erlaubt') {
             $mv_neu[$mv_k] = $v;
         } else {
             $mv_neu[$mv_k] = (int) $v;
         }
     }
-    foreach (array('steuerung_ein', 'verteilen_ein', 'melden_ein', 'schutz_ein', 'bremse_abstand_ein') as $mv_k) {
+    foreach (array('steuerung_ein', 'verteilen_ein', 'melden_ein', 'schutz_ein', 'bremse_abstand_ein',
+                   'wache_ein', 'wache_lb_melden', 'wache_sperren_ein') as $mv_k) {
         $mv_neu[$mv_k] = isset($_POST[$mv_k]) ? 1 : 0;
         $mv_rueck[$mv_k] = $mv_neu[$mv_k];
     }
@@ -597,7 +600,8 @@ if ($mv_post && isset($_POST['save'])) {
         $mv_maengel[] = $mv_g;
     }
     // X-2: bei einer Kreuzbeanstandung sind beide Felder des Paars markiert.
-    foreach (array(array('soc_min', 'soc_max'), array('temp_min', 'temp_max')) as $mv_paar) {
+    foreach (array(array('soc_min', 'soc_max'), array('temp_min', 'temp_max'),
+                   array('wache_sperren_ein', 'wache_erlaubt')) as $mv_paar) {
         $mv_pw = array_intersect_key($mv_neu + $alt, array_flip($mv_paar));
         if (marstek_cfg_kreuzmaengel($mv_pw)) {
             $mv_falsch_neu[] = $mv_paar[0];
@@ -693,7 +697,8 @@ if (empty($mv_cfg['aktionstoken'])) {
 if (is_array($mv_form_rueck)) {
     foreach (array('cache_sec', 'fallback_min', 'verlauf_tage', 'melden_ab', 'temp_min', 'temp_max',
                    'soc_min', 'soc_max', 'vat', 'aufschlag_ct', 'awattar',
-                   'steuerung_ein', 'verteilen_ein', 'melden_ein', 'schutz_ein', 'bremse_abstand_ein') as $mv_k) {
+                   'steuerung_ein', 'verteilen_ein', 'melden_ein', 'schutz_ein', 'bremse_abstand_ein',
+                   'wache_ein', 'wache_fenster_min', 'wache_lb_melden', 'wache_sperren_ein', 'wache_erlaubt') as $mv_k) {
         if (array_key_exists($mv_k, $mv_form_rueck) && is_scalar($mv_form_rueck[$mv_k])) {
             $mv_cfg[$mv_k] = $mv_form_rueck[$mv_k];
         }
@@ -1088,6 +1093,34 @@ for ($i = 0; $i < 4; $i++) {
 </label>
 <div class="sm-hilfe"><?= marstek_e(marstek_t('EINST.H_BREMSE_ABSTAND')) ?></div>
 
+<h2><?= marstek_e(marstek_t('EINST.UEB_WACHE')) ?></h2>
+<div class="sm-hinweis"><?= marstek_t('EINST.WACHE_ERKLAERUNG') ?></div>
+<label style="display:inline-flex;align-items:center;gap:6px;">
+    <input data-role="none" type="checkbox" name="wache_ein" <?= !empty($mv_cfg['wache_ein']) ? 'checked' : '' ?>>
+    <?= marstek_e(marstek_t('EINST.L_WACHE_EIN')) ?>
+</label>
+<div class="sm-hilfe"><?= marstek_e(marstek_t('EINST.H_WACHE_EIN')) ?></div>
+<div class="sm-row" style="margin-top:6px;">
+    <div style="max-width:240px;"><label><?= marstek_e(marstek_t('EINST.L_WACHE_FENSTER')) ?></label>
+        <input<?= mv_fa('wache_fenster_min') ?> data-role="none" type="number" name="wache_fenster_min" value="<?= mv_wert($mv_cfg['wache_fenster_min']) ?>" min="1" max="120">
+        <div class="sm-hilfe"><?= marstek_e(marstek_t('EINST.H_WACHE_FENSTER')) ?></div></div>
+</div>
+<label style="display:inline-flex;align-items:center;gap:6px;margin-top:10px;">
+    <input data-role="none" type="checkbox" name="wache_lb_melden" <?= !empty($mv_cfg['wache_lb_melden']) ? 'checked' : '' ?>>
+    <?= marstek_e(marstek_t('EINST.L_WACHE_LB')) ?>
+</label>
+<div class="sm-hilfe"><?= marstek_e(marstek_t('EINST.H_WACHE_LB')) ?></div>
+<label style="display:inline-flex;align-items:center;gap:6px;margin-top:10px;">
+    <input<?= mv_fa('wache_sperren_ein') ?> data-role="none" type="checkbox" name="wache_sperren_ein" <?= !empty($mv_cfg['wache_sperren_ein']) ? 'checked' : '' ?>>
+    <?= marstek_e(marstek_t('EINST.L_WACHE_SPERREN')) ?>
+</label>
+<div class="sm-hilfe"><?= marstek_e(marstek_t('EINST.H_WACHE_SPERREN')) ?></div>
+<div class="sm-row" style="margin-top:6px;">
+    <div><label><?= marstek_e(marstek_t('EINST.L_WACHE_ERLAUBT')) ?></label>
+        <input<?= mv_fa('wache_erlaubt') ?> data-role="none" type="text" name="wache_erlaubt" value="<?= mv_wert($mv_cfg['wache_erlaubt']) ?>" maxlength="512" placeholder="loxone, 192.168.178.10">
+        <div class="sm-hilfe"><?= marstek_e(marstek_t('EINST.H_WACHE_ERLAUBT')) ?></div></div>
+</div>
+
 <h2><?= marstek_e(marstek_t('EINST.H_SCHUTZ')) ?></h2>
 <div class="sm-hinweis"><?= marstek_t('EINST.SCHUTZ_ERKLAERUNG') ?></div>
 <label style="display:inline-flex;align-items:center;gap:6px;">
@@ -1330,8 +1363,8 @@ foreach ($mv_saetze as $mv_s => $mv_unused) {
 <table class="sm-tbl">
 <tr><th style="width:34%;"><?= marstek_e(marstek_t('LOX.SP_EIGENSCHAFT')) ?></th><th><?= marstek_e(marstek_t('LOX.SP_WERT')) ?></th></tr>
 <tr><td><?= marstek_e(marstek_t('LOX.SP_ADRESSE')) ?></td><td><span class="sm-mono">http://<?= $mv_host ?></span></td></tr>
-<tr><td><?= marstek_e(marstek_t('LOX.SP_BEFEHL_ANALOG')) ?></td><td><span class="sm-mono">/plugins/<?= marstek_e($mv_plugindir) ?>/marstek.php?p=&lt;v&gt;&amp;t=240&amp;token=<?= marstek_e($mv_cfg['aktionstoken']) ?></span></td></tr>
-<tr><td><?= marstek_e(marstek_t('LOX.SP_BEFEHL_AUTO')) ?></td><td><span class="sm-mono">/plugins/<?= marstek_e($mv_plugindir) ?>/marstek.php?mode=auto&amp;token=<?= marstek_e($mv_cfg['aktionstoken']) ?></span></td></tr>
+<tr><td><?= marstek_e(marstek_t('LOX.SP_BEFEHL_ANALOG')) ?></td><td><span class="sm-mono">/plugins/<?= marstek_e($mv_plugindir) ?>/marstek.php?p=&lt;v&gt;&amp;t=240&amp;von=loxone&amp;token=<?= marstek_e($mv_cfg['aktionstoken']) ?></span></td></tr>
+<tr><td><?= marstek_e(marstek_t('LOX.SP_BEFEHL_AUTO')) ?></td><td><span class="sm-mono">/plugins/<?= marstek_e($mv_plugindir) ?>/marstek.php?mode=auto&amp;von=loxone&amp;token=<?= marstek_e($mv_cfg['aktionstoken']) ?></span></td></tr>
 </table>
 <div class="sm-warnung"><?= marstek_t('LOX.TOKEN_WARNUNG') ?></div>
 </div>

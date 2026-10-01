@@ -13,6 +13,29 @@ den Auto-Modus des Geräts zurück.
 
 Kompatibel mit LoxBerry 3.x und **LoxBerry 4** (reines PHP, läuft mit PHP 7.4 und 8.x).
 
+## Neu in 1.1.19
+
+Energie-1 Teil C1 (Verbesserungsliste `Pruefung-Durchgang-2026-09-29/VERBESSERUNGEN_OFFEN.md`, Entscheidung 25).
+Gemessen an einer Speicher-Attrappe unter PHP 7.4, 8.3 und 8.5; nicht am Speicher.
+
+* **Schreiber-Wache:** Sollwerte (`?p=`, `?mode=`) dürfen eine Kennung tragen
+  (`&von=<kennung>`, 1–32 Zeichen; eine ungültige Kennung ergibt 400 `ERR=VON`).
+  Kommen innerhalb von 15 Minuten (einstellbar) Sollwerte von mehr als einem
+  Schreiber an denselben Speicher, meldet das Plugin es – im Protokoll, im
+  Reiter Test („Schreiber der letzten 24 Stunden“) und in der Antwort
+  (`;SCHREIBER=n`). Abgewiesen wird dabei nichts. Eine LoxBerry-Meldung ist
+  zuschaltbar (ab Werk aus).
+* **Fremde Schreiber abweisen** (ab Werk aus): Liste erlaubter Schreiber
+  (Kennung, Adresse oder `kennung@adresse`); andere bekommen 409
+  `GRUND=FREMDSCHREIBER`, und es wird nichts gesendet. `mode` wird nie
+  abgewiesen. Erst einschalten, wenn die Liste im Reiter Test eine Weile nur den
+  Miniserver zeigt.
+* Die Loxone-Vorlage setzt `&von=loxone`. In einer bestehenden Einbindung genügt
+  es, `&von=loxone` an die beiden Befehle anzuhängen (ein Neuimport legt doppelte
+  Bausteine an); ohne Kennung erscheint der Miniserver als „ohne Kennung“.
+* Ist der Merker der Wache unbrauchbar, geht der Sollwert trotzdem
+  (`;WACHE=MERKER`, Protokollzeile). Kein neues MQTT-Thema.
+
 ## Neu in 1.1.18
 
 Verbesserungen aus dem Durchgang vom 30.09.2026 (Verbesserungsliste
@@ -716,8 +739,8 @@ Rundruf und Gerätesuche aus, und der Reiter Test sagt das ausdrücklich.
 | `?ranks` | `RANKS;OK=..;N=..;RANK=..;RANKD=..;CURP=..;NEG=..;MINP=..;MAXP=..;SPREAD=..;NEXTP=..;HBIS=..;HBISMAX=..;ERRC=..` |
 | `?energy[&dev=N]` | `ENERGY;OK=..;CHGT=..;DIST=..;CHGD=..;DISD=..;CHGM=..;DISM=..;CYC=..;EFF=..;ALTER=..` (Modbus TCP, je Gerät zu aktivieren) |
 | `?summe` | `SUMME;OK=..;N=..;NOK=..;SOC=..;KAPAZ=..;RESTKWH=..;BATP=..;ALTER=..` |
-| `?p=WATT&t=SEK&token=T[&dev=N\|&dev=alle][&dry=1]` | Passiv-Sollwert (+ = laden, − = entladen, 0 = Leerlauf; t = Watchdog). `t` gilt von 30 bis 3600 s, `p` bis zur Leistungsgrenze des Speichers; darüber wird begrenzt, und die Antwort trägt `BEGRENZT=1`. Befehlsbremse je Speicher (siehe unten) |
-| `?mode=auto\|ai&token=T[&dev=N][&dry=1]` | Regie an den Speicher zurückgeben; ebenfalls gebremst |
+| `?p=WATT&t=SEK&token=T[&dev=N\|&dev=alle][&von=K][&dry=1]` | Passiv-Sollwert (+ = laden, − = entladen, 0 = Leerlauf; t = Watchdog). `t` gilt von 30 bis 3600 s, `p` bis zur Leistungsgrenze des Speichers; darüber wird begrenzt, und die Antwort trägt `BEGRENZT=1`. Befehlsbremse je Speicher (siehe unten) |
+| `?mode=auto\|ai&token=T[&dev=N][&von=K][&dry=1]` | Regie an den Speicher zurückgeben; ebenfalls gebremst |
 | `?selftest=1&token=T` | prüft nur das Token, ohne den Speicher anzufassen |
 | `?diag=1&token=T` | Diagnose: Unicast, Rundruf, Modbus einzeln |
 | `?debug=1&token=T` | Rohdaten. Tokenpflichtig seit 1.1.5: der Schalter umgeht den Zwischenspeicher, gemessen 30 s je Aufruf gegen ein stummes Gerät |
@@ -741,6 +764,33 @@ innerhalb von 10 s HTTP 429 mit `ERR=BREMSE;WARTEN_S=n`. Lässt sich der Merker 
 öffnen, antwortet der Endpunkt mit HTTP 503 (`ERR=BREMSE_MERKER`).
 Bei `&dev=alle` gilt die Bremse je Speicher (`UNVERAENDERT<N>=1`,
 `WARTEN_S<N>=n`). Die Knöpfe im Reiter Test gehen an der Bremse vorbei.
+
+**Schreiber-Wache** (Reiter Einstellungen, Abschnitt „Schreiber-Wache“): den
+Speicher soll nur einer führen – im Haus Loxone. `?p=` und `?mode=` tragen
+optional `&von=<kennung>` (1–32 Zeichen `A–Z a–z 0–9 _ -`; die Loxone-Vorlage
+setzt `von=loxone`, eine ungültige Kennung bekommt HTTP 400 `ERR=VON`).
+Gemerkt wird je Speicher das Paar Kennung@Absenderadresse; ein Aufruf ohne
+`&von=` erscheint als „ohne Kennung“ – so erscheint jede Vorlage, die nicht
+neu eingelesen wurde, und das ist kein Fehler.
+- **Melden (ab Werk an):** Kommen innerhalb des Zeitfensters (ab Werk 15 min,
+  einstellbar 1–120) Befehle von mehr als einem Schreiber, steht das im
+  Protokoll (eine Zeile, wenn die Runde der Schreiber neu ist, sonst
+  höchstens eine je Fenster), in der Antwort (`;SCHREIBER=n`) und im Reiter
+  Test (Schreiber der letzten 24 h mit erstem und letztem Aufruf und Anzahl).
+  Eine neue Runde geht zusätzlich in die Ereignisliste und – nur mit
+  „Neue Schreiber zusätzlich an das Benachrichtigungszentrum melden“, ab Werk
+  aus – als LoxBerry-Meldung. **Abgewiesen wird dadurch nichts.**
+- **Sperren (ab Werk aus):** Mit „Fremde Schreiber abweisen“ bekommt ein
+  Sollwert eines Schreibers, der nicht in „Erlaubte Schreiber“ steht
+  (Kennung, Adresse oder `kennung@adresse`, durch Komma getrennt), HTTP 409
+  `GRUND=FREMDSCHREIBER`, und es wird nichts gesendet. Eine Rückgabe
+  (`?mode=auto|ai`) wird nie abgewiesen. Sperren ohne einen erlaubten
+  Schreiber weist das Formular (und das Zurückspielen) ab.
+- Der Merker liegt unter `/tmp/marstekvenus/schreiber_dev<N>.json`. Lässt er
+  sich nicht nutzen, geht der Sollwert trotzdem hinaus (Antwort
+  `;WACHE=MERKER`, eine Protokollzeile) – die Wache beobachtet nur und darf
+  den Hausregler nie aufhalten. `&dry=1` geht an der Wache vorbei.
+- Neues MQTT-Thema gibt es dafür keines.
 
 Alle Ausgaben sind abwärtskompatibel zu Ein-Geräte-Installationen — ohne
 `&dev=` wird immer Gerät 1 angesprochen. Die Gerätenummer hängt am Speicher,

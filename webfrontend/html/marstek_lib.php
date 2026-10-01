@@ -330,6 +330,13 @@ function marstek_vorgaben() {
         'verlauf_tage'   => 8,      // Aufbewahrung des SOC-Verlaufs
         'verteilen_ein'  => 0,      // &dev=alle verteilt einen Sollwert auf alle Speicher
         'bremse_abstand_ein' => 0,  // Nr. 14: 10-s-Mindestabstand fuer einen anderen Sollwert (429)
+        // Energie-1 C1, Entscheidung Nr. 25: die Schreiber-Wache meldet ab Werk
+        // (aendert am Haus nichts), sperrt ab Werk nicht.
+        'wache_ein'         => 1,   // mehrere Schreiber im Fenster melden (Protokoll, Reiter Test)
+        'wache_fenster_min' => 15,  // Fenster in Minuten (1..120)
+        'wache_lb_melden'   => 0,   // neue Runde zusaetzlich als LoxBerry-Meldung
+        'wache_sperren_ein' => 0,   // fremde Schreiber mit 409 abweisen
+        'wache_erlaubt'     => '',  // erlaubte Schreiber: kennung, adresse oder kennung@adresse
     );
 }
 
@@ -905,6 +912,12 @@ function marstek_cfg_kreuzmaengel(array $c)
             $m[] = sprintf(marstek_t($r[2]), $c[$r[0]], $c[$r[1]]);
         }
     }
+    // Energie-1 C1: Sperren ohne einen einzigen erlaubten Schreiber wiese jeden
+    // Sollwert ab - auch den des Hausreglers.
+    if (isset($c['wache_sperren_ein'], $c['wache_erlaubt']) && is_scalar($c['wache_sperren_ein'])
+            && (string) $c['wache_sperren_ein'] === '1' && is_string($c['wache_erlaubt']) && trim($c['wache_erlaubt']) === '') {
+        $m[] = marstek_t('PRUEF.WACHE_LEER');
+    }
     return $m;
 }
 
@@ -936,7 +949,9 @@ function marstek_wert_pruefen($schluessel, $wert)
                   'soc_max' => array(50, 100), 'verlauf_tage' => array(1, 365),
                   'mqtt_enabled' => array(0, 1), 'steuerung_ein' => array(0, 1),
                   'verteilen_ein' => array(0, 1), 'melden_ein' => array(0, 1),
-                  'schutz_ein' => array(0, 1), 'bremse_abstand_ein' => array(0, 1));
+                  'schutz_ein' => array(0, 1), 'bremse_abstand_ein' => array(0, 1),
+                  'wache_ein' => array(0, 1), 'wache_sperren_ein' => array(0, 1),
+                  'wache_lb_melden' => array(0, 1), 'wache_fenster_min' => array(1, 120));
     if (isset($ganz[$schluessel])) {
         $g = $ganz[$schluessel];
         return marstek_wert_ganz($wert, $g[0], $g[1]) ? ''
@@ -954,6 +969,13 @@ function marstek_wert_pruefen($schluessel, $wert)
             // 1.1.17 speicherte die Oberflaeche "marstek/", zeigte als Abo
             // "marstek//#" und sendete unter "marstek/".
             return marstek_praefix_gueltig($wert) ? '' : marstek_t('PRUEF.PRAEFIX');
+        case 'wache_erlaubt':
+            // Energie-1 C1: dieselbe Zerlegung wie der Endpunkt (marstek_wache_liste()).
+            if (strlen((string) $wert) > 512) {
+                return marstek_t('PRUEF.WACHE_LANG');
+            }
+            list(, $mv_wf) = marstek_wache_liste((string) $wert);
+            return $mv_wf ? sprintf(marstek_t('PRUEF.WACHE_LISTE'), implode(', ', array_slice($mv_wf, 0, 4))) : '';
         case 'awattar':
             return in_array((string) $wert, array('de', 'at'), true)
                 ? '' : marstek_t('PRUEF.MARKT');
@@ -2132,9 +2154,12 @@ function marstek_herzstand() {
  * Meldung, die nicht hinausgeht, ist kein Grund, sie auch nicht
  * aufzuschreiben.
  */
-function marstek_melden($schwere, $text) {
+function marstek_melden($schwere, $text, $schalter = 'melden_ein') {
+    // $schalter: die Schreiber-Wache meldet nur mit ihrem eigenen Schalter
+    // (wache_lb_melden, ab Werk aus) - wer melden_ein fuer Stoerungen gesetzt
+    // hat, bekommt nach dem Update keine neue Art Meldung ungefragt.
     $cfg = marstek_config();
-    if (empty($cfg['melden_ein'])) {
+    if (empty($cfg[$schalter])) {
         return false;
     }
     $p = marstek_paths();
@@ -3104,6 +3129,417 @@ function marstek_bremse_vergessen($dev)
     ftruncate($fh, 0);
     flock($fh, LOCK_UN);
     fclose($fh);
+}
+
+/* ================= Schreiber-Wache (Energie-1 C1, Entscheidung Nr. 25) ==================
+ *
+ * WOZU. Den Speicher sollen nicht zwei Regler zugleich fuehren. Im Haus
+ * koordiniert Loxone (Vorrangkette seit 26.07.2026); moegliche zweite Schreiber
+ * am Endpunkt sind die aWATTar-Marstek-Kopplung und das Ladesoll der
+ * Einspeisebremse (ENERGIE1_ENTWURF.md, K3/K4). Bis 1.1.19 unterschied der
+ * Endpunkt seine Schreiber nicht: ein Loxone-Sollwert und ein p=0 der Kopplung
+ * im Minutentakt gingen beide hinaus, und nirgends stand es.
+ *
+ * WAS. Jeder Sollwert (?p=, auch &dev=alle) und jede Rueckgabe (?mode=auto|ai)
+ * wird mit seiner Herkunft gemerkt: optional &von=<kennung> (die Vorlage setzt
+ * von=loxone) und der Absender (REMOTE_ADDR). Ein Schreiber ist das Paar
+ * Kennung@Absender; ohne &von= heisst er "ohne Kennung" - das ist kein Fehler,
+ * so erscheint jede Loxone-Vorlage, die nicht neu eingelesen wurde. Kommen
+ * innerhalb des Fensters (wache_fenster_min, ab Werk 15) Befehle von mehr als
+ * einem Schreiber, steht das
+ *   - im Protokoll, gebremst: eine Zeile je Geraet, wenn die Runde der
+ *     Schreiber neu ist, sonst hoechstens eine je Fenster,
+ *   - in der Antwort (;SCHREIBER=n),
+ *   - im Reiter Test (die Schreiber der letzten 24 h mit Zeitpunkt und Anzahl),
+ *   - bei einer neuen Runde in der dauerhaften Ereignisliste und, nur mit der
+ *     Einstellung wache_lb_melden (ab Werk aus), als LoxBerry-Meldung.
+ * Abgewiesen wird dadurch NICHTS (melden ab Werk an, Entscheidung Nr. 25).
+ * Der Trockenlauf (&dry=1) sendet nichts und geht an der Wache vorbei.
+ *
+ * SPERREN (wache_sperren_ein, ab Werk aus): ein Sollwert eines Schreibers, der
+ * nicht in wache_erlaubt steht, bekommt HTTP 409 GRUND=FREMDSCHREIBER, und es
+ * wird nichts gesendet. Eine Rueckgabe (?mode=) wird nie abgewiesen - wer die
+ * Regie an den Speicher zurueckgibt, fuehrt keinen zweiten Regelkreis
+ * (ENERGIE1_ENTWURF.md, Weg C 1: "Ruecknahmen nie"). Das Urteil braucht den
+ * Merker nicht, es haengt nur an der Liste und an der Anfrage. Ist Sperren an,
+ * die Liste aber leer oder unbrauchbar (nur von Hand moeglich - Formular und
+ * Sicherung weisen das ab), wirkt die Sperre nicht, und das Protokoll sagt es:
+ * eine verschriebene Liste darf den Hausregler nicht aussperren.
+ *
+ * DER MERKER FAELLT OFFEN AUS. schreiber_dev<N>.json unter flock, geoeffnet
+ * mit close-on-exec ('e'), damit kein Kindprozess die Sperre erbt; gehalten
+ * nur fuer Lesen und Schreiben, nie waehrend des Sendens. Laesst er sich nicht
+ * oeffnen, sperren oder schreiben, geht der Sollwert trotzdem hinaus - die
+ * Antwort traegt ;WACHE=MERKER, das Protokoll eine Zeile je Zustandswechsel.
+ * Anders als die Befehlsbremse (503, faellt geschlossen aus): die Bremse
+ * entscheidet ueber das Senden und kann ohne Merker nicht urteilen, die Wache
+ * beobachtet nur. Eine Wache, die wegen einer vollen Ramdisk den Hausregler
+ * abwiese, richtete genau den Schaden an, vor dem sie warnen soll.
+ *
+ * WARUM 15 MINUTEN. Das Fenster muss den langsamsten regelmaessigen Schreiber
+ * fassen: Loxone sendet bei jeder Aenderung und mit dem Dither spaetestens alle
+ * 60 s, die aWATTar-Kopplung jede Minute, die Einspeisebremse nur bei einer
+ * Aenderung. 15 min sind knapp vier Watchdog-Laengen (t = 240 s) und liegen
+ * unter dem Auto-Rueckfall (fallback_min 30). Ein laengeres Fenster liesse
+ * einen Wechsel (alte Vorlage ohne Kennung -> neue mit von=loxone) entsprechend
+ * laenger als zwei Schreiber stehen. Einstellbar 1 bis 120 min.
+ */
+if (!defined('MARSTEK_WACHE_AUFBEWAHREN_S')) {
+    define('MARSTEK_WACHE_AUFBEWAHREN_S', 86400);   // Reiter Test: Schreiber der letzten 24 h
+}
+if (!defined('MARSTEK_WACHE_HOECHSTENS')) {
+    define('MARSTEK_WACHE_HOECHSTENS', 20);          // Schreiber je Geraet im Merker
+}
+
+/** Pfad des Merkers der Schreiber-Wache fuer Geraet $dev. */
+function marstek_wache_datei($dev)
+{
+    return marstek_tmpdir() . '/schreiber_dev' . (int) $dev . '.json';
+}
+
+/** Eine Kennung fuer &von= und fuer die Liste: 1 bis 32 Zeichen aus A-Z a-z
+ *  0-9 _ -. Ohne Punkt und Doppelpunkt - so verwechselt sie sich nie mit
+ *  einer Adresse. */
+function marstek_wache_kennung_gueltig($k)
+{
+    return is_string($k) && preg_match('/^[A-Za-z0-9_\-]{1,32}$/', $k) === 1;
+}
+
+/** Eine Absenderadresse (IPv4 oder IPv6) fuer die Liste. */
+function marstek_wache_adresse_gueltig($a)
+{
+    return is_string($a) && $a !== '' && filter_var($a, FILTER_VALIDATE_IP) !== false;
+}
+
+/** Zwei Adressen gleich? IPv6 in jeder Schreibweise (::1 = 0:0:0:0:0:0:0:1). */
+function marstek_wache_adresse_gleich($a, $b)
+{
+    if ((string) $a === (string) $b) {
+        return true;
+    }
+    $x = @inet_pton((string) $a);
+    $y = @inet_pton((string) $b);
+    return $x !== false && $y !== false && $x === $y;
+}
+
+/** Der Absender dieser Anfrage, gesaeubert wie in marstek_anruf_log(). */
+function marstek_wache_absender()
+{
+    $ip = isset($_SERVER['REMOTE_ADDR']) ? preg_replace('/[^0-9A-Fa-f:.]/', '', (string) $_SERVER['REMOTE_ADDR']) : '';
+    return substr((string) $ip, 0, 45);
+}
+
+/**
+ * Die Liste der erlaubten Schreiber zerlegen (rein).
+ * Eintraege durch Komma, Semikolon oder Leerraum getrennt, je Eintrag eine
+ * Kennung ("loxone"), eine Adresse ("192.168.178.10") oder beides
+ * als Kennung@Adresse ("loxone@<Adresse>"). Hoechstens 16 Eintraege.
+ * Rueckgabe: array(Eintraege array('von','ip'), unzulaessige Teile).
+ */
+function marstek_wache_liste($text)
+{
+    if (!is_string($text)) {
+        return array(array(), array('?'));
+    }
+    $ein = array();
+    $fehl = array();
+    foreach (preg_split('/[\s,;]+/', trim($text)) as $teil) {
+        if ($teil === '') {
+            continue;
+        }
+        if (strpos($teil, '@') !== false) {
+            list($von, $ip) = explode('@', $teil, 2);
+            if (marstek_wache_kennung_gueltig($von) && marstek_wache_adresse_gueltig($ip)) {
+                $ein[] = array('von' => $von, 'ip' => $ip);
+                continue;
+            }
+        } elseif (marstek_wache_adresse_gueltig($teil)) {
+            $ein[] = array('von' => '', 'ip' => $teil);
+            continue;
+        } elseif (marstek_wache_kennung_gueltig($teil)) {
+            $ein[] = array('von' => $teil, 'ip' => '');
+            continue;
+        }
+        $fehl[] = substr((string) preg_replace('/[^\x20-\x7E]/', '?', $teil), 0, 40);
+    }
+    if (count($ein) > 16) {
+        $fehl[] = '> 16';
+    }
+    return array($ein, $fehl);
+}
+
+/** Steht der Schreiber Kennung@Absender in der Liste? (rein) */
+function marstek_wache_erlaubt(array $eintraege, $von, $ip)
+{
+    foreach ($eintraege as $e) {
+        if ($e['von'] !== '' && $e['von'] !== (string) $von) {
+            continue;
+        }
+        if ($e['ip'] !== '' && !marstek_wache_adresse_gleich($e['ip'], $ip)) {
+            continue;
+        }
+        return true;
+    }
+    return false;
+}
+
+/** Ist $v fuer diese Einstellung der Wache zulaessig? (rein, ohne Sprachdatei -
+ *  der Endpunkt fragt das bei jedem Sollwert). Dieselben Grenzen wie in
+ *  marstek_wert_pruefen(). */
+function marstek_wache_wert_ok($k, $v)
+{
+    switch ($k) {
+        case 'wache_ein':
+        case 'wache_sperren_ein':
+        case 'wache_lb_melden':
+            return marstek_wert_ganz($v, 0, 1);
+        case 'wache_fenster_min':
+            return marstek_wert_ganz($v, 1, 120);
+        case 'wache_erlaubt':
+            if (!is_string($v) || strlen($v) > 512 || !marstek_wert_taugt($v)) {
+                return false;
+            }
+            list(, $f) = marstek_wache_liste($v);
+            return !$f;
+    }
+    return false;
+}
+
+/** Die Einstellungen der Wache aus einer Konfiguration. Was die eigene
+ *  Pruefung nicht besteht (von Hand bearbeitet), gilt mit der Vorgabe. */
+function marstek_wache_einstellungen(array $cfg)
+{
+    $v = marstek_vorgaben();
+    $aus = array();
+    foreach (array('wache_ein', 'wache_fenster_min', 'wache_sperren_ein', 'wache_lb_melden', 'wache_erlaubt') as $k) {
+        $aus[$k] = (array_key_exists($k, $cfg) && marstek_wache_wert_ok($k, $cfg[$k])) ? $cfg[$k] : $v[$k];
+    }
+    $aus['wache_ein'] = (int) $aus['wache_ein'];
+    $aus['wache_fenster_min'] = (int) $aus['wache_fenster_min'];
+    $aus['wache_sperren_ein'] = (int) $aus['wache_sperren_ein'];
+    $aus['wache_lb_melden'] = (int) $aus['wache_lb_melden'];
+    $aus['wache_erlaubt'] = (string) $aus['wache_erlaubt'];
+    return $aus;
+}
+
+/**
+ * Das Urteil der Sperre (rein). Rueckgabe array(aktiv, erlaubt, fehler):
+ * aktiv = Sperren an UND eine brauchbare Liste. fehler 'LISTE': Sperren an,
+ * die Liste aber leer oder unbrauchbar - dann wirkt die Sperre NICHT (Kopf).
+ */
+function marstek_wache_sperre_urteil(array $w, $von, $ip)
+{
+    if ((int) $w['wache_sperren_ein'] !== 1) {
+        return array(false, true, '');
+    }
+    list($ein, $fehl) = marstek_wache_liste((string) $w['wache_erlaubt']);
+    if ($fehl || !$ein) {
+        return array(false, true, 'LISTE');
+    }
+    return array(true, marstek_wache_erlaubt($ein, $von, $ip), '');
+}
+
+/**
+ * Den Merker eines Geraets fortschreiben (rein, ohne Datei - Selbsttest).
+ * $m: array('schreiber' => array('<von>@<ip>' => Eintrag), 'runde' => '', 'gemeldet' => ts)
+ * Rueckgabe: array(Merker, Schreiber im Fenster (neueste zuerst), melden, neue Runde).
+ * "Runde" ist die Menge der Schreiber im Fenster; gemeldet wird eine neue Runde
+ * sofort, dieselbe hoechstens einmal je Fenster. Faellt die Runde auf einen
+ * Schreiber zurueck, gilt die naechste zweite wieder als neu.
+ */
+function marstek_wache_fortschreiben(array $m, $von, $ip, $art, $abgewiesen, $jetzt, $fenster_s)
+{
+    $jetzt = (int) $jetzt;
+    $liste = (isset($m['schreiber']) && is_array($m['schreiber'])) ? $m['schreiber'] : array();
+    $schl = (string) $von . '@' . (string) $ip;
+    $e = (isset($liste[$schl]) && is_array($liste[$schl])) ? $liste[$schl]
+        : array('von' => (string) $von, 'ip' => (string) $ip, 'erst' => $jetzt, 'n' => 0, 'abgewiesen' => 0);
+    $e['zuletzt'] = $jetzt;
+    $e['n'] = (int) (isset($e['n']) ? $e['n'] : 0) + 1;
+    $e['abgewiesen'] = (int) (isset($e['abgewiesen']) ? $e['abgewiesen'] : 0) + ($abgewiesen ? 1 : 0);
+    $e['art'] = (string) $art;
+    $liste[$schl] = $e;
+    // Aufbewahren: 24 h (in beide Richtungen - eine zurueckgesprungene Uhr
+    // laesst keinen Eintrag ewig stehen), hoechstens MARSTEK_WACHE_HOECHSTENS.
+    foreach ($liste as $k => $x) {
+        if (!is_array($x) || !isset($x['zuletzt'], $x['von'], $x['ip'])
+                || abs($jetzt - (int) $x['zuletzt']) > MARSTEK_WACHE_AUFBEWAHREN_S) {
+            unset($liste[$k]);
+        }
+    }
+    uasort($liste, function ($a, $b) {
+        return (int) $b['zuletzt'] - (int) $a['zuletzt'];
+    });
+    $liste = array_slice($liste, 0, MARSTEK_WACHE_HOECHSTENS, true);
+    $fenster = array();
+    foreach ($liste as $k => $x) {
+        if (abs($jetzt - (int) $x['zuletzt']) < (int) $fenster_s) {
+            $fenster[$k] = $x;
+        }
+    }
+    $gemeldet = isset($m['gemeldet']) ? (int) $m['gemeldet'] : 0;
+    $runde = '';
+    $melden = false;
+    $neu = false;
+    if (count($fenster) > 1) {
+        $k2 = array_keys($fenster);
+        sort($k2, SORT_STRING);
+        $runde = implode('|', $k2);
+        $neu = ($runde !== (isset($m['runde']) ? (string) $m['runde'] : ''));
+        $melden = $neu || abs($jetzt - $gemeldet) >= (int) $fenster_s;
+        if ($melden) {
+            $gemeldet = $jetzt;
+        }
+    } else {
+        $gemeldet = 0;
+    }
+    return array(array('schreiber' => $liste, 'runde' => $runde, 'gemeldet' => $gemeldet),
+                 array_values($fenster), $melden, $neu);
+}
+
+/** Die Schreiber einer Runde als Text fuer Protokoll und Meldung. */
+function marstek_wache_text(array $fenster)
+{
+    $t = array();
+    foreach ($fenster as $x) {
+        $t[] = ((string) $x['von'] !== '' ? $x['von'] : 'ohne Kennung') . '@' . ((string) $x['ip'] !== '' ? $x['ip'] : '?')
+             . ' (' . (int) $x['n'] . 'x' . (!empty($x['abgewiesen']) ? ', ' . (int) $x['abgewiesen'] . ' abgewiesen' : '')
+             . ', zuletzt ' . date('H:i:s', (int) $x['zuletzt']) . ')';
+    }
+    return implode(', ', $t);
+}
+
+/** Den Merker oeffnen - mit close-on-exec ('e'): ein Kindprozess erbt die
+ *  flock-Sperre sonst und haelt sie ueber das Ende des Endpunkts hinaus
+ *  (gemessen an Bewaesserung und Sprachsteuerung: "Sperre vererbt sich an
+ *  Kinder"). Rueckgabe Handle oder false; ein Verzeichnis an der Stelle ist false. */
+function marstek_wache_oeffnen($f, $modus = 'c+')
+{
+    if (is_dir($f)) {
+        return false;
+    }
+    return @fopen($f, $modus . 'e');
+}
+
+/**
+ * Einen Befehl bei der Wache anmelden, je Geraet aus $devs. Faellt offen aus
+ * (Kopf). $w: marstek_wache_einstellungen().
+ * Rueckgabe: array('merker' => alle Merker gingen, 'anzahl' => groesste Zahl der Schreiber im Fenster).
+ */
+function marstek_wache_merken(array $devs, $von, $ip, $art, $abgewiesen, array $w)
+{
+    $aus = array('merker' => true, 'anzahl' => 0);
+    $fenster_s = 60 * (int) $w['wache_fenster_min'];
+    $jetzt = time();
+    foreach ($devs as $dev) {
+        $dev = (int) $dev;
+        $f = marstek_wache_datei($dev);
+        $erg = null;
+        $fh = marstek_wache_oeffnen($f);
+        if ($fh !== false) {
+            $ende = microtime(true) + 2;
+            $gesperrt = true;
+            while (!@flock($fh, LOCK_EX | LOCK_NB)) {
+                if (microtime(true) >= $ende) {
+                    $gesperrt = false;
+                    break;
+                }
+                usleep(20000);
+            }
+            if ($gesperrt) {
+                $roh = (string) stream_get_contents($fh);
+                $m = $roh === '' ? array() : json_decode($roh, true);
+                if (!is_array($m)) {
+                    // Unlesbar: neu beginnen - der Merker beobachtet nur. Eine Zeile,
+                    // danach ist er wieder lesbar (kein Dauerprotokoll).
+                    marstek_log('Der Merker der Schreiber-Wache fuer Geraet ' . $dev . ' war unlesbar ('
+                        . strlen($roh) . ' Byte) und beginnt neu.');
+                    $m = array();
+                }
+                list($m2, $fenster, $melden, $neu) = marstek_wache_fortschreiben($m, $von, $ip, $art, $abgewiesen, $jetzt, $fenster_s);
+                $inhalt = (string) json_encode($m2);
+                if ($inhalt !== '' && ftruncate($fh, 0) && rewind($fh)
+                        && fwrite($fh, $inhalt) === strlen($inhalt) && fflush($fh)) {
+                    $erg = array($fenster, $melden, $neu);
+                }
+                flock($fh, LOCK_UN);
+            }
+            fclose($fh);
+        }
+        $lf = 'wache_merker_dev' . $dev;
+        if ($erg === null) {
+            $aus['merker'] = false;
+            marstek_log_if_changed($lf, 'Der Merker der Schreiber-Wache (' . $f . ') laesst sich nicht oeffnen, '
+                . 'sperren oder schreiben - die Sollwerte fuer Geraet ' . $dev . ' gehen weiter hinaus, nur das '
+                . 'Melden mehrerer Schreiber faellt aus, bis das behoben ist. Pruefen: Platz und Eigentuemer (loxberry).', 'merker');
+            continue;
+        }
+        if (is_file(marstek_tmpdir() . '/last_' . $lf . '.txt')) {
+            marstek_log_if_changed($lf, 'Der Merker der Schreiber-Wache fuer Geraet ' . $dev . ' ist wieder lesbar.', 'ok');
+        }
+        list($fenster, $melden, $neu) = $erg;
+        $aus['anzahl'] = max($aus['anzahl'], count($fenster));
+        if ($melden) {
+            $text = 'Schreiber-Wache, Geraet ' . $dev . ': ' . count($fenster) . ' Schreiber in den letzten '
+                  . (int) $w['wache_fenster_min'] . ' min - ' . marstek_wache_text($fenster)
+                  . ((int) $w['wache_sperren_ein'] === 1 ? '.' : '. Nichts abgewiesen (Sperren aus).');
+            marstek_log($text);
+            if ($neu) {
+                marstek_ereignis($text);
+                marstek_melden(4, $text, 'wache_lb_melden');
+            }
+        }
+    }
+    return $aus;
+}
+
+/** Die Schreiber eines Geraets fuer den Reiter Test, neueste zuerst.
+ *  Rueckgabe array(zustand, eintraege): 'ok' | 'leer' (kein Befehl in 24 h
+ *  oder seit dem Start) | 'merker' (nicht lesbar). */
+function marstek_wache_lesen($dev)
+{
+    $f = marstek_wache_datei($dev);
+    if (!file_exists($f)) {
+        return array('leer', array());
+    }
+    $fh = marstek_wache_oeffnen($f, 'r');
+    if ($fh === false) {
+        return array('merker', array());
+    }
+    $ende = microtime(true) + 2;
+    $ok = true;
+    while (!@flock($fh, LOCK_SH | LOCK_NB)) {
+        if (microtime(true) >= $ende) {
+            $ok = false;
+            break;
+        }
+        usleep(20000);
+    }
+    $roh = $ok ? (string) stream_get_contents($fh) : '';
+    if ($ok) {
+        flock($fh, LOCK_UN);
+    }
+    fclose($fh);
+    $m = ($ok && $roh !== '') ? json_decode($roh, true) : ($ok ? array() : null);
+    if (!is_array($m)) {
+        return array('merker', array());
+    }
+    $aus = array();
+    $liste = (isset($m['schreiber']) && is_array($m['schreiber'])) ? $m['schreiber'] : array();
+    foreach ($liste as $x) {
+        if (!is_array($x) || !isset($x['zuletzt'], $x['n']) || abs(time() - (int) $x['zuletzt']) > MARSTEK_WACHE_AUFBEWAHREN_S) {
+            continue;
+        }
+        $aus[] = array('von' => isset($x['von']) && is_string($x['von']) ? $x['von'] : '',
+                       'ip' => isset($x['ip']) && is_string($x['ip']) ? $x['ip'] : '',
+                       'erst' => (int) (isset($x['erst']) ? $x['erst'] : 0), 'zuletzt' => (int) $x['zuletzt'],
+                       'n' => (int) $x['n'], 'abgewiesen' => (int) (isset($x['abgewiesen']) ? $x['abgewiesen'] : 0),
+                       'art' => isset($x['art']) && is_string($x['art']) ? $x['art'] : '');
+    }
+    usort($aus, function ($a, $b) {
+        return $b['zuletzt'] - $a['zuletzt'];
+    });
+    return array($aus ? 'ok' : 'leer', $aus);
 }
 
 /* ---------------- Auto-Fallback (Cron, minutlich) ---------------- */
@@ -4929,16 +5365,19 @@ function marstek_vo_vorlage($dev = 1) {
     // der erste auf 48 Zeichen, und ueber etwa 40 ist es ein Satz und kein
     // Name (Regeln/07). Der Kachelname sagt deshalb nur "Sollwert setzen
     // (W)"; das Vorzeichen erklaert die Bezeichnung daneben.
+    // Energie-1 C1: jede Adresse traegt von=loxone, damit die Schreiber-Wache
+    // den Miniserver von anderen Schreibern unterscheidet. Wer die Vorlage
+    // nicht neu einliest, erscheint dort als "ohne Kennung" - kein Fehler.
     foreach (array(
         array('title' => 'Sollwert setzen (W, + lädt / - entlädt)',
               'anzeige' => 'Sollwert setzen (W)',
-              'adresse' => '/marstek.php?p=<v>&t=240' . $q, 'analog' => true),
+              'adresse' => '/marstek.php?p=<v>&t=240' . $q . '&von=loxone', 'analog' => true),
         array('title' => 'Handbetrieb: Modus Auto',
               'anzeige' => 'Handbetrieb Auto',
-              'adresse' => '/marstek.php?mode=auto' . $q, 'analog' => false),
+              'adresse' => '/marstek.php?mode=auto' . $q . '&von=loxone', 'analog' => false),
         array('title' => 'Handbetrieb: Modus AI',
               'anzeige' => 'Handbetrieb AI',
-              'adresse' => '/marstek.php?mode=ai' . $q, 'analog' => false),
+              'adresse' => '/marstek.php?mode=ai' . $q . '&von=loxone', 'analog' => false),
     ) as $c) {
         $o .= "\t" . '<VirtualOutCmd Title="' . marstek_x($c['title']) . '" Comment="'
             . marstek_x('Marstek' . $gname . ': ' . $c['anzeige'])
@@ -5140,7 +5579,7 @@ function marstek_geraet_abmelden($n)
                    'set_auftrag_dev%d', 'ausfall_dev%d.json', 'fallback_gemeldet_dev%d', 'hist_ts_dev%d',
                    'mqtt_sig_energie_dev%d.txt', 'mqtt_beat_energie_dev%d', 'last_status_dev%d.txt',
                    'last_energy_dev%d.txt', 'last_set_dev%d.txt', 'last_fallback_dev%d.txt',
-                   'befehlsbremse_dev%d.json') as $muster) {
+                   'befehlsbremse_dev%d.json', 'schreiber_dev%d.json') as $muster) {
         $f = $tmp . '/' . sprintf($muster, $n);
         if (is_file($f) && @unlink($f)) {
             $aus['tmp']++;
@@ -5706,6 +6145,72 @@ function marstek_selbsttest()
     $pruefe('Bremse Nr. 14: Vorgabe bremse_abstand_ein ist 0', marstek_vorgaben()['bremse_abstand_ein'], 0);
     $pruefe('Bremse Nr. 14: bremse_abstand_ein nimmt 0/1', array(marstek_wert_pruefen('bremse_abstand_ein', 1), marstek_wert_pruefen('bremse_abstand_ein', 2) !== ''), array('', true));
     $pruefe('Bremse: gleicher Modus unveraendert', marstek_bremse_urteil(array('art' => 'mode', 'wert' => 'auto', 't' => 0, 'ts' => 1000), 'mode', 'auto', 0, 1057), array('UNVERAENDERT', 0));
+
+    /* --- Energie-1 C1: Schreiber-Wache (rein, ohne Datei) --- */
+    $mv_v = marstek_vorgaben();
+    $pruefe('Wache: Vorgaben melden an, sperren aus, Fenster 15, LB-Meldung aus, Liste leer',
+        array($mv_v['wache_ein'], $mv_v['wache_sperren_ein'], $mv_v['wache_fenster_min'], $mv_v['wache_lb_melden'], $mv_v['wache_erlaubt']),
+        array(1, 0, 15, 0, ''));
+    $pruefe('Wache: Kennungen', array(marstek_wache_kennung_gueltig('loxone'), marstek_wache_kennung_gueltig('aWATTar_2-x'),
+        marstek_wache_kennung_gueltig(''), marstek_wache_kennung_gueltig('a.b'), marstek_wache_kennung_gueltig(str_repeat('x', 33)),
+        marstek_wache_kennung_gueltig(array('loxone'))), array(true, true, false, false, false, false));
+    // Beispiele "kennung@adresse" zusammengesetzt: ein Literal dieser Form haelt das
+    // Freigabetor (Personenbezogenes) fuer eine E-Mail-Adresse.
+    $mv_at = '@';
+    list($mv_le, $mv_lf) = marstek_wache_liste('loxone, 192.168.1.5;awattar' . $mv_at . '127.0.0.1');
+    $pruefe('Wache: Liste mit drei Formen', array(count($mv_le), $mv_lf), array(3, array()));
+    list(, $mv_lf2) = marstek_wache_liste('loxone,1.2.3,' . "\xC3\xA4");
+    $pruefe('Wache: Liste mit zwei unzulaessigen Teilen', count($mv_lf2), 2);
+    $pruefe('Wache: Liste mit 17 Eintraegen abgewiesen', count(marstek_wache_liste(implode(',', array_map(function ($i) { return 'k' . $i; }, range(1, 17))))[1]), 1);
+    $pruefe('Wache: erlaubt nach Kennung, Adresse, Paar', array(
+        marstek_wache_erlaubt($mv_le, 'loxone', '9.9.9.9'), marstek_wache_erlaubt($mv_le, '', '192.168.1.5'),
+        marstek_wache_erlaubt($mv_le, 'awattar', '127.0.0.1'), marstek_wache_erlaubt($mv_le, 'awattar', '10.0.0.1'),
+        marstek_wache_erlaubt($mv_le, '', '127.0.0.1')), array(true, true, true, false, false));
+    $pruefe('Wache: IPv6 in langer Schreibweise ist dieselbe Adresse',
+        marstek_wache_erlaubt(marstek_wache_liste('0:0:0:0:0:0:0:1')[0], '', '::1'), true);
+    $mv_w0 = array('wache_ein' => 1, 'wache_fenster_min' => 15, 'wache_sperren_ein' => 0, 'wache_lb_melden' => 0, 'wache_erlaubt' => '');
+    $pruefe('Wache: Sperren aus - nie abweisen', marstek_wache_sperre_urteil($mv_w0, 'awattar', '127.0.0.1'), array(false, true, ''));
+    $pruefe('Wache: Sperren an, Liste leer - wirkt nicht', marstek_wache_sperre_urteil(array('wache_sperren_ein' => 1) + $mv_w0, 'x', '1.1.1.1'), array(false, true, 'LISTE'));
+    $pruefe('Wache: Sperren an - fremd abgewiesen', marstek_wache_sperre_urteil(array('wache_sperren_ein' => 1, 'wache_erlaubt' => 'loxone') + $mv_w0, 'awattar', '127.0.0.1'), array(true, false, ''));
+    $pruefe('Wache: Sperren an - erlaubt', marstek_wache_sperre_urteil(array('wache_sperren_ein' => 1, 'wache_erlaubt' => 'loxone') + $mv_w0, 'loxone', '192.168.1.4'), array(true, true, ''));
+    $pruefe('Wache: Sperren an - ohne Kennung nur ueber die Adresse', array(
+        marstek_wache_sperre_urteil(array('wache_sperren_ein' => 1, 'wache_erlaubt' => 'loxone') + $mv_w0, '', '192.168.1.7')[1],
+        marstek_wache_sperre_urteil(array('wache_sperren_ein' => 1, 'wache_erlaubt' => 'loxone,192.168.1.7') + $mv_w0, '', '192.168.1.7')[1]),
+        array(false, true));
+    $pruefe('Wache: von Hand verdorbene Einstellungen gelten mit der Vorgabe',
+        marstek_wache_einstellungen(array('wache_fenster_min' => 0, 'wache_erlaubt' => array('x'), 'wache_sperren_ein' => '1', 'wache_ein' => 'ja')),
+        array('wache_ein' => 1, 'wache_fenster_min' => 15, 'wache_sperren_ein' => 1, 'wache_lb_melden' => 0, 'wache_erlaubt' => ''));
+    // Fortschreiben: ein Schreiber, dann ein zweiter, gebremst, Runde zurueck, neue Runde.
+    list($mv_m, $mv_f, $mv_me, $mv_n) = marstek_wache_fortschreiben(array(), 'loxone', '1.1.1.1', 'p', false, 1000, 900);
+    $pruefe('Wache: ein Schreiber - nichts melden', array(count($mv_f), $mv_me, $mv_n), array(1, false, false));
+    list($mv_m, $mv_f, $mv_me) = marstek_wache_fortschreiben($mv_m, 'loxone', '1.1.1.1', 'p', false, 1030, 900);
+    $pruefe('Wache: derselbe Schreiber zaehlt hoch', array(count($mv_f), $mv_f[0]['n'], $mv_me), array(1, 2, false));
+    list($mv_m, $mv_f, $mv_me, $mv_n) = marstek_wache_fortschreiben($mv_m, 'awattar', '127.0.0.1', 'p', false, 1060, 900);
+    $pruefe('Wache: zweiter Schreiber - neue Runde, melden', array(count($mv_f), $mv_me, $mv_n, $mv_f[0]['von']), array(2, true, true, 'awattar'));
+    list($mv_m, $mv_f, $mv_me, $mv_n) = marstek_wache_fortschreiben($mv_m, 'awattar', '127.0.0.1', 'p', true, 1120, 900);
+    $pruefe('Wache: dieselbe Runde im Fenster - nicht noch einmal', array($mv_me, $mv_n, $mv_f[0]['abgewiesen']), array(false, false, 1));
+    list($mv_m, $mv_f, $mv_me, $mv_n) = marstek_wache_fortschreiben($mv_m, 'loxone', '1.1.1.1', 'p', false, 1960, 900);
+    $pruefe('Wache: dieselbe Runde nach einem Fenster - wieder melden, nicht neu', array(count($mv_f), $mv_me, $mv_n), array(2, true, false));
+    list($mv_m, $mv_f, $mv_me) = marstek_wache_fortschreiben($mv_m, 'loxone', '1.1.1.1', 'p', false, 3000, 900);
+    $pruefe('Wache: zweiter faellt aus dem Fenster - ein Schreiber, Runde leer', array(count($mv_f), $mv_me, $mv_m['runde'], count($mv_m['schreiber'])), array(1, false, '', 2));
+    list($mv_m, $mv_f, $mv_me, $mv_n) = marstek_wache_fortschreiben($mv_m, '', '127.0.0.1', 'mode', false, 3010, 900);
+    $pruefe('Wache: neuer zweiter (ohne Kennung) - wieder neu', array(count($mv_f), $mv_me, $mv_n, $mv_f[0]['art']), array(2, true, true, 'mode'));
+    list($mv_m, $mv_f) = marstek_wache_fortschreiben($mv_m, 'loxone', '1.1.1.1', 'p', false, 3010 + 86401, 900);
+    $pruefe('Wache: nach 24 h bleibt nur der neue Eintrag', count($mv_m['schreiber']), 1);
+    $mv_m = array();
+    for ($mv_i = 1; $mv_i <= 25; $mv_i++) {
+        list($mv_m) = marstek_wache_fortschreiben($mv_m, 'k' . $mv_i, '10.0.0.1', 'p', false, 5000 + $mv_i, 900);
+    }
+    $pruefe('Wache: hoechstens 20 Schreiber, die neuesten bleiben', array(count($mv_m['schreiber']), isset($mv_m['schreiber']['k25' . $mv_at . '10.0.0.1']), isset($mv_m['schreiber']['k5' . $mv_at . '10.0.0.1'])), array(20, true, false));
+    $pruefe('Wache: Kreuzpruefung Sperren ohne Liste', array(
+        count(marstek_cfg_kreuzmaengel(array('wache_sperren_ein' => 1, 'wache_erlaubt' => ''))),
+        count(marstek_cfg_kreuzmaengel(array('wache_sperren_ein' => 1, 'wache_erlaubt' => 'loxone'))),
+        count(marstek_cfg_kreuzmaengel(array('wache_sperren_ein' => 0, 'wache_erlaubt' => '')))), array(1, 0, 0));
+    $pruefe('Wache: Werte pruefen', array(marstek_wert_pruefen('wache_fenster_min', 15), marstek_wert_pruefen('wache_fenster_min', 120),
+        marstek_wert_pruefen('wache_fenster_min', 0) !== '', marstek_wert_pruefen('wache_fenster_min', '15.5') !== '',
+        marstek_wert_pruefen('wache_ein', 2) !== '', marstek_wert_pruefen('wache_erlaubt', 'loxone, 192.168.1.5'),
+        marstek_wert_pruefen('wache_erlaubt', 'loxone,1.2.3') !== '', marstek_wert_pruefen('wache_erlaubt', array('loxone')) !== ''),
+        array('', '', true, true, true, '', true, true));
 
     printf("Rechenkern Marstek Venus E: %d Faelle geprueft, %d Fehlschlaege.\n",
            $faelle, count($fehl));
