@@ -13,6 +13,18 @@ den Auto-Modus des Geräts zurück.
 
 Kompatibel mit LoxBerry 3.x und **LoxBerry 4** (reines PHP, läuft mit PHP 7.4 und 8.x).
 
+## Neu in 1.1.20
+
+Nachzug aus der Verbesserungsliste (`Pruefung-Durchgang-2026-09-29/VERBESSERUNGEN_OFFEN.md`, Entscheidung 19).
+Gemessen an einer Speicher-Attrappe unter PHP 7.4, 8.3 und 8.5; nicht am Speicher.
+
+* **Schreiber-Kennung genauer geprüft:** `&von=<kennung>` hat 1–32 Zeichen
+  `A–Z a–z 0–9 _ -`, ohne Leerraum oder Zeilenende; sonst HTTP 400 `ERR=VON`, und es
+  wird nichts gesendet. Bisher wurde eine Kennung mit angehängtem Leerzeichen oder
+  Zeilenende still gekürzt und angenommen. Die Loxone-Vorlage setzt die Kennung
+  ohne Leerraum; eine von Hand eingetragene Adresse mit `&von=loxone ` (Leerzeichen
+  am Ende) bitte berichtigen.
+
 ## Neu in 1.1.19
 
 Energie-1 Teil C1 (Verbesserungsliste `Pruefung-Durchgang-2026-09-29/VERBESSERUNGEN_OFFEN.md`, Entscheidung 25).

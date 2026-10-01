@@ -3199,10 +3199,11 @@ function marstek_wache_datei($dev)
 
 /** Eine Kennung fuer &von= und fuer die Liste: 1 bis 32 Zeichen aus A-Z a-z
  *  0-9 _ -. Ohne Punkt und Doppelpunkt - so verwechselt sie sich nie mit
- *  einer Adresse. */
+ *  einer Adresse. Verankert mit \A und \z (Marstek-v1): "$" liesse ein
+ *  angehaengtes Zeilenende durch ("loxone\n" galt als gueltig). */
 function marstek_wache_kennung_gueltig($k)
 {
-    return is_string($k) && preg_match('/^[A-Za-z0-9_\-]{1,32}$/', $k) === 1;
+    return is_string($k) && preg_match('/\A[A-Za-z0-9_\-]{1,32}\z/', $k) === 1;
 }
 
 /** Eine Absenderadresse (IPv4 oder IPv6) fuer die Liste. */
@@ -6154,6 +6155,10 @@ function marstek_selbsttest()
     $pruefe('Wache: Kennungen', array(marstek_wache_kennung_gueltig('loxone'), marstek_wache_kennung_gueltig('aWATTar_2-x'),
         marstek_wache_kennung_gueltig(''), marstek_wache_kennung_gueltig('a.b'), marstek_wache_kennung_gueltig(str_repeat('x', 33)),
         marstek_wache_kennung_gueltig(array('loxone'))), array(true, true, false, false, false, false));
+    // Marstek-v1: Zeilenende und Leerraum am Rand werden abgewiesen (\z statt $).
+    $pruefe('Wache: Kennung mit Zeilenende oder Leerraum abgewiesen', array(marstek_wache_kennung_gueltig("loxone\n"),
+        marstek_wache_kennung_gueltig("loxone\r\n"), marstek_wache_kennung_gueltig(" loxone"), marstek_wache_kennung_gueltig("lox\none"),
+        marstek_wache_kennung_gueltig(str_repeat('x', 32) . "\n")), array(false, false, false, false, false));
     // Beispiele "kennung@adresse" zusammengesetzt: ein Literal dieser Form haelt das
     // Freigabetor (Personenbezogenes) fuer eine E-Mail-Adresse.
     $mv_at = '@';
@@ -6161,6 +6166,9 @@ function marstek_selbsttest()
     $pruefe('Wache: Liste mit drei Formen', array(count($mv_le), $mv_lf), array(3, array()));
     list(, $mv_lf2) = marstek_wache_liste('loxone,1.2.3,' . "\xC3\xA4");
     $pruefe('Wache: Liste mit zwei unzulaessigen Teilen', count($mv_lf2), 2);
+    $pruefe('Wache: Zeilenende in der Liste trennt nur', marstek_wache_liste("loxone\n"),
+        array(array(array('von' => 'loxone', 'ip' => '')), array()));
+    $pruefe('Wache: Kennung, Zeilenumbruch, Adresse ist kein Paar', count(marstek_wache_liste("awattar\n" . $mv_at . '127.0.0.1')[1]), 1);
     $pruefe('Wache: Liste mit 17 Eintraegen abgewiesen', count(marstek_wache_liste(implode(',', array_map(function ($i) { return 'k' . $i; }, range(1, 17))))[1]), 1);
     $pruefe('Wache: erlaubt nach Kennung, Adresse, Paar', array(
         marstek_wache_erlaubt($mv_le, 'loxone', '9.9.9.9'), marstek_wache_erlaubt($mv_le, '', '192.168.1.5'),

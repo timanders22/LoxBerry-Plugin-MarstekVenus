@@ -116,12 +116,14 @@ function mv_abweisen($code, $zeile, $grund) {
 
 /** Schreiber-Wache: &von= lesen. Fehlt es: '' (ohne Kennung). Eine Kennung,
  *  die nicht ins Muster passt, wird abgewiesen wie ein falsches t - abweisen
- *  statt zurechtbiegen (Nr. 19); ein Tippfehler faellt beim Einrichten auf. */
+ *  statt zurechtbiegen (Nr. 19); ein Tippfehler faellt beim Einrichten auf.
+ *  Geprueft wird der Wert, wie er kam - ohne trim() (Marstek-v1): ein
+ *  angehaengtes %0A oder Leerzeichen bekommt ebenfalls 400 ERR=VON. */
 function mv_von($satz) {
     if (!isset($_GET['von'])) {
         return '';
     }
-    $v = mv_par('von');
+    $v = is_string($_GET['von']) ? $_GET['von'] : null;
     if ($v === null || !marstek_wache_kennung_gueltig($v)) {
         mv_abweisen(400, $satz . ";OK=0;ERR=VON\n", 'abweisung');
     }
