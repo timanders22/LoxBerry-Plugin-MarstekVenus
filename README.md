@@ -13,6 +13,18 @@ den Auto-Modus des Geräts zurück.
 
 Kompatibel mit LoxBerry 3.x und **LoxBerry 4** (reines PHP, läuft mit PHP 7.4 und 8.x).
 
+## Neu in 1.1.21
+
+Kopf wie alle Hausplugins: Statusübersicht über den Reitern, Zusammenfassung oben im ersten Reiter.
+
+* **Statusübersicht über den Reitern** als Tabelle: Dienst (keiner, Cron jede Minute), Zahl der
+  eingerichteten Speicher, Verbindung („n von m OK“), letzte echte Messung mit Alter und MQTT ein/aus –
+  aus dem Zwischenspeicher, ohne Aufruf am Speicher. Die Kästen je Speicher darunter bleiben, wie sie sind.
+* **Zusammenfassung** des Plugins in einem grünen Kasten oben im Reiter Einstellungen.
+* Nur Oberfläche; gerendert unter PHP 7.4, 8.4 und 8.5, nicht am Gerät angesehen.
+
+**In Loxone:** nichts zu tun.
+
 ## Neu in 1.1.20
 
 Nachzug aus der Verbesserungsliste (`Pruefung-Durchgang-2026-09-29/VERBESSERUNGEN_OFFEN.md`, Entscheidung 19).

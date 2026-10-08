@@ -925,6 +925,40 @@ $mv_verlauf_tag = isset($_GET['vtag']) && is_string($_GET['vtag']) ? preg_replac
 </ul></div><?php } ?>
 <?php if ($mv_fehlten) { ?><div class="sm-alert sm-info"><?= marstek_e(sprintf(marstek_t('MELD.KONFIG_ERGAENZT'), implode(', ', $mv_fehlten))) ?></div><?php } ?>
 
+<?php
+/* Kopf (Entscheidung Nr. 43, seit 1.1.21): Statusuebersicht ueber den
+ * Reitern, immer sichtbar. Nur der Zwischenspeicher ($mv_statuses, oben aus
+ * status_devN.json gelesen) und die Konfiguration - kein Aufruf am Speicher. */
+$mv_kopf_n = count($mv_devices);
+$mv_kopf_ok = 0;
+$mv_kopf_mess = 0;
+foreach ($mv_statuses as $mv_kopf_st) {
+    if (!empty($mv_kopf_st['ok'])) {
+        $mv_kopf_ok++;
+    }
+    if (!empty($mv_kopf_st['mess']) && (int) $mv_kopf_st['mess'] > $mv_kopf_mess) {
+        $mv_kopf_mess = (int) $mv_kopf_st['mess'];
+    }
+}
+?>
+<table class="sm-tbl" style="max-width:620px">
+<tr><th><?= marstek_e(marstek_t('EINST.KOPF_EIGENSCHAFT')) ?></th><th><?= marstek_e(marstek_t('EINST.KOPF_WERT')) ?></th></tr>
+<tr><td><?= marstek_e(marstek_t('EINST.KOPF_DIENST')) ?></td>
+    <td><?= marstek_e(marstek_t('EINST.KOPF_OHNE_DIENST')) ?></td></tr>
+<tr><td><?= marstek_e(marstek_t('EINST.KOPF_SPEICHER')) ?></td>
+    <td><?= (int) $mv_kopf_n ?></td></tr>
+<tr><td><?= marstek_e(marstek_t('EINST.VERBINDUNG')) ?></td>
+    <?= $mv_kopf_n === 0 ? '<td>&ndash;</td>'
+        : '<td class="' . ($mv_kopf_ok === $mv_kopf_n ? 'sm-ja' : 'sm-nein') . '">'
+          . marstek_e(sprintf(marstek_t('EINST.KOPF_N_VON_M'), $mv_kopf_ok, $mv_kopf_n)) . '</td>' ?></tr>
+<tr><td><?= marstek_e(marstek_t('EINST.KOPF_LETZTE')) ?></td>
+    <td><?= $mv_kopf_mess > 0
+        ? marstek_e(date('d.m.Y H:i:s', $mv_kopf_mess) . ' (' . max(0, time() - $mv_kopf_mess) . ' s)')
+        : marstek_e(marstek_t('EINST.NIE')) ?></td></tr>
+<tr><td>MQTT</td>
+    <td><?= marstek_e(!empty($mv_cfg['mqtt_enabled']) ? marstek_t('EINST.EIN') : marstek_t('EINST.AUS')) ?></td></tr>
+</table>
+
 <?php foreach ($mv_statuses as $n => $st) {
     $alter = !empty($st['mess']) ? time() - (int) $st['mess'] : -1; ?>
 <div class="sm-alert sm-info"><b><?= marstek_e($mv_devices[$n]['name']) ?></b>
@@ -992,6 +1026,8 @@ $mv_verlauf_tag = isset($_GET['vtag']) && is_string($_GET['vtag']) ? preg_replac
 
 <!-- ================= Reiter: Einstellungen ================= -->
 <div class="sm-seite<?= $mv_active_tab === 'tab-settings' ? ' sm-active' : '' ?>" id="tab-settings">
+<div class="sm-hinweis"><?= marstek_t('EINST.WAS_IST_DAS') ?></div>
+
 <div class="sm-legende">
 <span><i class="sm-punkt sm-b-technik"></i> <?= marstek_e(marstek_t('LEGENDE.TECHNIK')) ?></span>
 <span><i class="sm-punkt sm-b-aktion"></i> <?= marstek_e(marstek_t('LEGENDE.AKTION')) ?></span>
