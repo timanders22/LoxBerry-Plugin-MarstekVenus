@@ -13,6 +13,20 @@ den Auto-Modus des Geräts zurück.
 
 Kompatibel mit LoxBerry 3.x und **LoxBerry 4** (reines PHP, läuft mit PHP 7.4 und 8.x).
 
+## Neu in 1.1.22
+
+Baustein-Liste in der Schreibweise des Leitungswerkzeugs.
+
+* **Baustein-Liste (Reiter Einbindung in Loxone):** Die Logikbausteine nennen ihre Quellen mit
+  Eingang: `I1 = #12, I2 = #13` statt „#12, #13“, `I1 = #31, I2 = NEG (negiert)` statt „#31, NEG
+  negiert“. Der Folgebaustein steht jetzt in der Spalte „Baustein“: `Formel → Virtueller Ausgang`
+  (#38), `Einschaltverzögerung → Benachrichtigung` (#40). Gleiche Bausteine, gleiche Verbindungen.
+* **Taktüberwachung (#41): Analogwertvalidierung statt „Änderungsüberwachung“** – diesen Baustein
+  gibt es in Loxone Config nicht. Tmc 180 s wie die bisherige Schwelle, Min 0, Max 999;
+  `MARSTEK_STATUS_ZAEHLER` an V, an En eine Konstante 1; der Ausgang E (error) geht an die
+  Benachrichtigung. Steht der Minutentakt, liefert das Plugin -1 und löst damit ebenfalls aus.
+* Nur Oberfläche; gerendert unter PHP 7.4, 8.4 und 8.5, nicht am Gerät angesehen.
+
 ## Neu in 1.1.21
 
 Kopf wie alle Hausplugins: Statusübersicht über den Reitern, Zusammenfassung oben im ersten Reiter.
