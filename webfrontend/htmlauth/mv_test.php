@@ -192,7 +192,7 @@ function mv_themen_pruefen()
 }
 
 /**
- * Verweist jede Zeile der Baustein-Liste nur auf kleinere Nummern?
+ * Verweist jede Zeile der Baustein-Listen nur auf kleinere Nummern derselben Seite?
  *
  * Gemessen an der GERENDERTEN Tabelle, nicht am Quelltext: die Nummern
  * stehen in Sprachwerten ("#25, #26"), und zwischen Quelltext und Anzeige
@@ -202,33 +202,37 @@ function mv_themen_pruefen()
  */
 function mv_bausteinliste_pruefen()
 {
-    $s = @file_get_contents(__DIR__ . '/index.php');
-    if (!is_string($s) || $s === '') {
-        return array(0, array('index.php nicht lesbar - diese Zeile misst nichts'));
+    /* Welle Bild 16 (1.1.23): drei Seiten aus marstek_bausteinliste() statt der einen Liste $mv_bausteine, die
+     * bis 1.1.22 hier aus dem Quelltext von index.php gelesen wurde. Gemessen wird weiter am Text, den die
+     * Oberflaeche zeigt (Sprachdatei): jeder Verweis "#n" einer Zeile zeigt auf eine KLEINERE Nummer DERSELBEN
+     * Seite (keine Leitung ueber eine Seitengrenze), und kein UND/ODER hat mehr als zwei Eingaenge. */
+    if (!function_exists('marstek_bausteinliste')) {
+        return array(0, array('marstek_bausteinliste() fehlt - diese Zeile misst nichts'));
     }
-    if (!preg_match('/\$mv_bausteine = array\((.*?)\n\);/s', $s, $m)) {
-        return array(0, array('die Baustein-Liste wurde nicht gefunden'));
-    }
-    preg_match_all("/array\('[^']*', '([^']*)', '[^']*', '([^']*)'\)/", $m[1], $z);
     $fehler = array();
-    $n = count($z[1]);
-    foreach ($z[2] as $i => $eingang) {
-        if ($eingang === '') { continue; }
-        $text = strpos($eingang, 'LOX.') === 0 ? marstek_t($eingang) : $eingang;
-        if (preg_match_all('/#(\d+)/', $text, $t)) {
-            foreach ($t[1] as $verweis) {
-                if ((int) $verweis >= $i + 1) {
-                    $fehler[] = sprintf('#%d verweist auf #%s', $i + 1, $verweis);
-                } elseif ((int) $verweis < 1 || (int) $verweis > $n) {
-                    $fehler[] = sprintf('#%d verweist auf #%s, das es nicht gibt', $i + 1, $verweis);
+    $n = 0;
+    foreach (marstek_bausteinliste() as $s) {
+        $anzahl = count($s['zeilen']);
+        foreach ($s['zeilen'] as $z) {
+            $n++;
+            $nr = (int) $z[0];
+            if ($z[1] === '' || $z[2] === '' || strpos($z[1], 'LOX.') === 0) {
+                $fehler[] = sprintf('%s #%d: Zeile fehlt in der Sprachdatei', $s['seite'], $nr);
+                continue;
+            }
+            if (preg_match_all('/#(\d+)/', (string) $z[4], $t)) {
+                foreach ($t[1] as $verweis) {
+                    if ((int) $verweis >= $nr) {
+                        $fehler[] = sprintf('%s #%d verweist auf #%s', $s['seite'], $nr, $verweis);
+                    } elseif ((int) $verweis < 1 || (int) $verweis > $anzahl) {
+                        $fehler[] = sprintf('%s #%d verweist auf #%s, das es nicht gibt', $s['seite'], $nr, $verweis);
+                    }
                 }
             }
-        }
-        // Ein UND oder ODER hat zwei Eingaenge - nicht drei.
-        $typ = isset($z[1][$i]) ? $z[1][$i] : '';
-        if (preg_match('/B_/', $typ) && substr_count($text, '#') > 2
-                && strpos($s, "'LOX.T_UND', '" . $typ . "'") !== false) {
-            $fehler[] = sprintf('#%d: ein UND mit mehr als zwei Eingaengen', $i + 1);
+            // Ein UND oder ODER hat zwei Eingaenge - nicht drei.
+            if (in_array($z[1], array('UND', 'ODER', 'AND', 'OR'), true) && substr_count((string) $z[4], '#') > 2) {
+                $fehler[] = sprintf('%s #%d: ein %s mit mehr als zwei Eingaengen', $s['seite'], $nr, $z[1]);
+            }
         }
     }
     return array($n, $fehler);

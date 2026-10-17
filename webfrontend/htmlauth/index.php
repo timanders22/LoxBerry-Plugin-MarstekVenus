@@ -826,6 +826,14 @@ $mv_verlauf_tag = isset($_GET['vtag']) && is_string($_GET['vtag']) ? preg_replac
 .sm-wrap, .sm-wrap *, .sm-tabs, .sm-tabs * { text-shadow: none !important; }
 .sm-wrap h2 { color: #6dac20; margin: 24px 0 10px; font-size: 1.15em; border-bottom: 2px solid #e0e0e0; padding-bottom: 6px; }
 .sm-wrap h3, .sm-h3 { color: #4f7d17; font-size: 1.0em; font-weight: 700; margin: 16px 0 2px; }
+/* Welle Bild 16 (1.1.23): Seiten, Schritte, Hinweise und Bild je Baustein-Liste (Bauart Raumklima 0.11.20). */
+.sm-wrap h4.sm-h4 { color: #4f7d17; font-size: 0.98em; font-weight: 700; margin: 22px 0 4px;
+    padding-top: 10px; border-top: 1px solid #e0e0e0; }
+.sm-schritte { margin: 6px 0 0 18px; padding: 0; }
+.sm-schritte li { margin: 3px 0; }
+.sm-bild { margin: 12px 0; }
+.sm-bild img { max-width: 100%; height: auto; border: 1px solid #ccc; border-radius: 4px; background: #fff; }
+.sm-bild figcaption { font-size: .9em; color: #555; margin-top: 4px; }
 .sm-wrap label { display: block; font-weight: 600; font-size: 0.88em; color: #555; margin: 10px 0 4px; }
 .sm-wrap input[type=text], .sm-wrap input[type=number], .sm-wrap input[type=file], .sm-wrap select {
   width: 100%; padding: 8px 10px; border: 1px solid #ccc; border-radius: 6px; font-size: 0.95em; box-sizing: border-box; }
@@ -1399,7 +1407,7 @@ foreach ($mv_saetze as $mv_s => $mv_unused) {
 <table class="sm-tbl">
 <tr><th style="width:34%;"><?= marstek_e(marstek_t('LOX.SP_EIGENSCHAFT')) ?></th><th><?= marstek_e(marstek_t('LOX.SP_WERT')) ?></th></tr>
 <tr><td><?= marstek_e(marstek_t('LOX.SP_ADRESSE')) ?></td><td><span class="sm-mono">http://<?= $mv_host ?></span></td></tr>
-<tr><td><?= marstek_e(marstek_t('LOX.SP_BEFEHL_ANALOG')) ?></td><td><span class="sm-mono">/plugins/<?= marstek_e($mv_plugindir) ?>/marstek.php?p=&lt;v&gt;&amp;t=240&amp;von=loxone&amp;token=<?= marstek_e($mv_cfg['aktionstoken']) ?></span></td></tr>
+<tr><td><?= marstek_e(marstek_t('LOX.SP_BEFEHL_ANALOG')) ?></td><td><span class="sm-mono">/plugins/<?= marstek_e($mv_plugindir) ?>/marstek.php?p=&lt;v.0&gt;&amp;t=240&amp;von=loxone&amp;token=<?= marstek_e($mv_cfg['aktionstoken']) ?></span></td></tr>
 <tr><td><?= marstek_e(marstek_t('LOX.SP_BEFEHL_AUTO')) ?></td><td><span class="sm-mono">/plugins/<?= marstek_e($mv_plugindir) ?>/marstek.php?mode=auto&amp;von=loxone&amp;token=<?= marstek_e($mv_cfg['aktionstoken']) ?></span></td></tr>
 </table>
 <div class="sm-warnung"><?= marstek_t('LOX.TOKEN_WARNUNG') ?></div>
@@ -1411,80 +1419,40 @@ foreach ($mv_saetze as $mv_s => $mv_unused) {
 
 <div class="sm-step"><b><?= marstek_e(sprintf(marstek_t('LOX.SCHRITT'), ++$mv_schritt)) ?>: <?= marstek_e(marstek_t('LOX.S_BAUSTEINE')) ?></b><br>
 <?= marstek_t('LOX.BAUSTEINE_VORTEXT') ?>
+<?php
+/* Welle Bild 16 (1.1.23): drei Seiten aus dem LoxBerry-Plugins Musterprojekt, je immer sichtbar mit
+ * Ueberschrift (= Seitenname in Config), Kasten "So uebernehmen Sie diese Seite", Tabelle, Hinweisen, Bild und
+ * Link. Bis 1.1.22 stand hier EINE Liste mit 44 Zeilen ($mv_bausteine) samt Nachtext. Zellen und Schritte kommen
+ * als Klartext aus marstek_bausteinliste() und werden hier maskiert; die Hinweise sind freigegebenes HTML aus
+ * [LOX]. */
+foreach (marstek_bausteinliste() as $mv_bs) { ?>
+<h4 class="sm-h4"><?= marstek_e($mv_bs['seite']) ?></h4>
+<div class="sm-hinweis"><b><?= marstek_e(marstek_t('LOX.SCHRITTE_TITEL')) ?></b>
+<ol class="sm-schritte">
+<?php foreach ($mv_bs['schritte'] as $mv_x) { ?>
+<li><?= marstek_e($mv_x) ?></li>
+<?php } ?>
+</ol></div>
 <div class="sm-breit">
 <table class="sm-tbl">
-<tr><th style="width:34px;">#</th><th style="width:20%;"><?= marstek_e(marstek_t('LOX.SP_BAUSTEIN')) ?></th><th style="width:24%;"><?= marstek_e(marstek_t('LOX.SP_NAME')) ?></th><th style="width:24%;"><?= marstek_e(marstek_t('LOX.SP_PARAMETER')) ?></th><th><?= marstek_e(marstek_t('LOX.SP_EINGAENGE')) ?></th></tr>
-<?php
-$mv_bausteine = array(
-    array('Taster EIN/AUS', 'LOX.B_NETZLADEN', 'LOX.P_STANDARD_AUS', 'LOX.E_VISU'),
-    array('Taster EIN/AUS', 'LOX.B_SPOTLADEN', 'LOX.P_STANDARD_AUS', 'LOX.E_VISU'),
-    array('Taster EIN/AUS', 'LOX.B_ENTLADEN_ERLAUBT', 'LOX.P_STANDARD_AUS', 'LOX.E_VISU'),
-    array('Taster EIN/AUS', 'LOX.B_NUR_TEUERSTE', 'LOX.P_STANDARD_AUS', 'LOX.E_VISU'),
-    array('LOX.T_VE_ZAHL', 'LOX.B_ANZ_GUENSTIG', 'LOX.P_0_24', 'LOX.E_VISU'),
-    array('LOX.T_VE_ZAHL', 'LOX.B_ANZ_TEUER', 'LOX.P_0_24', 'LOX.E_VISU'),
-    array('LOX.T_VE_ZAHL', 'LOX.B_RESERVE', 'LOX.P_0_100', 'LOX.E_VISU'),
-    // O10 (30.09.2026): Bezug positiv, Einspeisung negativ (Vortext) - also
-    // ist der Export max(0;-I1) und der Bezug max(0;I1). Bis 1.1.17 standen
-    // die beiden vertauscht da: wer die Liste nachbaute, lud bei Bezug aus dem
-    // Netz und entlud bei Einspeisung. Die Anlage des Hausherrn rechnet
-    // richtig ("Formel Export-Leistung (W)" = MAX(0;-I1)).
-    array('LOX.T_FORMEL', 'LOX.B_EXPORT', 'max(0;-I1)', 'LOX.E_NETZ'),
-    array('LOX.T_FORMEL', 'LOX.B_BEZUG', 'max(0;I1)', 'LOX.E_NETZ'),
-    array('LOX.T_SCHWELLE', 'LOX.B_EXPORT_UEBER', 'LOX.P_EIN150', 'LOX.E_NR8'),
-    array('LOX.T_FORMEL', 'LOX.B_PV_LADE', 'min(I1-100;2500)*I2', 'LOX.E_NR8_NR10'),
-    array('LOX.T_VERGLEICH', 'LOX.B_RANG_LADE', 'LOX.P_Q1_KLEINER', 'LOX.E_NR5_RANK'),
-    array('LOX.T_SCHWELLE', 'LOX.B_LADESTD_GESETZT', 'LOX.P_EIN05', 'LOX.E_NR5'),
-    array('LOX.T_UND', 'LOX.B_SPOTFENSTER', '', 'LOX.E_NR12_NR13'),
-    array('LOX.T_UND', 'LOX.B_RANKING_GUELTIG', '', 'LOX.E_NR14_OK'),
-    array('LOX.T_ODER', 'LOX.B_SPOTLADUNG_NOETIG', '', 'LOX.E_NEG_NR15'),
-    array('LOX.T_UND', 'LOX.B_SPOT_AKTIV', '', 'LOX.E_NR16_NR2'),
-    array('LOX.T_UND', 'LOX.B_NETZLADEN_ERLAUBT', '', 'LOX.E_NR17_NR1'),
-    array('LOX.T_FORMEL', 'LOX.B_SPOT_LADE', 'I1*2500', 'LOX.E_NR18'),
-    array('LOX.T_FORMEL', 'LOX.B_LADEWUNSCH', 'max(I1;I2)', 'LOX.E_NR11_NR19'),
-    array('LOX.T_SCHWELLE', 'LOX.B_SOC_UEBER12', 'LOX.P_EIN12', 'LOX.E_SOC'),
-    array('LOX.T_VERGLEICH', 'LOX.B_SOC_UEBER_RESERVE', 'LOX.P_Q1_GROESSER', 'LOX.E_SOC_NR7'),
-    array('LOX.T_UND', 'LOX.B_SOC_FREI', '', 'LOX.E_NR21_NR22'),
-    array('LOX.T_SCHWELLE', 'LOX.B_BEZUG_UEBER100', 'LOX.P_EIN100', 'LOX.E_NR9'),
-    array('LOX.T_VERGLEICH', 'LOX.B_RANG_ENTLADE', 'LOX.P_Q1_GROESSER', 'LOX.E_NR6_RANKD'),
-    array('LOX.T_SCHWELLE', 'LOX.B_ENTLADESTD_GESETZT', 'LOX.P_EIN05', 'LOX.E_NR6'),
-    // #27/#28: BERICHTIGT 04.09.2026. Hier stand EIN UND mit drei Eingaengen
-    // ("#25, #26, OK aus den Raengen"). Ein Logikbaustein hat zwei Eingaenge;
-    // drei Bedingungen brauchen die Kaskade. Die Schwesterzeile #15 hat es
-    // immer richtig gemacht. Alles ab hier ist um eine Nummer gerueckt.
-    array('LOX.T_UND', 'LOX.B_ENTLADEFENSTER_ZEIT', '', 'LOX.E_NR25_NR26'),
-    array('LOX.T_UND', 'LOX.B_ENTLADEFENSTER', '', 'LOX.E_NR27_OK'),
-    array('LOX.T_NICHT', 'LOX.B_NICHT_NUR_TEUERSTE', '', 'LOX.E_NR4'),
-    array('LOX.T_ODER', 'LOX.B_ENTLADEFENSTER_ERF', '', 'LOX.E_NR28_NR29'),
-    array('LOX.T_UND', 'LOX.B_ENTLADUNG_ERLAUBT', '', 'LOX.E_NR30_NR3'),
-    array('LOX.T_UND', 'LOX.B_KEIN_NEGPREIS', '', 'LOX.E_NR31_NEG'),
-    array('LOX.T_FORMEL', 'LOX.B_ENTLADEWUNSCH', 'min(I1-50;2500)*I2*I3*I4', 'LOX.E_NR9_NR32_NR24_NR23'),
-    array('LOX.T_SCHWELLE', 'LOX.B_SOC_UEBER97', 'LOX.P_EIN97', 'LOX.E_SOC'),
-    array('LOX.T_FORMEL', 'LOX.B_SOLLLEISTUNG', 'I1*(1-I3)-I2', 'LOX.E_NR20_NR33_NR34'),
-    array('LOX.T_IMPULS', 'LOX.B_SENDETAKT', 'LOX.P_60_60', ''),
-    array('LOX.T_ANALOGSP', 'LOX.B_SAMPLE', 'LOX.P_TRIGGER', 'LOX.E_NR35_NR36'),
-    array('LOX.T_FORMEL_VA', 'LOX.B_DITHER', 'I1+I2', 'LOX.E_NR37_NR36_AUSGANG'),
-    array('LOX.T_NICHT', 'LOX.B_NICHT_ERREICHBAR', '', 'LOX.E_OK'),
-    array('LOX.T_EINVERZ', 'LOX.B_STOERUNG15', '900 s', 'LOX.E_NR39_PUSH'),
-    array('LOX.T_AENDERUNG', 'LOX.B_TAKT_UEBERWACHUNG', 'LOX.P_180', 'LOX.E_ZAEHLER_PUSH'),
-    // #42 bis #44: BERICHTIGT 04.09.2026. Der Vergleicher allein meldete im
-    // Auto-Modus und nach jedem Auto-Fallback dauerhaft eine Stoerung:
-    // MARSTEK_STATUS_SOLL traegt dann -32768 ("kein Sollwert"), und die
-    // Abweichung zu BATP ist immer groesser als 200. Die Schwelle davor
-    // blendet den Fehlwert aus.
-    array('LOX.T_SCHWELLE', 'LOX.B_SOLL_GESETZT', 'LOX.P_EIN_SOLL', 'LOX.E_SOLL'),
-    array('LOX.T_VERGLEICH', 'LOX.B_SOLL_ABWEICHUNG', 'LOX.P_Q1_ABWEICHUNG', 'LOX.E_SOLL_BATP'),
-    array('LOX.T_UND', 'LOX.B_SOLL_IST', '', 'LOX.E_NR42_NR43'),
-);
-foreach ($mv_bausteine as $i => $b) {
-    $typ = strpos($b[0], 'LOX.') === 0 ? marstek_t($b[0]) : $b[0];
-    $par = strpos($b[2], 'LOX.') === 0 ? marstek_t($b[2]) : $b[2];
-    $ein = $b[3] !== '' ? marstek_t($b[3]) : '';
-    ?>
-<tr><td><?= $i + 1 ?></td><td><?= marstek_e($typ) ?></td><td><?= marstek_e(marstek_t($b[1])) ?></td><td><?= marstek_e($par) ?></td><td><?= marstek_e($ein) ?></td></tr>
+<tr><th style="width:34px;">#</th><th style="width:20%;"><?= marstek_e(marstek_t('LOX.SP_BAUSTEIN')) ?></th><th style="width:20%;"><?= marstek_e(marstek_t('LOX.SP_NAME')) ?></th><th style="width:32%;"><?= marstek_e(marstek_t('LOX.SP_PARAMETER')) ?></th><th><?= marstek_e(marstek_t('LOX.SP_EINGAENGE')) ?></th></tr>
+<?php foreach ($mv_bs['zeilen'] as $mv_z) { ?>
+<tr><td><?= (int) $mv_z[0] ?></td><td><?= marstek_e($mv_z[1]) ?></td><td><?= marstek_e($mv_z[2]) ?></td><td><?= marstek_e($mv_z[3]) ?></td><td><?= marstek_e($mv_z[4]) ?></td></tr>
 <?php } ?>
 </table>
 </div>
-<?= marstek_t('LOX.BAUSTEINE_NACHTEXT') ?>
+<div class="sm-warnung"><b><?= marstek_e(marstek_t('LOX.HINWEISE_TITEL')) ?></b>
+<ul class="sm-schritte">
+<?php foreach ($mv_bs['hinweise'] as $mv_x) { ?>
+<li><?= $mv_x ?></li>
+<?php } ?>
+</ul></div>
+<figure class="sm-bild">
+<img src="<?= marstek_e($mv_bs['bild']) ?>" alt="<?= marstek_e(sprintf(marstek_t('LOX.BILD_ALT'), $mv_bs['seite'])) ?>" loading="lazy">
+<figcaption><?= marstek_e(sprintf(marstek_t('LOX.BILD_UNTERSCHRIFT'), $mv_bs['seite'])) ?></figcaption>
+</figure>
+<p class="sm-hilfe"><?= marstek_t('LOX.MUSTERPROJEKT') ?></p>
+<?php } ?>
 </div>
 
 <div class="sm-step"><b><?= marstek_e(sprintf(marstek_t('LOX.SCHRITT'), ++$mv_schritt)) ?>: <?= marstek_e(marstek_t('LOX.S_GEGENPROBE')) ?></b><br>

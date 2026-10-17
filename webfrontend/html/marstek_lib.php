@@ -2963,7 +2963,8 @@ function marstek_set_mode($m, $dev = 1, $trocken = false) {
  *     aus: HTTP 503 und eine Protokollzeile. Die Regel "gleich" ist immer an
  *     und braucht den Merker; deshalb gilt das auch mit Mindestabstand aus.
  *
- * DER DITHER DER BAUSTEIN-LISTE (#36/#38) MUSS DURCHKOMMEN. Loxone schickt
+ * DER DITHER DER BAUSTEIN-LISTE MUSS DURCHKOMMEN (seit 1.1.23 Seite "Marstek
+ * Venus E Steuerung", Nr. 33/34; bis 1.1.22 #36/#38). Loxone schickt
  * den Sollwert nur bei einer Aenderung; die Liste addiert deshalb im
  * 60-s-Takt abwechselnd 0 und 1. Ein Sollwert, der sich nur um 1 W vom
  * zuletzt gesendeten unterscheidet, gilt als GLEICH (keine 429), und
@@ -5296,7 +5297,9 @@ function marstek_vorlage($satz = 'status', $dev = 1) {
             // hier der ganze Erklaertext - gemessen bis 112 Zeichen, und die
             // massgebliche eigene Ausfuhr vom 12.08.2026 fuehrt ihn leer.
             // Jetzt die Kurzform; der lange Text bleibt in der Oberflaeche.
-            'comment' => $f['kurz'],
+            // Welle Bild 16 (1.1.23, E9): in der Sprache der Oberflaeche ([FELD_KURZ]); deutsch
+            // unveraendert die Kurzform, der Titel darueber bleibt fest deutsch.
+            'comment' => marstek_feld_kurz($satz, $name),
             // Das Trennzeichen gehoert in den Suchtext. Ohne es haengt allein
             // an der Reihenfolge der Zeile, dass der richtige Wert ankommt -
             // eine Zusicherung, die beim naechsten neuen Feld still faellt.
@@ -5314,9 +5317,8 @@ function marstek_vorlage($satz = 'status', $dev = 1) {
         'title' => 'Marstek ' . ucfirst($satz) . $gname,
         'address' => 'http://' . $host . '/plugins/' . $ordner . '/marstek.php' . $q,
         'polling' => (string) marstek_satz_takt($satz),
-        'comment' => 'Erzeugt vom LoxBerry-Plugin Marstek Venus E (' . date('d.m.Y') . '). '
-                   . 'Loxone Config legt beim Import neu an und überschreibt nichts — '
-                   . 'zweimal eingelesen ergibt doppelte Bausteine.',
+        // Welle Bild 16 (1.1.23, E9): Kommentar aus der Sprachdatei, Titel fest.
+        'comment' => sprintf(marstek_t('LOX.VK_VI'), date('d.m.Y')),
     ), $cmds));
 }
 
@@ -5350,8 +5352,9 @@ function marstek_vo_vorlage($dev = 1) {
     // Umschriften ("ueber", "enthaelt", "laedt", "entlaedt"), die in Loxone
     // Config als Anzeige- und Befehlsname auf dem Bildschirm standen - und
     // kein Werkzeug hat sie gefunden.
+    // Welle Bild 16 (1.1.23, E9): Kommentare aus der Sprachdatei; die Titel bleiben fest deutsch.
     $o .= '<VirtualOut HintText="" Title="' . marstek_x('Marstek steuern' . $gname) . '" Comment="'
-        . marstek_x('Steuerbefehle über das Plugin ' . $ordner . ' — enthält das Aktionstoken.')
+        . marstek_x(sprintf(marstek_t('LOX.VK_VO'), $ordner))
         . '" Address="http://' . marstek_x($host) . '" CmdInit="" CloseAfterSend="true" CmdSep="">' . $crlf;
     $o .= "\t" . '<Info templateType="3" minVersion="17010727"/>' . $crlf;
     // 'anzeige' ist NEU in 1.1.8 und nicht dasselbe wie 'title'.
@@ -5369,15 +5372,19 @@ function marstek_vo_vorlage($dev = 1) {
     // Energie-1 C1: jede Adresse traegt von=loxone, damit die Schreiber-Wache
     // den Miniserver von anderen Schreibern unterscheidet. Wer die Vorlage
     // nicht neu einliest, erscheint dort als "ohne Kennung" - kein Fehler.
+    //
+    // Welle Bild 16 (1.1.23, E10): der Sollwert geht als <v.0> hinaus. Der Endpunkt nimmt nur ganze Zahlen
+    // (^-?\d{1,6}$, sonst HTTP 400 ERR=P - und der Speicher stoppt nach 240 s). Mit <v> trug ein Sollwert aus
+    // einem Zaehler mit Nachkommastelle eine; die Einspeisebremse sendet seit jeher <v.0>.
     foreach (array(
         array('title' => 'Sollwert setzen (W, + lädt / - entlädt)',
-              'anzeige' => 'Sollwert setzen (W)',
-              'adresse' => '/marstek.php?p=<v>&t=240' . $q . '&von=loxone', 'analog' => true),
+              'anzeige' => marstek_t('LOX.VK_SOLL'),
+              'adresse' => '/marstek.php?p=<v.0>&t=240' . $q . '&von=loxone', 'analog' => true),
         array('title' => 'Handbetrieb: Modus Auto',
-              'anzeige' => 'Handbetrieb Auto',
+              'anzeige' => marstek_t('LOX.VK_AUTO'),
               'adresse' => '/marstek.php?mode=auto' . $q . '&von=loxone', 'analog' => false),
         array('title' => 'Handbetrieb: Modus AI',
-              'anzeige' => 'Handbetrieb AI',
+              'anzeige' => marstek_t('LOX.VK_AI'),
               'adresse' => '/marstek.php?mode=ai' . $q . '&von=loxone', 'analog' => false),
     ) as $c) {
         $o .= "\t" . '<VirtualOutCmd Title="' . marstek_x($c['title']) . '" Comment="'
@@ -5469,6 +5476,70 @@ function marstek_feldtext($satz, $name)
     }
     $f = marstek_felder($satz);
     return isset($f[$name]['text']) ? (string) $f[$name]['text'] : '';
+}
+
+/**
+ * Welle Bild 16 (1.1.23, Entwurf Welle 16 mv E9; Sprachregel 13.10.2026): Kommentar eines Vorlagenbefehls in der
+ * Sprache der Oberflaeche aus [FELD_KURZ] <SATZ>_<NAME>; ohne Eintrag die deutsche Kurzform der Feldtabelle. Der
+ * Titel bleibt fest deutsch ('Marstek ' . kurz) - Loxone Config ordnet ueber die Befehlserkennung zu, und ein
+ * englischer Titel bekaeme beim naechsten Import einen zweiten Eingang. Die Behaeltertitel ("Marstek Energy ...",
+ * "Marstek Ranks") bleiben ebenfalls (O4: Musterprojekt, Bild und Reiter heissen so).
+ */
+function marstek_feld_kurz($satz, $name)
+{
+    $schl = 'FELD_KURZ.' . strtoupper((string) $satz) . '_' . strtoupper((string) $name);
+    $t = marstek_t($schl);
+    if ($t !== $schl) {
+        return $t;
+    }
+    $f = marstek_felder($satz);
+    return isset($f[$name]['kurz']) ? (string) $f[$name]['kurz'] : '';
+}
+
+/**
+ * Die Baustein-Listen des Reiters "Einbindung in Loxone" - Welle Bild 16 (1.1.23, Hausherr 11.10.2026:
+ * Vollausstattung, ein absoluter Laie soll das Maximum leicht uebernehmen koennen; Entwurf Welle 16 mv, E1-E17 wie
+ * empfohlen, 17.10.2026). DREI Seiten wie im LoxBerry-Plugins Musterprojekt (Musterprojekt/baustein_listen.txt,
+ * Abschnitte "Marstek Venus E" 35, "Marstek Venus E Steuerung" 36, "Marstek Venus E Werte" 30 Zeilen); bis 1.1.22
+ * stand in index.php EINE Liste mit 44 Zeilen ($mv_bausteine). Berichtigt gegen sie: der Rang in Ladestunden
+ * vergleicht richtig herum (E3), die Regelung rechnet mit der eigenen Batterieleistung (E2), Formeln gross (E7),
+ * Ausfall und Soll-Ist ueber zwei ODER an eine Benachrichtigung (E6), Typen wie in Config (E8).
+ *
+ * Jede Zeile ist EIN Sprachschluessel LOX.Z<Seite>_<Nr> "Typ | Name | Parameter | Eingaenge" (deutsch wortgleich
+ * mit der Liste; Bausteinnamen auch englisch deutsch). Keine Leitung geht ueber eine Seitengrenze; Befehle, die auf
+ * zwei Seiten stehen, sind dort weitere Instanzen. mv_bausteinliste_pruefen() (Reiter Test) misst die Verweise.
+ *
+ * Rueckgabe: Liste von array('seite', 'bild', 'zeilen' => array(array(Nr, Typ, Name, Parameter, Eingaenge), ...),
+ * 'schritte', 'hinweise'). Die Zellen und Schritte sind Klartext (index.php maskiert), die Hinweise freigegebenes
+ * HTML aus der Sprachdatei.
+ */
+function marstek_bausteinliste()
+{
+    // Seitenname (= Config-Seite im Musterprojekt, deshalb fest), Bild, Zahl der Zeilen, Schritte, Hinweise
+    $seiten = array(
+        1 => array('Marstek Venus E', 'einbindung_loxone.png', 35, 6, 8),
+        2 => array('Marstek Venus E Steuerung', 'einbindung_loxone_steuerung.png', 36, 6, 8),
+        3 => array('Marstek Venus E Werte', 'einbindung_loxone_werte.png', 30, 5, 3),
+    );
+    $aus = array();
+    foreach ($seiten as $s => $d) {
+        $zeilen = array();
+        for ($i = 1; $i <= $d[2]; $i++) {
+            $c = explode(' | ', marstek_t('LOX.Z' . $s . '_' . sprintf('%02d', $i)), 4);
+            $zeilen[] = array_merge(array($i), array_pad($c, 4, ''));
+        }
+        $schritte = array();
+        for ($i = 1; $i <= $d[3]; $i++) {
+            $schritte[] = marstek_t('LOX.SEITE' . $s . '_SCHRITT' . $i);
+        }
+        $hinweise = array();
+        for ($i = 1; $i <= $d[4]; $i++) {
+            $hinweise[] = marstek_t('LOX.SEITE' . $s . '_H' . $i);
+        }
+        $aus[] = array('seite' => $d[0], 'bild' => $d[1], 'zeilen' => $zeilen,
+                       'schritte' => $schritte, 'hinweise' => $hinweise);
+    }
+    return $aus;
 }
 
 /**
@@ -5977,6 +6048,12 @@ function marstek_selbsttest()
         }
         libxml_use_internal_errors($alt);
     }
+
+    /* --- 6a. Welle Bild 16 (1.1.23, E10): der Sollwert-Befehl sendet ganze Watt --- */
+    list(, $mv_vq) = marstek_vo_vorlage(1);
+    $pruefe('Steuervorlage: Sollwert mit <v.0>',
+        strpos($mv_vq, 'p=&lt;v.0&gt;&amp;t=240') !== false, true);
+    $pruefe('Steuervorlage: kein blosses <v> mehr', strpos($mv_vq, 'p=&lt;v&gt;'), false);
 
     /* --- 7. Adressen: jede Stelle einzeln --- */
     $pruefe('IP 192.0.2.7 gueltig', marstek_ip_gueltig('192.0.2.7'), true);

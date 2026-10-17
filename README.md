@@ -13,6 +13,45 @@ den Auto-Modus des Geräts zurück.
 
 Kompatibel mit LoxBerry 3.x und **LoxBerry 4** (reines PHP, läuft mit PHP 7.4 und 8.x).
 
+## Neu in 1.1.23
+
+Einbindung in Loxone in Vollausstattung: drei Seiten aus dem LoxBerry-Plugins Musterprojekt mit drei
+Bildern und je einer Schritt-für-Schritt-Anleitung („So übernehmen Sie diese Seite“). Sie ersetzen die
+eine Baustein-Liste mit 44 Zeilen.
+
+* **Seite „Marstek Venus E“** (35 Zeilen): alle 12 Statuswerte, Ausfall- und Soll-Ist-Meldung über zwei ODER an
+  eine Benachrichtigung (die Soll-Ist-Prüfung nur bei frischem Sollwert und erst nach 900 s), drei Status,
+  Zähler für Speicher, Tasten Auto und AI.
+* **Seite „Marstek Venus E Steuerung“** (36 Zeilen): Hauptschalter „Speicher-Regelung ein“ (ab Werk aus),
+  PV-Überschuss laden, ins Haus entladen, günstige Stunden aus dem Netz laden, teure Stunden entladen;
+  „Senden erlaubt“ treibt Analogspeicher und Dither – bei ausgeschalteter Regelung sendet Loxone nichts mehr.
+* **Seite „Marstek Venus E Werte“** (30 Zeilen): alle 13 Rangwerte und 10 Zählerwerte, vier Status, Meldung
+  „Spotpreise fehlen seit 2 Stunden“.
+* **Berichtigt – wer nach der bisherigen Liste gebaut hat, bitte ansehen:**
+  * **Rang in Ladestunden** vergleicht jetzt richtig herum: „Kleiner oder gleich“ mit dem Rang an I1 und der
+    Anzahl an I2. Bis 1.1.22 stand dort „I1 = #5, I2 = RANK“ (Anzahl ≤ Rang) – damit lud das Spotpreis-Laden in
+    den teuersten statt in den günstigsten Stunden. In Loxone die beiden Eingänge tauschen.
+  * **Regelung mit der eigenen Batterieleistung:** „Überschuss ohne Speicher“ = Batterieleistung minus
+    Netzleistung, Lade- und Entladewunsch daraus mit 100 W bzw. 50 W Abstand. Aus der Einspeisung allein
+    pendelte der Sollwert im Zwei-Minuten-Takt zwischen Überschuss und 0 W (gerechnet, nicht am Gerät gemessen).
+  * Formeln groß geschrieben (MAX, MIN, ABS) – klein meldet Config „Ungültige Formel“.
+  * Analogwertvalidierung: Haken bei ‚En‘ im Eigenschaftsfenster entfernen (Config legt En negiert an); der
+    Satz „unbeschaltet zeigt En Aus“ ist gestrichen.
+  * Die Texte nennen die Befehlstitel der Vorlage („Marstek Herzschlag (vorige Runde)“) statt der Schlüssel
+    MARSTEK_STATUS_…, die es seit 1.1.7 nicht mehr gibt; Typen wie in Config (Schalter, Schieberegler,
+    Kleiner oder gleich, Größer oder gleich). Schritt 1: HTTP und MQTT sind gleichwertig, das Musterprojekt
+    nutzt HTTP.
+* **Steuervorlage:** der Befehl „Sollwert setzen (W, + lädt / - entlädt)“ sendet `p=<v.0>` statt `p=<v>`
+  (ganze Watt; der Endpunkt nimmt nur ganze Zahlen und weist sonst mit HTTP 400 ab). Wirkt erst nach neuem
+  Import von `VQ_marstek_steuern.xml` – oder am vorhandenen Befehl in Loxone Config `<v>` von Hand in `<v.0>`
+  ändern.
+* **Vorlagen:** die Kommentare der Befehle und Behälter stehen in der Sprache der Oberfläche; Titel und
+  Befehlserkennung bleiben fest deutsch bzw. unverändert – kein neuer Import nötig.
+* Die Selbstprüfung im Reiter Test misst die drei Listen (Verweise nur rückwärts auf derselben Seite, UND/ODER
+  mit zwei Eingängen); der Rechenkern (`--selbsttest`) prüft `<v.0>` im Sollwert-Befehl.
+* Englische Oberfläche: die Bausteinnamen stehen deutsch wie im Musterprojekt.
+* Gerendert unter PHP 7.4, 8.4 und 8.5, nicht am Gerät angesehen.
+
 ## Neu in 1.1.22
 
 Baustein-Liste in der Schreibweise des Leitungswerkzeugs.
@@ -793,7 +832,7 @@ Zwischenspeicher, ohne den Speicher selbst zu fragen.
 **Befehlsbremse** (je Speicher, für `?p=` und `?mode=`, nicht für `&dry=1`):
 derselbe Befehl – ein Sollwert, der sich nur um 1 W unterscheidet, und
 dasselbe `t` gelten als derselbe, das ist der Dither der Baustein-Liste
-(#36/#38) – geht innerhalb von 60 s nicht erneut hinaus; die Antwort ist
+(Seite „Marstek Venus E Steuerung“, Nr. 33/34) – geht innerhalb von 60 s nicht erneut hinaus; die Antwort ist
 HTTP 200 mit `UNVERAENDERT=1`. Spätestens nach 58 s (bei kleinem `t` nach der
 Hälfte von `t`, abzüglich 2 s) geht er wieder hinaus und erneuert den
 Watchdog. Mit der Einstellung „Mindestabstand 10 s für einen anderen
@@ -845,10 +884,16 @@ Status-Cache, Auto-Fallback, Verlaufsdauer, Hauptschalter, Schutzschwellen,
 Benachrichtigungen, aWATTar-Markt, USt-Faktor und Aufschlag, Sicherung),
 **MQTT** (Haken, Präfix, Abo-Hinweis je nach Gateway-Fassung und die Tabelle
 **aller** veröffentlichten Themen), **Einbindung in Loxone** (Schritt für
-Schritt, mit durchnummerierter Baustein-Liste und Gegenprobe), **Test**
+Schritt, mit drei Baustein-Listen samt Bild und Anleitung und Gegenprobe), **Test**
 (Selbstprüfung, Gerätesuche, technische Auskunft, Trockenlauf, Schalten) und
 **Logdateien** (Protokoll und die Fehlerausgabe des Minutentakts). Über den
 Reitern: Statuszeile und Verlaufsgrafik je Gerät.
+
+Die Bausteine der drei Baustein-Listen stehen fertig verbunden auf den Seiten
+„Marstek Venus E“, „Marstek Venus E Steuerung“ und „Marstek Venus E Werte“ im
+[LoxBerry-Plugins Musterprojekt](https://github.com/timanders22/LoxBerry-Plugins-Musterprojekt),
+einer gemeinsamen Projektdatei mit allen Plugin-Seiten und Vorlagen. Jede Liste hat im Reiter eine
+Schritt-für-Schritt-Anleitung und ein Bild der Seite.
 
 ## Datenschutz
 
