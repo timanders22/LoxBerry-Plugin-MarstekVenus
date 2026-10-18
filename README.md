@@ -13,6 +13,17 @@ den Auto-Modus des Geräts zurück.
 
 Kompatibel mit LoxBerry 3.x und **LoxBerry 4** (reines PHP, läuft mit PHP 7.4 und 8.x).
 
+## Neu in 1.1.24
+
+Textnachzug zum Musterprojekt, Reiter **Einbindung in Loxone**, Seite „Marstek Venus E Werte“:
+
+* Nr. 3 „Marstek Rang günstig“ und Nr. 4 „Marstek Rang teuer“ beschreiben jetzt, was die Befehle liefern: den
+  Rang der laufenden Stunde in den nächsten 24 Stunden (1 = günstigste bzw. 1 = teuerste Stunde, 99 = keine
+  Preise). Bisher las sich die Zelle wie ein Ein/Aus-Wert („1 = günstigste Stunde“). Nr. 4 ist wie Nr. 3 eine
+  weitere Instanz der Seite „Marstek Venus E Steuerung“ und dient hier nur der Anzeige.
+* **Kein Neuimport nötig** und im eigenen Projekt nichts zu ändern – nur die Beschreibung in der Tabelle ist
+  berichtigt. Vorlagen, Bilder, Endpunkt und Regelung sind unverändert.
+
 ## Neu in 1.1.23
 
 Einbindung in Loxone in Vollausstattung: drei Seiten aus dem LoxBerry-Plugins Musterprojekt mit drei
