@@ -188,6 +188,27 @@ $GLOBALS['marstek_ist_takt'] = true;
 // Neuinstallation nie durchlaeuft.
 marstek_cfg_vervollstaendigen();
 
+// Gruppe 1 (1.1.25): die Abo-Datei fuer Gateway Fassung 1 nachfuehren (Regeln/07: ein Plugin mit einstellbarem
+// Praefix fuehrt seine mqtt_subscriptions.cfg selbst nach; geschrieben wird nur, wenn sie abweicht).
+marstek_mqtt_abo_datei_pflegen();
+
+// Gruppe 1 (1.1.25): der Waechter der Befehlsbruecke (Nachtrag 19.10.2026: Linien mit PHP-Minutentakt rufen
+// bb_waechter()). Frueh im Durchgang, damit eine ausgefallene Bruecke nicht erst nach einem langen Geraeteabruf
+// (bis 104 s bei stummen Speichern) zurueckkommt. befehlsbruecke.sh schliesst die geerbten Deskriptoren - die
+// Sperre dieses Takts (cron.lock) erbt der Dienst nicht (Brueckenfall F12J). Der Waechter misst das Erzeugnis
+// (zustand.json), sendet <praefix>/status/befehle (nie retained) und startet hoechstens alle 600 s neu.
+$mv_bb = __DIR__ . '/befehlsbruecke.php';
+if (is_file($mv_bb)) {
+    if (!defined('BB_NUR_LADEN')) {
+        define('BB_NUR_LADEN', true);
+    }
+    require_once $mv_bb;
+    list($mv_bbs, $mv_bbt) = bb_waechter();
+    if ($mv_bbs === -1) {
+        marstek_log_if_changed('befehlsbruecke', 'Befehlsbruecke: ' . $mv_bbt, 'fehler');
+    }
+}
+
 marstek_spot_fetch();
 
 // Raenge einmal je Durchgang bilden - das meldet sie zugleich per MQTT
@@ -197,11 +218,21 @@ marstek_spot_fetch();
 // eben abgelegt hat, und geht selbst nicht ins Netz.
 marstek_ranks();
 
+// Gruppe 1 (1.1.25): status/ok des Lebenszeichens - hat in diesem Durchgang jeder eingetragene Speicher
+// geantwortet? (Zwischenspeicher, gealtert wie am Endpunkt; ohne Speicher 0)
+$mv_ok_alle = (bool) marstek_devices();
 foreach (marstek_devices() as $n => $d) {
-    marstek_status($n); // nutzt den Status-Cache; pollt also nicht haeufiger als noetig
+    $mv_st = marstek_status($n); // nutzt den Status-Cache; pollt also nicht haeufiger als noetig
+    $mv_sto = marstek_ok_nach_alter('status', is_array($mv_st) ? $mv_st : array());
+    if (empty($mv_sto['ok'])) {
+        $mv_ok_alle = false;
+    }
     if (!empty($d['modbus'])) {
         marstek_energy($n); // kWh-Zaehler via Modbus TCP (Cache 300 s), schreibt die
                             // Tagesbilanz fort und meldet per MQTT
+    } else {
+        // Gruppe 1 (Entwurf mv 2.3 d, E8): ohne Modbus halbstuendlich energie_ok 0 und energie_alter -1.
+        marstek_mqtt_publish_energy_ohne($n);
     }
 }
 // Erst nachholen, dann den Auto-Fallback pruefen: ein nachgeholter Sollwert
@@ -215,6 +246,8 @@ marstek_fallback_check();
 // Mitte abbricht, soll den Takt nicht als gesund ausweisen.
 $mv_z = marstek_herzschlag();
 marstek_mqtt_publish_takt($mv_z);
+// Gruppe 1 (1.1.25): das Lebenszeichen nach Regeln/07 (status/zaehler, status/ts, status/ok).
+marstek_mqtt_publish_lebenszeichen($mv_z, $mv_ok_alle);
 
 flock($fp, LOCK_UN);
 fclose($fp);

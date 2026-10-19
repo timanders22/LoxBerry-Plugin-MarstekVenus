@@ -13,6 +13,51 @@ den Auto-Modus des Geräts zurück.
 
 Kompatibel mit LoxBerry 3.x und **LoxBerry 4** (reines PHP, läuft mit PHP 7.4 und 8.x).
 
+## Neu in 1.1.25
+
+Gruppe 1 – Umstellung auf MQTT (Hausherr 18.10.2026: Werte UND Befehle zwischen Plugin und Loxone gehen über
+MQTT; das LoxBerry-Plugins Musterprojekt nutzt nur noch MQTT; die HTTP-Wege bleiben für bestehende Anlagen).
+
+* **Namenstabelle** im Reiter **Einbindung in Loxone**, Schritt 2: für die Werte über das MQTT-Gateway gibt es
+  **keine Importvorlage** (Entscheidung des Hausherrn 19.10.2026; die LoxBerry-Anleitung zum MQTT-Gateway verlangt
+  einen einfachen „Virtuellen Eingang“). Die Tabelle nennt je Wert den Gateway-Namen zum Kopieren (`marstek_soc`,
+  `marstek_rang_curp`, `marstek_status_zaehler` …), Bedeutung, Einheit/Bereich und Zahl/Text; daraus legt man in
+  Loxone Config je Wert einen Virtuellen Eingang an („Als Digitaleingang verwenden“ nicht aktivieren). Der
+  LoxBerry-Benutzer am Miniserver braucht Rechte auf die Eingänge. Wer die Seiten aus dem LoxBerry-Plugins
+  Musterprojekt kopiert, bekommt die Eingänge mit. Importierbar bleiben die Vorlage der Tasten Auto/AI
+  (`VQ_marstek_mqtt.xml`, Virtueller Ausgang an UDP 11884) und die HTTP-Vorlagen für bestehende Anlagen.
+* **Gateway Fassung 1 und 2:** Schritt 3 nennt je Fassung, was zu tun ist – unter Fassung 1 das Abo
+  `marstek/#` (das Plugin meldet es zusätzlich über `config/plugins/marstekvenus/mqtt_subscriptions.cfg`),
+  unter Fassung 2 die Hakenliste (36 Datenpunkte bei einem Speicher, vier davon „Noncached“).
+* **Lebenszeichen** nach Hausstandard: `marstek/status/zaehler`, `status/ts` und `status/ok` jede Minute, nie
+  retained. `takt_zaehler`/`takt_ts` bleiben für bestehende Anlagen (abgelöst; ein Abbau wird angekündigt).
+* **Befehle über MQTT** (gemeinsame Befehlsbrücke, `bin/befehlsbruecke.php`/`.sh`, Zuordnung
+  `bin/befehle_zuordnung.php`): `marstek/befehl/modus_auto` und `marstek/befehl/modus_ai` (Nutzlast `1`),
+  Speicher 2 bis 9 unter `marstek/befehl/<nr>/…`. Quittung auf `…/quittung` („angenommen“ oder „abgelehnt:
+  <Grund>“, nie retained), Lebenszeichen `marstek/status/befehle` (1 läuft, 0 aus, -1 Fehler). Neuer Haken
+  **„Befehle über MQTT annehmen“** im Reiter MQTT, **ab Werk aus**; die Tasten greifen ein und brauchen
+  zusätzlich „Steuerung aktiv“. Die Brücke startet und endet mit dem Minutentakt, das Update hält sie an, die
+  Deinstallation beendet sie samt Zugangsdaten. Die Verarbeitung von `?p=` und `?mode=` steht dafür in einer
+  Funktion, die Endpunkt und Brücke gemeinsam nutzen – am HTTP-Weg ändert sich nichts.
+* **Der Sollwert bleibt vorerst beim HTTP-Weg.** Die Brücke kennt ihn schon (`marstek/befehl/sollwert`,
+  Sperrminute 50 s), er ist dort aber **ab Werk gesperrt** – Freigabe nach Messung der UDP-Verluste des
+  MQTT-Gateways.
+* **-1 statt 0, wo kein Wert da ist** (auch in der HTTP-Zeile): Ränge ohne Preise (`CURP`, `MINP`, `MAXP`,
+  `SPREAD`, `NEXTP`), nie gelesene Energiezähler, unbekannte Firmware; über MQTT einmal -1 für Ladezustand,
+  Firmware, Antwortzeit, Leistungen und Temperatur, solange noch nie gemessen wurde. In den HTTP-Vorlagen tragen
+  die betroffenen Befehle MinVal -1. Wer in Loxone auf „0 = kein Preis“ prüft, prüft jetzt auf -1.
+* **Energiezähler über MQTT:** `energie_ok` und `energie_alter` jede Minute (`energie_ok` fällt nach 900 s auf
+  0 wie am Endpunkt); ohne Modbus halbstündlich `energie_ok 0` und `energie_alter -1` statt nie etwas.
+* **Bestehende HTTP-Anlagen und -1:** Die HTTP-Vorlagen tragen an elf Befehlen jetzt MinVal -1. Schon
+  importierte Eingänge behalten MinVal 0 und zeigen bei „kein Wert“ weiter 0 – wer -1 sehen will, stellt MinVal
+  am Eingang in Loxone Config auf -1.
+* **Baustein-Listen** wortgleich zum Musterprojekt (Stand 18.10.2026): Seite „Marstek Venus E“ mit MQTT-Namen
+  und Lebenszeichen (Validierung 600 s), Seite „Marstek Venus E Steuerung“ 36 → 62 Zeilen (Sendetakt 30 s,
+  Meldung „Sollwert kommt nicht an“, Wallbox-Abzug, Spot-Ersparnis mit Wochenbericht), Seite „Marstek Venus E
+  Werte“ 30 → 37 Zeilen (Monatsbilanz als Push); drei neue Bilder.
+* **Umstellen:** Wer auf MQTT umstellt, legt die Virtuellen Eingänge nach der Namenstabelle an (die HTTP-Behälter
+  vorher löschen, sonst doppelte Bausteine). Wer bei HTTP bleibt, muss nichts tun.
+
 ## Neu in 1.1.24
 
 Textnachzug zum Musterprojekt, Reiter **Einbindung in Loxone**, Seite „Marstek Venus E Werte“:
@@ -782,8 +827,12 @@ Rundruf und Gerätesuche aus, und der Reiter Test sagt das ausdrücklich.
   bewusst auf der UDP-API, weil nur deren Passiv-Modus einen Watchdog hat
 - Spot-Stunden-Ranking der nächsten 24 h (aWATTar DE/AT, USt-Faktor und
   Aufschlag einstellbar)
-- Optionales MQTT-Publish über das LoxBerry MQTT Gateway — Status,
-  Energiezähler (`energie_*`), Spotpreis-Ränge (`rang_*`) und der Takt
+- MQTT über das LoxBerry MQTT Gateway — Status, Energiezähler (`energie_*`),
+  Spotpreis-Ränge (`rang_*`), der Takt und das Lebenszeichen (`status/*`), mit
+  eigenen MQTT-Vorlagen und Hakenliste für Gateway Fassung 2 (Weg des Musterprojekts seit 1.1.25)
+- **Befehle über MQTT** (Befehlsbrücke, seit 1.1.25): Tasten Auto/AI unter
+  `marstek/befehl/…` mit Quittung; Haken „Befehle über MQTT annehmen“, ab Werk aus;
+  der Sollwert bleibt vorerst beim HTTP-Weg
 - Anschluss an den LoxBerry-Healthcheck und an das Benachrichtigungszentrum
 - Die **Konfiguration** übersteht Plugin-Updates (Zweitschrift außerhalb des
   Plugin-Ordners; `preinstall.sh` spielt sie bei einer Aktualisierung schon vor

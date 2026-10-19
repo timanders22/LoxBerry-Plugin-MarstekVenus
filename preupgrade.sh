@@ -68,6 +68,18 @@ else
     exit 2
 fi
 
+# Gruppe 1 (1.1.25): die Befehlsbruecke anhalten, bevor der Installer bin/ und data/ austauscht (Regeln/06,
+# vb_g1_bruecke_bericht.md Abschnitt 6). Nach der Marke: der Minutentakt startet sie in der Luecke nicht neu.
+# postupgrade.sh startet sie danach, wenn der Haken an ist (ein Sollmerker ist nicht noetig).
+BBSH="$BASE/bin/plugins/$PFOLDER/befehlsbruecke.sh"
+if [ -f "$BBSH" ]; then
+    if timeout 40 bash "$BBSH" stop >/dev/null 2>&1; then
+        echo "<OK> Befehlsbruecke fuer das Update angehalten."
+    else
+        echo "<WARNING> Die Befehlsbruecke liess sich nicht anhalten - der Installer tauscht sie trotzdem aus."
+    fi
+fi
+
 # Die Sicherung liegt NEBEN dem Ordner. Zwei Gruende, beide gemessen an
 # sbin/plugininstall.pl (Zweig master, 23.08.2026):
 #   1. $1 ist NICHT der Arbeitsordner, sondern eine zehnstellige

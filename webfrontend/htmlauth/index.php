@@ -205,6 +205,19 @@ if ($mv_post && isset($_POST['vorlage_vo'])) {
     echo $mv_vinhalt;
     exit;
 }
+/* ---------- Gruppe 1 (1.1.25): Vorlage der MQTT-Befehle (Download, veraendert nichts). Fuer die Werte ueber das
+ * MQTT-Gateway gibt es keine Vorlage (Hausherr 19.10.2026, Regeln/07 R2_078): Namenstabelle in Schritt 2. ---------- */
+if ($mv_post && isset($_POST['vorlage_befehle'])) {
+    $mv_vq = marstek_vorlage_befehle();
+    if ($mv_vq === null) {
+        list(, $mv_vqf) = marstek_befehle_liste();
+        mv_weiter('tab-loxone', array('fehler' => sprintf(marstek_t('BEFEHL.LISTE_FEHLT'), $mv_vqf)));
+    }
+    header('Content-Type: application/x-download');
+    header('Content-Disposition: attachment; filename="' . $mv_vq[0] . '"');
+    echo $mv_vq[1];
+    exit;
+}
 if ($mv_post && isset($_POST['vorlage'])) {
     list($mv_vname, $mv_vinhalt) = marstek_vorlage(
         is_string($_POST['vorlage']) ? $_POST['vorlage'] : 'status',
@@ -462,6 +475,8 @@ if ($mv_post && isset($_POST['mqtt_save'])) {
     if (!marstek_cfg_schreiben($cfg)) {
         mv_weiter('tab-mqtt', array('fehler' => marstek_t('MELD.SPEICHERN_FEHLGESCHLAGEN')));
     }
+    // Gruppe 1 (1.1.25): die Abo-Datei fuer Gateway Fassung 1 folgt dem Praefix (marstek_mqtt_abo_datei_pflegen()).
+    marstek_mqtt_abo_datei_pflegen();
     $mv_texte = array();
     if ($topic !== $mv_alt_praefix) {
         marstek_mqtt_merker_loeschen();
@@ -472,6 +487,28 @@ if ($mv_post && isset($_POST['mqtt_save'])) {
         marstek_mqtt_merker_loeschen();
     }
     mv_weiter('tab-mqtt', array('saved' => 1, 'meldung' => implode(' ', $mv_texte)));
+}
+
+/* ---------- Gruppe 1 (1.1.25): Haken "Befehle ueber MQTT annehmen" ----------
+ *
+ * Eigenes Formular im Reiter MQTT (Entwurf gemeinsam 2.11, Regeln/07 Abschnitt 7), ab Werk aus. Die
+ * Befehlsbruecke wird beim Speichern sofort gestartet bzw. angehalten (marstek_bruecke_schalten(), befehlsbruecke.sh
+ * start|stop) - der Waechter im Minutentakt (bb_waechter() in bin/cron.php) startet hoechstens alle 600 s neu, ohne
+ * den Direktstart liefe sie nach dem Einschalten bis zu zehn Minuten nicht. Die uebrigen Einstellungen bleiben
+ * unberuehrt. */
+if ($mv_post && isset($_POST['befehle_save'])) {
+    $cfg = marstek_config();
+    $cfg['befehle_mqtt_ein'] = isset($_POST['befehle_mqtt_ein']) ? 1 : 0;
+    if (!marstek_cfg_schreiben($cfg)) {
+        mv_weiter('tab-mqtt', array('fehler' => marstek_t('MELD.SPEICHERN_FEHLGESCHLAGEN')));
+    }
+    $mv_ban = !empty($cfg['befehle_mqtt_ein']) && !empty($cfg['mqtt_enabled']);
+    list($mv_brc, $mv_baus) = marstek_bruecke_schalten($mv_ban);
+    $mv_bmeld = marstek_t($cfg['befehle_mqtt_ein'] ? 'BEFEHL.MELD_AN' : 'BEFEHL.MELD_AUS');
+    if ($mv_ban && $mv_brc !== 0) {
+        $mv_bmeld = sprintf(marstek_t('BEFEHL.MELD_START_FEHL'), marstek_mqtt_wert_saeubern(substr((string) $mv_baus, 0, 160)));
+    }
+    mv_weiter('tab-mqtt', array('saved' => 1, 'meldung' => $mv_bmeld));
 }
 
 /* ---------- Einstellungen speichern ----------
@@ -1279,6 +1316,22 @@ if ($mv_sich_gruende) { ?>
 <button data-role="none" class="sm-btn sm-b-aktion" type="submit" style="margin-top:18px;"><?= marstek_e(marstek_t('EINST.K_SPEICHERN')) ?></button>
 </form>
 
+<h2><?= marstek_e(marstek_t('BEFEHL.H_BEFEHLE')) ?></h2>
+<form action="index.php" method="post">
+<input data-role="none" type="hidden" name="formtoken" value="<?= $mv_ft ?>">
+<input data-role="none" type="hidden" name="befehle_save" value="1">
+<input data-role="none" type="hidden" name="activetab" value="tab-mqtt">
+<label style="display:inline-flex;align-items:center;gap:6px;">
+    <input data-role="none" type="checkbox" name="befehle_mqtt_ein" <?= !empty($mv_cfg['befehle_mqtt_ein']) ? 'checked' : '' ?>>
+    <?= marstek_e(marstek_t('BEFEHL.L_ANNEHMEN')) ?>
+</label>
+<div class="sm-hilfe"><?= marstek_e(marstek_t('BEFEHL.H_ANNEHMEN')) ?></div>
+<?php if (empty($mv_cfg['mqtt_enabled'])) { ?><div class="sm-warnung"><?= marstek_e(marstek_t('BEFEHL.W_MQTT_AUS')) ?></div><?php } ?>
+<?php list(, $mv_bzt) = marstek_bruecke_zustand(); ?>
+<div class="sm-hilfe"><?= marstek_e($mv_bzt) ?></div>
+<button data-role="none" class="sm-btn sm-b-aktion" type="submit" style="margin-top:12px;"><?= marstek_e(marstek_t('EINST.K_SPEICHERN')) ?></button>
+</form>
+
 <h2><?= marstek_e(marstek_t('MQTT.H_ABO')) ?></h2>
 <?php
 /* Der Satz "Ohne diesen Eintrag kommt am Miniserver nichts an" gilt NUR fuer
@@ -1297,6 +1350,7 @@ if ($mv_gwf >= 2) { ?>
 <div class="sm-hilfe"><?= marstek_t('MQTT.ABO_UNBEKANNT') ?></div>
 <?php } ?>
 <p><?= marstek_e(marstek_t('MQTT.ABO_EINTRAG')) ?> <span class="sm-mono"><?= marstek_e(marstek_mqtt_prefix(1)) ?>/#</span></p>
+<div class="sm-hilfe"><?= marstek_e(marstek_t('MQTT.ABO_VERWEIS')) ?></div>
 
 <h2><?= marstek_e(marstek_t('MQTT.H_THEMEN')) ?></h2>
 <div class="sm-hinweis"><?= marstek_t('MQTT.THEMEN_ERKLAERUNG') ?></div>
@@ -1332,77 +1386,74 @@ if ($mv_gwf >= 2) { ?>
 </div>
 
 <?php
-/* SIEBEN feste Schritte, in der Reihenfolge des Hausstandards. Bis 1.1.4
- * trug Kasten 1 keine Nummer, die Zaehlung begann bei "Schritt 2", das Abo
- * war in Kasten 1 hineingefaltet, und die Zahl der Kaesten haengte an der
- * Geraetezahl: acht bei einem Speicher, neun bei zweien. Eine Anleitung,
- * deren Nummern sich mit der Anlage verschieben, laesst sich nicht
- * zitieren - und die Baustein-Liste verweist auf feste Nummern. */
+/* Gruppe 1 (1.1.25, Hausherr 18.10.2026: Werte UND Befehle ueber MQTT; Musterprojekt, Vorlagen und Haus nutzen nur
+ * MQTT, die HTTP-Wege bleiben fuer bestehende Anlagen; Gateway V1 und V2): SIEBEN feste Schritte wie bisher, jetzt
+ * in der Reihenfolge des MQTT-Wegs - einschalten, Virtuelle Eingaenge nach der Namenstabelle (keine Importvorlage
+ * fuer Gateway-Werte, Hausherr 19.10.2026), Abo bzw. Datenpunkte im Gateway, Befehle
+ * (Tasten ueber MQTT, Sollwert vorerst HTTP), Ausfallerkennung, Baustein-Seiten, Gegenprobe. Die HTTP-Eingaenge
+ * stehen darunter unter "Fuer bestehende Anlagen: HTTP". Die Nummern haengen nicht an der Geraetezahl, und die
+ * Baustein-Listen verweisen auf sie. */
 $mv_schritt = 0;
+$mv_bliste = marstek_befehle_liste();
 ?>
 <div class="sm-step"><b><?= marstek_e(sprintf(marstek_t('LOX.SCHRITT'), ++$mv_schritt)) ?>: <?= marstek_e(marstek_t('LOX.S1_TITEL')) ?></b><br>
 <?= marstek_t('LOX.S1_TEXT') ?>
+<div class="sm-hinweis"><?= marstek_t('LOX.MQTT_VORAUS') ?></div>
+<div class="sm-hilfe"><?= !empty($mv_cfg['mqtt_enabled']) ? marstek_e(sprintf(marstek_t('LOX.MQTT_ZUSTAND_EIN'), marstek_mqtt_prefix(1))) : marstek_e(marstek_t('LOX.MQTT_ZUSTAND_AUS')) ?></div>
+</div>
+
+<div class="sm-step"><b><?= marstek_e(sprintf(marstek_t('LOX.SCHRITT'), ++$mv_schritt)) ?>: <?= marstek_e(marstek_t('LOX.S_NAMEN')) ?></b><br>
+<?= marstek_t('LOX.NAMEN_TEXT') ?>
+<div class="sm-hinweis"><?= marstek_t('LOX.NAMEN_RECHTE') ?></div>
+<div class="sm-hilfe"><?= marstek_t('LOX.NAMEN_MUSTER') ?></div>
+<?php
+/* Hausherr 19.10.2026 (Regeln/07 Abschnitt 4, R2_078): fuer Werte ueber das MQTT-Gateway KEINE Importvorlage -
+ * die LoxBerry-Anleitung verlangt einen einfachen Virtuellen Eingang. Die Tabelle entsteht aus
+ * marstek_mqtt_namenstabelle() (dieselbe Quelle wie Hakenliste und Sendecode); der Knopf kopiert den Namen. */
+$mv_namen = marstek_mqtt_namenstabelle(); ?>
+<div class="sm-breit">
+<table class="sm-tbl">
+<tr><th style="width:34%;"><?= marstek_e(marstek_t('LOX.NAMEN_SP_NAME')) ?></th><th><?= marstek_e(marstek_t('LOX.SP_BEDEUTUNG')) ?></th><th style="width:22%;"><?= marstek_e(marstek_t('LOX.NAMEN_SP_EINHEIT')) ?></th><th style="width:12%;"><?= marstek_e(marstek_t('LOX.NAMEN_SP_ART')) ?></th></tr>
+<?php foreach ($mv_namen as $mv_nz) { ?>
+<tr><td style="white-space:nowrap;"><span class="sm-mono"><?= marstek_e($mv_nz['name']) ?></span> <button data-role="none" type="button" class="mv-kopieren" style="margin-left:6px;padding:1px 8px;font-size:12px;border:1px solid #9aa5ab;border-radius:4px;background:#f2f4f5;color:#333;cursor:pointer;" data-name="<?= marstek_e($mv_nz['name']) ?>" data-ok="<?= marstek_e(marstek_t('LOX.KOPIERT')) ?>" data-fehl="<?= marstek_e(marstek_t('LOX.KOPIE_FEHL')) ?>" onclick="return mvNameKopieren(this);"><?= marstek_e(marstek_t('LOX.KOPIEREN')) ?></button></td><td><?= marstek_e($mv_nz['bedeutung']) ?></td><td><?= marstek_e(trim($mv_nz['bereich'] . ' ' . $mv_nz['einheit'])) ?></td><td><?= marstek_e(marstek_t($mv_nz['text'] ? 'LOX.ART_TEXT' : ($mv_nz['digital'] ? 'LOX.ART_ZAHL01' : 'LOX.ART_ZAHL'))) ?></td></tr>
+<?php } ?>
+</table>
+</div>
+<div class="sm-hilfe"><?= marstek_e(sprintf(marstek_t('LOX.NAMEN_ANZAHL'), count($mv_namen))) ?></div>
 </div>
 
 <div class="sm-step"><b><?= marstek_e(sprintf(marstek_t('LOX.SCHRITT'), ++$mv_schritt)) ?>: <?= marstek_e(marstek_t('LOX.S_ABO')) ?></b><br>
-<?php if ($mv_gwf >= 2) { ?>
-<div class="sm-hinweis"><?= marstek_t('MQTT.ABO_V2') ?></div>
+<?php
+/* Entwurf mv 2.6: je Gateway-Fassung der richtige Satz (Fassung aus general.json, marstek_mqtt_gateway_info()).
+ * Unter V1 das Abo, unter V2 die Hakenliste; ist die Fassung nicht lesbar, steht beides da. */
+if ($mv_gwf >= 2) { ?>
+<div class="sm-hinweis"><?= sprintf(marstek_t('LOX.ABO_V2_MQTT'), marstek_e(marstek_mqtt_prefix(1))) ?></div>
 <?php } elseif ($mv_gwf === 1) { ?>
-<div class="sm-warnung"><?= marstek_t('MQTT.ABO_V1') ?></div>
+<div class="sm-warnung"><?= sprintf(marstek_t('LOX.ABO_V1_MQTT'), marstek_e(marstek_mqtt_prefix(1))) ?></div>
 <?php } else { ?>
-<div class="sm-warnung"><?= marstek_t('MQTT.ABO_V1') ?></div>
-<div class="sm-hinweis"><?= marstek_t('MQTT.ABO_V2') ?></div>
+<div class="sm-warnung"><?= sprintf(marstek_t('LOX.ABO_V1_MQTT'), marstek_e(marstek_mqtt_prefix(1))) ?></div>
+<div class="sm-hinweis"><?= sprintf(marstek_t('LOX.ABO_V2_MQTT'), marstek_e(marstek_mqtt_prefix(1))) ?></div>
 <div class="sm-hilfe"><?= marstek_t('MQTT.ABO_UNBEKANNT') ?></div>
 <?php } ?>
-</div>
-
-<?php
-/* Die Tabellen der virtuellen Eingaenge entstehen aus marstek_felder() -
- * derselben Quelle wie die Vorlage und die Antwortzeile des Endpunkts. Bis
- * 1.0.16 standen sie in vierzig einzelnen Sprachschluesseln daneben, und
- * genau daraus sind drei Fehler entstanden: MS falsch beschriftet, RANKD mit
- * zwei Bedeutungen, GRIDP gar nicht erwaehnt. */
-// Der Takt kommt aus marstek_satz_takt() - dieselbe Quelle, aus der die
-// erzeugte Vorlage ihr PollingTime nimmt. Bis 1.1.4 stand er hier zweimal,
-// und fuer ?summe liefen beide auseinander: die Oberflaeche nannte 60 s,
-// die Datei daneben trug PollingTime="300".
-$mv_saetze = array(
-    'status' => array('titel' => marstek_t('LOX.SATZ_STATUS'), 'q' => '?status', 'jedev' => true),
-    'ranks'  => array('titel' => marstek_t('LOX.SATZ_RANKS'),  'q' => '?ranks',  'jedev' => false),
-    'energy' => array('titel' => marstek_t('LOX.SATZ_ENERGY'), 'q' => '?energy', 'jedev' => true),
-);
-if (count($mv_devices) > 1) {
-    $mv_saetze['summe'] = array('titel' => marstek_t('LOX.SATZ_SUMME'), 'q' => '?summe', 'jedev' => false);
-}
-foreach ($mv_saetze as $mv_s => $mv_unused) {
-    $mv_saetze[$mv_s]['takt'] = marstek_satz_takt($mv_s);
-}
-// Schritt 3 ist EIN Kasten. Die drei bis vier Saetze stehen darin als
-// Unterabschnitte, damit die Schrittnummern nicht an der Geraetezahl haengen.
-?>
-<div class="sm-step"><b><?= marstek_e(sprintf(marstek_t('LOX.SCHRITT'), ++$mv_schritt)) ?>: <?= marstek_e(marstek_t('LOX.S_EINGAENGE')) ?></b><br>
-<?php foreach ($mv_saetze as $satz => $info) { ?>
-<h3 class="sm-h3"><?= marstek_e($info['titel']) ?></h3>
-<table class="sm-tbl">
-<tr><th style="width:34%;"><?= marstek_e(marstek_t('LOX.SP_EIGENSCHAFT')) ?></th><th><?= marstek_e(marstek_t('LOX.SP_WERT')) ?></th></tr>
-<tr><td><?= marstek_e(marstek_t('LOX.SP_ADRESSE')) ?></td><td><span class="sm-mono">http://<?= $mv_host ?>/plugins/<?= marstek_e($mv_plugindir) ?>/marstek.php<?= marstek_e($info['q']) ?></span></td></tr>
-<tr><td><?= marstek_e(marstek_t('LOX.SP_TAKT')) ?></td><td><?= (int) $info['takt'] ?> s</td></tr>
-</table>
+<?php if ($mv_gwf !== 1) {
+    $mv_haken = marstek_mqtt_hakenliste();
+    $mv_nc = 0; ?>
+<h3 class="sm-h3"><?= marstek_e(marstek_t('LOX.HAKEN_TITEL')) ?></h3>
 <div class="sm-breit">
 <table class="sm-tbl">
-<tr><th style="width:22%;"><?= marstek_e(marstek_t('LOX.SP_SUCHTEXT')) ?></th><th style="width:10%;"><?= marstek_e(marstek_t('LOX.SP_EINHEIT')) ?></th><th><?= marstek_e(marstek_t('LOX.SP_BEDEUTUNG')) ?></th></tr>
-<?php foreach (marstek_felder($satz) as $name => $f) { ?>
-<tr><td><span class="sm-mono">\i;<?= marstek_e($name) ?>=\i\v</span></td><td><?= marstek_e($f['einheit']) ?></td><td><?= marstek_e(marstek_feldtext($satz, $name)) ?></td></tr>
+<tr><th style="width:28%;"><?= marstek_e(marstek_t('LOX.HAKEN_SP_NAME')) ?></th><th style="width:26%;"><?= marstek_e(marstek_t('LOX.HAKEN_SP_THEMA')) ?></th><th style="width:10%;"><?= marstek_e(marstek_t('LOX.HAKEN_SP_NC')) ?></th><th><?= marstek_e(marstek_t('LOX.SP_BEDEUTUNG')) ?></th></tr>
+<?php foreach ($mv_haken as $mv_h) {
+    if ($mv_h['noncached']) { $mv_nc++; } ?>
+<tr><td><span class="sm-mono"><?= marstek_e($mv_h['name']) ?></span></td><td><span class="sm-mono"><?= marstek_e($mv_h['thema']) ?></span></td><td><?= $mv_h['noncached'] ? 'N' : '' ?></td><td><?= marstek_e($mv_h['bedeutung']) ?></td></tr>
 <?php } ?>
 </table>
 </div>
-<?php if ($info['jedev'] && count($mv_devices) > 1) { ?>
-<div class="sm-hilfe"><?= marstek_e(sprintf(marstek_t('LOX.JE_GERAET'), $info['q'])) ?></div>
-<?php } ?>
+<div class="sm-hilfe"><?= marstek_e(sprintf(marstek_t('LOX.HAKEN_ANZAHL'), count($mv_haken), $mv_nc)) ?> <?= marstek_e(sprintf(marstek_t('LOX.HAKEN_NICHT'), marstek_mqtt_prefix(1))) ?></div>
 <?php } ?>
 </div>
 
 <div class="sm-step"><b><?= marstek_e(sprintf(marstek_t('LOX.SCHRITT'), ++$mv_schritt)) ?>: <?= marstek_e(marstek_t('LOX.S_AUSGANG')) ?></b><br>
+<?= marstek_t('LOX.BEFEHLE_SOLL_TEXT') ?><br>
 <?= marstek_t('LOX.AUSGANG_TEXT') ?>
 <table class="sm-tbl">
 <tr><th style="width:34%;"><?= marstek_e(marstek_t('LOX.SP_EIGENSCHAFT')) ?></th><th><?= marstek_e(marstek_t('LOX.SP_WERT')) ?></th></tr>
@@ -1411,6 +1462,39 @@ foreach ($mv_saetze as $mv_s => $mv_unused) {
 <tr><td><?= marstek_e(marstek_t('LOX.SP_BEFEHL_AUTO')) ?></td><td><span class="sm-mono">/plugins/<?= marstek_e($mv_plugindir) ?>/marstek.php?mode=auto&amp;von=loxone&amp;token=<?= marstek_e($mv_cfg['aktionstoken']) ?></span></td></tr>
 </table>
 <div class="sm-warnung"><?= marstek_t('LOX.TOKEN_WARNUNG') ?></div>
+<div class="sm-knopfreihe" style="margin:10px 0;">
+  <form action="index.php" method="post">
+    <input data-role="none" type="hidden" name="formtoken" value="<?= $mv_ft ?>">
+    <input data-role="none" type="hidden" name="activetab" value="tab-loxone">
+    <input data-role="none" type="hidden" name="vorlage_dev" value="1">
+    <button data-role="none" class="sm-btn sm-b-technik" type="submit" name="vorlage_vo" value="1" style="min-width:200px;"><?= marstek_e(marstek_t('LOX.SATZ_STEUERN_HTTP')) ?></button>
+  </form>
+</div>
+<?= sprintf(marstek_t('LOX.BEFEHLE_MQTT_TEXT'), (int) (marstek_mqtt_udpport() > 0 ? marstek_mqtt_udpport() : 11884)) ?>
+<div class="sm-hilfe"><?= !empty($mv_cfg['befehle_mqtt_ein']) ? marstek_e(marstek_t('LOX.BEFEHLE_ZUSTAND_AN')) : marstek_e(marstek_t('LOX.BEFEHLE_ZUSTAND_AUS')) ?></div>
+<?php if ($mv_bliste[0] === null) { ?>
+<div class="sm-warnung"><?= marstek_e(sprintf(marstek_t('BEFEHL.LISTE_FEHLT'), $mv_bliste[1])) ?></div>
+<?php } else {
+    $mv_muster = false; ?>
+<div class="sm-breit">
+<table class="sm-tbl">
+<tr><th style="width:24%;"><?= marstek_e(marstek_t('BEFEHL.SP_TITEL')) ?></th><th style="width:22%;"><?= marstek_e(marstek_t('BEFEHL.SP_THEMA')) ?></th><th><?= marstek_e(marstek_t('BEFEHL.SP_WERT')) ?></th><th><?= marstek_e(marstek_t('BEFEHL.SP_EINGREIFEND')) ?></th><th><?= marstek_e(marstek_t('BEFEHL.SP_SPERRE')) ?></th><th><?= marstek_e(marstek_t('BEFEHL.SP_QUITTUNG')) ?></th><th><?= marstek_e(marstek_t('BEFEHL.SP_STAND')) ?></th></tr>
+<?php foreach ($mv_bliste[0]['befehle'] as $mv_b) {
+    if ($mv_b['muster']) { $mv_muster = true; continue; } ?>
+<tr><td><?= marstek_e($mv_b['titel']) ?></td><td><span class="sm-mono"><?= marstek_e($mv_b['thema']) ?></span></td><td><?= marstek_e($mv_b['art'] === 'ganz' ? sprintf(marstek_t('BEFEHL.WERT_GANZ'), $mv_b['min'], $mv_b['max']) : marstek_t('BEFEHL.WERT_PULS')) ?></td><td><?= marstek_e(marstek_t($mv_b['eingreifend'] ? 'BEFEHL.JA' : 'BEFEHL.NEIN')) ?></td><td><?= marstek_e(sprintf(marstek_t('BEFEHL.SPERRE_S'), $mv_b['sperre_s'])) ?></td><td><?= marstek_e(marstek_t($mv_b['quittung'] === 'uebergeben' ? 'BEFEHL.QUITT_UEBERGEBEN' : 'BEFEHL.QUITT_AUSGEFUEHRT')) ?></td><td><?= marstek_e(marstek_t($mv_b['gesperrt'] ? 'BEFEHL.STAND_GESPERRT' : 'BEFEHL.STAND_FREI')) ?></td></tr>
+<?php } ?>
+</table>
+</div>
+<?php if ($mv_muster) { ?><div class="sm-hilfe"><?= marstek_e(sprintf(marstek_t('BEFEHL.MUSTER_HINWEIS'), marstek_mqtt_prefix(1))) ?></div><?php } ?>
+<div class="sm-hilfe"><?= marstek_t('LOX.VORLAGE_BEFEHLE_TEXT') ?></div>
+<div class="sm-knopfreihe" style="margin-top:6px;">
+  <form action="index.php" method="post">
+    <input data-role="none" type="hidden" name="formtoken" value="<?= $mv_ft ?>">
+    <input data-role="none" type="hidden" name="activetab" value="tab-loxone">
+    <button data-role="none" class="sm-btn sm-b-technik" type="submit" name="vorlage_befehle" value="1" style="min-width:200px;"><?= marstek_e(marstek_t('LOX.SATZ_BEFEHLE_MQTT')) ?></button>
+  </form>
+</div>
+<?php } ?>
 </div>
 
 <div class="sm-step"><b><?= marstek_e(sprintf(marstek_t('LOX.SCHRITT'), ++$mv_schritt)) ?>: <?= marstek_e(marstek_t('LOX.S_AUSFALL')) ?></b><br>
@@ -1458,6 +1542,53 @@ foreach (marstek_bausteinliste() as $mv_bs) { ?>
 <div class="sm-step"><b><?= marstek_e(sprintf(marstek_t('LOX.SCHRITT'), ++$mv_schritt)) ?>: <?= marstek_e(marstek_t('LOX.S_GEGENPROBE')) ?></b><br>
 <?= marstek_t('LOX.GEGENPROBE_TEXT') ?>
 </div>
+
+<h2><?= marstek_e(marstek_t('LOX.H_HTTP')) ?></h2>
+<div class="sm-hinweis"><?= marstek_t('LOX.HTTP_TEXT') ?></div>
+<?php
+/* Die Tabellen der virtuellen Eingaenge entstehen aus marstek_felder() -
+ * derselben Quelle wie die Vorlage und die Antwortzeile des Endpunkts. Bis
+ * 1.0.16 standen sie in vierzig einzelnen Sprachschluesseln daneben, und
+ * genau daraus sind drei Fehler entstanden: MS falsch beschriftet, RANKD mit
+ * zwei Bedeutungen, GRIDP gar nicht erwaehnt. */
+// Der Takt kommt aus marstek_satz_takt() - dieselbe Quelle, aus der die
+// erzeugte Vorlage ihr PollingTime nimmt. Bis 1.1.4 stand er hier zweimal,
+// und fuer ?summe liefen beide auseinander: die Oberflaeche nannte 60 s,
+// die Datei daneben trug PollingTime="300".
+$mv_saetze = array(
+    'status' => array('titel' => marstek_t('LOX.SATZ_STATUS'), 'q' => '?status', 'jedev' => true),
+    'ranks'  => array('titel' => marstek_t('LOX.SATZ_RANKS'),  'q' => '?ranks',  'jedev' => false),
+    'energy' => array('titel' => marstek_t('LOX.SATZ_ENERGY'), 'q' => '?energy', 'jedev' => true),
+);
+if (count($mv_devices) > 1) {
+    $mv_saetze['summe'] = array('titel' => marstek_t('LOX.SATZ_SUMME'), 'q' => '?summe', 'jedev' => false);
+}
+foreach ($mv_saetze as $mv_s => $mv_unused) {
+    $mv_saetze[$mv_s]['takt'] = marstek_satz_takt($mv_s);
+}
+// Schritt 3 ist EIN Kasten. Die drei bis vier Saetze stehen darin als
+// Unterabschnitte, damit die Schrittnummern nicht an der Geraetezahl haengen.
+?>
+<h3 class="sm-h3"><?= marstek_e(marstek_t('LOX.S_EINGAENGE')) ?></h3>
+<?php foreach ($mv_saetze as $satz => $info) { ?>
+<h4 class="sm-h4"><?= marstek_e($info['titel']) ?></h4>
+<table class="sm-tbl">
+<tr><th style="width:34%;"><?= marstek_e(marstek_t('LOX.SP_EIGENSCHAFT')) ?></th><th><?= marstek_e(marstek_t('LOX.SP_WERT')) ?></th></tr>
+<tr><td><?= marstek_e(marstek_t('LOX.SP_ADRESSE')) ?></td><td><span class="sm-mono">http://<?= $mv_host ?>/plugins/<?= marstek_e($mv_plugindir) ?>/marstek.php<?= marstek_e($info['q']) ?></span></td></tr>
+<tr><td><?= marstek_e(marstek_t('LOX.SP_TAKT')) ?></td><td><?= (int) $info['takt'] ?> s</td></tr>
+</table>
+<div class="sm-breit">
+<table class="sm-tbl">
+<tr><th style="width:22%;"><?= marstek_e(marstek_t('LOX.SP_SUCHTEXT')) ?></th><th style="width:10%;"><?= marstek_e(marstek_t('LOX.SP_EINHEIT')) ?></th><th><?= marstek_e(marstek_t('LOX.SP_BEDEUTUNG')) ?></th></tr>
+<?php foreach (marstek_felder($satz) as $name => $f) { ?>
+<tr><td><span class="sm-mono">\i;<?= marstek_e($name) ?>=\i\v</span></td><td><?= marstek_e($f['einheit']) ?></td><td><?= marstek_e(marstek_feldtext($satz, $name)) ?></td></tr>
+<?php } ?>
+</table>
+</div>
+<?php if ($info['jedev'] && count($mv_devices) > 1) { ?>
+<div class="sm-hilfe"><?= marstek_e(sprintf(marstek_t('LOX.JE_GERAET'), $info['q'])) ?></div>
+<?php } ?>
+<?php } ?>
 
 <h2><?= marstek_e(marstek_t('LOX.H_TOKEN')) ?></h2>
 <table class="sm-tbl">
@@ -1617,6 +1748,20 @@ if (function_exists('mv_test_seite')) {
         });
     });
 })();
+/* Gruppe 1 (1.1.25): Namenstabelle in Schritt 2 - den Gateway-Namen in die Zwischenablage (Vorbild
+   WaermepumpeCloud wpAdresseKopieren). execCommand zuerst: navigator.clipboard gibt es nur in einem sicheren
+   Kontext, der LoxBerry laeuft ueblicherweise mit http im Heimnetz. */
+function mvNameKopieren(k) {
+    var a = k.getAttribute('data-name'), ok = false;
+    try {
+        var t = document.createElement('textarea');
+        t.value = a; t.setAttribute('readonly', ''); t.style.position = 'fixed'; t.style.left = '-9999px';
+        document.body.appendChild(t); t.select(); ok = document.execCommand('copy'); document.body.removeChild(t);
+    } catch (e) { ok = false; }
+    if (!ok && navigator.clipboard && window.isSecureContext) { navigator.clipboard.writeText(a); ok = true; }
+    k.textContent = k.getAttribute(ok ? 'data-ok' : 'data-fehl');
+    return false;
+}
 </script>
 <?php
 if ($mv_use_frame) {

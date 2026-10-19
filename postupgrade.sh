@@ -187,4 +187,15 @@ fi
 # Die Marke hat postinstall.sh schon entfernt; bricht dessen trap einmal nicht,
 # faellt sie spaetestens hier (I1).
 rm -f "$BASE/data/plugins/$PFOLDER.upgrade_laeuft" 2>/dev/null
+
+# Gruppe 1 (1.1.25): die Befehlsbruecke wieder starten - startet nur mit Haken "Befehle ueber MQTT annehmen"
+# und nie als root; sonst holt es der Minutentakt (bb_waechter()) binnen einer Minute nach.
+BBSH="$BASE/bin/plugins/$PFOLDER/befehlsbruecke.sh"
+if [ -f "$BBSH" ]; then
+    MV_BB=$(timeout 40 bash "$BBSH" start 2>&1)
+    case "$MV_BB" in
+        *gestartet*|*laeuft*) echo "<OK> $MV_BB" ;;
+        *) echo "<INFO> Befehlsbruecke: $MV_BB (der Minutentakt versucht es erneut)" ;;
+    esac
+fi
 exit 0

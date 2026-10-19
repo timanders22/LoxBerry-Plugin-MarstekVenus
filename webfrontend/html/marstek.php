@@ -63,6 +63,10 @@
  *     dessen Zwischenspeicher, solange der hoechstens drei Takte alt ist - ein
  *     schweigender Speicher blockierte den Endpunkt bis 1.1.17 24 s lang.
  *
+ * GRUPPE 1 (1.1.25, Nachtrag 19.10.2026): die Verarbeitung von ?p= und ?mode= steht in
+ *   marstek_befehl_ausfuehren() (marstek_lib.php); die Befehlsbruecke ruft sie fuer marstek/befehl/...
+ *   Antwortzeilen, HTTP-Codes und Protokoll des Endpunkts sind unveraendert.
+ *
  * BEFEHLSBREMSE (a1 / X-7, Verbesserungsbau 30.09.2026): ?p= und ?mode= je
  *   Geraet durch marstek_gebremst(). Derselbe Befehl innerhalb von 60 s:
  *   HTTP 200 mit UNVERAENDERT=1, nichts gesendet (ein Sollwert, der nur um
@@ -114,54 +118,8 @@ function mv_abweisen($code, $zeile, $grund) {
     exit;
 }
 
-/** Schreiber-Wache: &von= lesen. Fehlt es: '' (ohne Kennung). Eine Kennung,
- *  die nicht ins Muster passt, wird abgewiesen wie ein falsches t - abweisen
- *  statt zurechtbiegen (Nr. 19); ein Tippfehler faellt beim Einrichten auf.
- *  Geprueft wird der Wert, wie er kam - ohne trim() (Marstek-v1): ein
- *  angehaengtes %0A oder Leerzeichen bekommt ebenfalls 400 ERR=VON. */
-function mv_von($satz) {
-    if (!isset($_GET['von'])) {
-        return '';
-    }
-    $v = is_string($_GET['von']) ? $_GET['von'] : null;
-    if ($v === null || !marstek_wache_kennung_gueltig($v)) {
-        mv_abweisen(400, $satz . ";OK=0;ERR=VON\n", 'abweisung');
-    }
-    return $v;
-}
-
-/** Schreiber-Wache (Energie-1 C1, Entscheidung Nr. 25; Kopf der Funktionen in
- *  marstek_lib.php): merken und melden, und nur mit "Sperren" einen fremden
- *  Sollwert mit 409 abweisen, bevor etwas gesendet wird. Rueckgabe: Zusatz
- *  fuer die Antwortzeile - ;SCHREIBER=n ab zwei Schreibern im Fenster,
- *  ;WACHE=MERKER, wenn das Merken nicht ging (der Befehl geht trotzdem). */
-function mv_wache(array $devs, $art, $satz, $devtext, $von) {
-    $w = marstek_wache_einstellungen(marstek_config(false));
-    $ip = marstek_wache_absender();
-    list($aktiv, $erlaubt, $fehler) = marstek_wache_sperre_urteil($w, $von, $ip);
-    if ($fehler !== '') {
-        marstek_log_if_changed('wache_liste', 'Fremde Schreiber abweisen ist eingeschaltet, aber die Liste der '
-            . 'erlaubten Schreiber ist leer oder unbrauchbar - die Sperre wirkt NICHT, bis die Liste im Reiter '
-            . 'Einstellungen berichtigt ist.', 'liste');
-    } elseif ($w['wache_sperren_ein'] === 1 && is_file(marstek_tmpdir() . '/last_wache_liste.txt')) {
-        marstek_log_if_changed('wache_liste', 'Die Liste der erlaubten Schreiber ist brauchbar, die Sperre wirkt.', 'ok');
-    }
-    $abweisen = $aktiv && !$erlaubt && $art === 'p';
-    $zusatz = '';
-    if ($w['wache_ein'] === 1 && $devs) {
-        $m = marstek_wache_merken($devs, $von, $ip, $art, $abweisen, $w);
-        if ($m['anzahl'] > 1) {
-            $zusatz .= ';SCHREIBER=' . (int) $m['anzahl'];
-        }
-        if (!$m['merker']) {
-            $zusatz .= ';WACHE=MERKER';
-        }
-    }
-    if ($abweisen) {
-        mv_abweisen(409, $satz . ';OK=0;GRUND=FREMDSCHREIBER;DEV=' . $devtext . "\n", 'fremdschreiber');
-    }
-    return $zusatz;
-}
+/* Gruppe 1 (1.1.25): mv_von() und mv_wache() stehen jetzt in marstek_befehl_ausfuehren()
+ * (marstek_lib.php) - dieselbe Pruefung fuer Endpunkt und Befehlsbruecke. */
 
 // Auf den WERT sehen, nicht nur auf das Vorhandensein: ?debug=0 schaltete
 // die Rohdatenansicht bis 1.1.4 ebenfalls ein.
@@ -236,144 +194,22 @@ if (isset($_GET['p']) || isset($_GET['mode']) || isset($_GET['diag'])
     }
 }
 
-/* ---------- Passiv-Sollwert ---------- */
-if (isset($_GET['p'])) {
-    $mv_p = mv_par('p');
-    // Was nicht ins Muster passt, wird gemeldet - nicht zurechtgebogen.
-    if ($mv_p === null || !preg_match('/^-?\d{1,6}$/', $mv_p)) {
-        mv_abweisen(400, "SET;OK=0;ERR=P\n", 'abweisung');
+/* ---------- Passiv-Sollwert und Modus ----------
+ *
+ * Gruppe 1 (1.1.25, Nachtrag 19.10.2026): die Verarbeitung von ?p= und ?mode= steht in marstek_befehl_ausfuehren()
+ * (marstek_lib.php) - bis 1.1.24 stand sie hier. Dieselbe Funktion ruft die Befehlsbruecke fuer marstek/befehl/...
+ * (Quelle mqtt, von=mqtt). Der Endpunkt prueft vorher wie bisher Geraet und Token (oben) und gibt danach
+ * Antwortzeile, HTTP-Code und Protokollzeilen unveraendert aus; die Wirkungstests des Baus belegen Quelle = Bau. */
+if (isset($_GET['p']) || isset($_GET['mode'])) {
+    $mv_e = marstek_befehl_ausfuehren(isset($_GET['p']) ? 'p' : 'mode', array(
+        'p' => mv_par('p'), 't' => mv_par('t'), 'mode' => mv_par('mode'), 'dev' => $dev, 'alle' => $mv_alle,
+        'trocken' => $mv_trocken, 'von_da' => isset($_GET['von']), 'von' => isset($_GET['von']) ? $_GET['von'] : null), 'http');
+    if ($mv_e['http'] !== 200) {
+        mv_abweisen($mv_e['http'], $mv_e['zeile'], $mv_e['grund']);
     }
-    $mv_t = mv_par('t');
-    if ($mv_t !== null && !preg_match('/^\d{1,5}$/', $mv_t)) {
-        mv_abweisen(400, "SET;OK=0;ERR=T\n", 'abweisung');
-    }
-    if ($mv_t === null) { $mv_t = '240'; }
-    $mv_von = mv_von('SET');
-    $mv_wz = '';
-
-    if ($mv_alle) {
-        $mv_cfg_v = marstek_config(false);
-        if (empty($mv_cfg_v['verteilen_ein'])) {
-            mv_abweisen(400, "SET;OK=0;ERR=VERTEILEN_AUS\n", 'abweisung');
-        }
-        if (!$mv_trocken) {
-            $mv_wz = mv_wache(array_keys(marstek_devices()), 'p', 'SET', 'alle', $mv_von);
-        }
-        list($ok, $angenommen, $gesamt, $zeilen) = marstek_set_passive_alle($mv_p, $mv_t, $mv_trocken);
-        $txt = '';
-        $mv_begr = 0;
-        $mv_gebremst = 0;
-        $mv_merker = 0;
-        foreach ($zeilen as $z) {
-            $txt .= ';P' . $z['n'] . '=' . $z['p'] . ';OK' . $z['n'] . '=' . $z['ok'];
-            if (!empty($z['begrenzt'])) { $mv_begr = 1; }
-            // a1: das Urteil der Befehlsbremse je Geraet.
-            $mv_bz = isset($z['bremse']) ? (string) $z['bremse'] : '';
-            if ($mv_bz === 'UNVERAENDERT') {
-                $txt .= ';UNVERAENDERT' . $z['n'] . '=1';
-            } elseif ($mv_bz === 'WARTEN') {
-                $txt .= ';WARTEN_S' . $z['n'] . '=' . (int) $z['warten_s'];
-                $mv_gebremst++;
-            } elseif ($mv_bz !== '') {
-                $txt .= ';BREMSE_MERKER' . $z['n'] . '=1';
-                $mv_merker++;
-            }
-        }
-        $mv_zeile = 'SET;OK=' . $ok . ';N=' . $angenommen . ';GES=' . $gesamt . ';DEV=alle'
-           . ($mv_begr ? ';BEGRENZT=1' : '') . ($mv_trocken ? ';DRY=1' : '') . $txt . $mv_wz . "\n";
-        // Alle Geraete gebremst: 429; alle ohne Merker: 503 (faellt geschlossen aus).
-        if ($gesamt > 0 && $mv_merker === $gesamt) {
-            mv_abweisen(503, $mv_zeile, 'bremse');
-        }
-        if ($gesamt > 0 && $mv_gebremst + $mv_merker === $gesamt) {
-            mv_abweisen(429, $mv_zeile, 'bremse');
-        }
-        echo $mv_zeile;
-        if (!$mv_trocken) {
-            marstek_anruf_log('sollwert_alle', 'p=' . $mv_p . ' t=' . $mv_t . ' -> ' . trim($mv_zeile));
-            if ($mv_begr) {
-                marstek_anruf_log('begrenzt_alle', 'p=' . $mv_p . ' t=' . $mv_t . ' lag ausserhalb der Grenzen und wurde begrenzt');
-            }
-        }
-        exit;
-    }
-    if ($mv_trocken) {
-        list($ok, $p, $t, $hinweis, $mv_begr) = marstek_set_passive($mv_p, $mv_t, $dev, true);
-    } else {
-        // Energie-1 C1: die Schreiber-Wache vor der Bremse - auch ein Sollwert,
-        // den die Bremse als unveraendert beantwortet, kommt von einem Schreiber.
-        $mv_wz = mv_wache(array($dev), 'p', 'SET', (string) $dev, $mv_von);
-        // a1 / X-7: durch die Befehlsbremse (siehe Kopf).
-        $mv_gb = marstek_gebremst($dev, 'p', (int) $mv_p, (int) $mv_t, function () use ($mv_p, $mv_t, $dev) {
-            return marstek_set_passive($mv_p, $mv_t, $dev, false);
-        });
-        if ($mv_gb['bremse'] === 'MERKER' || $mv_gb['bremse'] === 'BELEGT') {
-            mv_abweisen(503, 'SET;OK=0;ERR=BREMSE_' . $mv_gb['bremse'] . ';DEV=' . $dev . "\n", 'bremse');
-        }
-        if ($mv_gb['bremse'] === 'WARTEN') {
-            mv_abweisen(429, 'SET;OK=0;ERR=BREMSE;WARTEN_S=' . (int) $mv_gb['warten_s'] . ';DEV=' . $dev . "\n", 'bremse');
-        }
-        if ($mv_gb['bremse'] === 'UNVERAENDERT') {
-            echo 'SET;OK=1;P=' . (int) $mv_gb['gemerkt']['p_ist'] . ';T=' . (int) $mv_gb['gemerkt']['t']
-               . ';DEV=' . $dev . ';UNVERAENDERT=1' . $mv_wz . "\n";
-            exit;
-        }
-        list($ok, $p, $t, $hinweis, $mv_begr) = $mv_gb['erg'];
-    }
-    $mv_zeile = 'SET;OK=' . $ok . ';P=' . $p . ';T=' . $t . ';DEV=' . $dev
-       . ($mv_begr ? ';BEGRENZT=1' : '')
-       . ($hinweis !== '' ? ';HINWEIS=' . $hinweis : '') . $mv_wz . "\n";
-    echo $mv_zeile;
-    // Der Trockenlauf schreibt nichts (O5).
-    if (!$mv_trocken) {
-        marstek_anruf_log('sollwert_dev' . $dev, 'p=' . $mv_p . ' t=' . $mv_t . ' -> ' . trim($mv_zeile));
-        if ($mv_begr) {
-            marstek_anruf_log('begrenzt_dev' . $dev, 'p=' . $mv_p . ' t=' . $mv_t
-                . ' lag ausserhalb der Grenzen (t 30..3600 s, p bis zur Leistungsgrenze) - begrenzt auf P='
-                . $p . ' T=' . $t);
-        }
-    }
-    exit;
-}
-
-/* ---------- Modus zurueckgeben ---------- */
-if (isset($_GET['mode'])) {
-    $mv_m = mv_par('mode');
-    if ($mv_m === null) {
-        mv_abweisen(400, "MODE;OK=0;ERR=MODE\n", 'abweisung');
-    }
-    $mv_mk = strtolower($mv_m);
-    $mv_von = mv_von('MODE');
-    $mv_wz = '';
-    if ($mv_trocken || !in_array($mv_mk, array('auto', 'ai'), true)) {
-        list($ok, $m, $hinweis) = marstek_set_mode($mv_m, $dev, $mv_trocken);
-    } else {
-        // Energie-1 C1: gemerkt, nie abgewiesen (eine Rueckgabe ist kein zweiter Regler).
-        $mv_wz = mv_wache(array($dev), 'mode', 'MODE', (string) $dev, $mv_von);
-        // a1 / X-7: auch der Moduswechsel durch die Befehlsbremse.
-        $mv_gb = marstek_gebremst($dev, 'mode', $mv_mk, 0, function () use ($mv_m, $dev) {
-            return marstek_set_mode($mv_m, $dev, false);
-        });
-        if ($mv_gb['bremse'] === 'MERKER' || $mv_gb['bremse'] === 'BELEGT') {
-            mv_abweisen(503, 'MODE;OK=0;ERR=BREMSE_' . $mv_gb['bremse'] . ';DEV=' . $dev . "\n", 'bremse');
-        }
-        if ($mv_gb['bremse'] === 'WARTEN') {
-            mv_abweisen(429, 'MODE;OK=0;ERR=BREMSE;WARTEN_S=' . (int) $mv_gb['warten_s'] . ';DEV=' . $dev . "\n", 'bremse');
-        }
-        if ($mv_gb['bremse'] === 'UNVERAENDERT') {
-            echo 'MODE;OK=1;M=' . ($mv_mk === 'ai' ? 'AI' : 'Auto') . ';DEV=' . $dev . ';UNVERAENDERT=1' . $mv_wz . "\n";
-            exit;
-        }
-        list($ok, $m, $hinweis) = $mv_gb['erg'];
-    }
-    if ($hinweis === 'MODE') {
-        mv_abweisen(400, "MODE;OK=0;ERR=MODE\n", 'abweisung');
-    }
-    $mv_zeile = 'MODE;OK=' . $ok . ';M=' . $m . ';DEV=' . $dev
-       . ($hinweis !== '' ? ';HINWEIS=' . $hinweis : '') . $mv_wz . "\n";
-    echo $mv_zeile;
-    if (!$mv_trocken) {
-        marstek_anruf_log('modus_dev' . $dev, trim($mv_zeile));
+    echo $mv_e['zeile'];
+    foreach ($mv_e['logs'] as $mv_l) {
+        marstek_anruf_log($mv_l[0], $mv_l[1]);
     }
     exit;
 }

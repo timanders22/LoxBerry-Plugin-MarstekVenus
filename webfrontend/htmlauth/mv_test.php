@@ -205,7 +205,10 @@ function mv_bausteinliste_pruefen()
     /* Welle Bild 16 (1.1.23): drei Seiten aus marstek_bausteinliste() statt der einen Liste $mv_bausteine, die
      * bis 1.1.22 hier aus dem Quelltext von index.php gelesen wurde. Gemessen wird weiter am Text, den die
      * Oberflaeche zeigt (Sprachdatei): jeder Verweis "#n" einer Zeile zeigt auf eine KLEINERE Nummer DERSELBEN
-     * Seite (keine Leitung ueber eine Seitengrenze), und kein UND/ODER hat mehr als zwei Eingaenge. */
+     * Seite (keine Leitung ueber eine Seitengrenze), und kein UND/ODER hat mehr als zwei Eingaenge.
+     * Gruppe 1 (1.1.25): die Liste des Musterprojekts verweist seit dem 18.10.2026 auch VORWAERTS (Steuerung #27 auf
+     * #38, #36 auf #40 und #44) und im Kreis (#50 auf Ausgang V von #51, der Summierer der Spot-Ersparnis). Geprueft
+     * wird deshalb: jeder Verweis zeigt auf eine VORHANDENE Zeile derselben Seite und nie auf die eigene. */
     if (!function_exists('marstek_bausteinliste')) {
         return array(0, array('marstek_bausteinliste() fehlt - diese Zeile misst nichts'));
     }
@@ -222,7 +225,7 @@ function mv_bausteinliste_pruefen()
             }
             if (preg_match_all('/#(\d+)/', (string) $z[4], $t)) {
                 foreach ($t[1] as $verweis) {
-                    if ((int) $verweis >= $nr) {
+                    if ((int) $verweis === $nr) {
                         $fehler[] = sprintf('%s #%d verweist auf #%s', $s['seite'], $nr, $verweis);
                     } elseif ((int) $verweis < 1 || (int) $verweis > $anzahl) {
                         $fehler[] = sprintf('%s #%d verweist auf #%s, das es nicht gibt', $s['seite'], $nr, $verweis);
@@ -236,6 +239,66 @@ function mv_bausteinliste_pruefen()
         }
     }
     return array($n, $fehler);
+}
+
+/**
+ * Gruppe 1 (1.1.25): die Einrichtungspruefung der Befehlsbruecke (dasselbe wie "befehlsbruecke.php --pruefen",
+ * hier im selben Prozess ueber bb_pruefen()). Rueckgabe array(true|false, Text).
+ */
+function mv_bruecke_pruefen()
+{
+    list(, $fehler) = marstek_befehle_tabelle();
+    if (!function_exists('bb_pruefen')) {
+        return array(false, $fehler);
+    }
+    ob_start();
+    $rc = bb_pruefen();
+    $aus = (string) ob_get_clean();
+    $zeilen = array_values(array_filter(explode("\n", $aus), 'strlen'));
+    $fehl = array_values(array_filter($zeilen, function ($l) { return strpos($l, '[FEHL]') === 0; }));
+    return array($rc === 0 && !$fehl, sprintf(marstek_t('TEST.BRUECKE_PRUEFEN_TEXT'), count($zeilen), count($fehl),
+        $fehl ? ': ' . trim(substr($fehl[0], 6)) : ''));
+}
+
+/**
+ * Gruppe 1 (1.1.25): ist jeder Name der Namenstabelle (Schritt 2 des Reiters "Einbindung in Loxone") der
+ * Gateway-Name eines Themas, das das Plugin veroeffentlicht (marstek_mqtt_themen(), die ihrerseits gegen den
+ * Sendecode gehalten wird - Zeile "Themen"), und traegt die Hakenliste fuer Gateway Fassung 2 dieselben Namen?
+ * Ein Eingang, der nicht genau so heisst, bekaeme in Loxone beim ersten Wert einen Zwilling. Fuer Werte ueber das
+ * Gateway gibt es keine Importvorlage (Hausherr 19.10.2026). Rueckgabe array(true|false, Text).
+ */
+function mv_namenstabelle_pruefen()
+{
+    $erlaubt = array();
+    $devs = marstek_devices();
+    foreach (array_keys(marstek_mqtt_themen(true)) as $t) {
+        foreach ($devs ? array_keys($devs) : array(1) as $dev) {
+            $basis = (strpos($t, 'rang_') === 0 || strpos($t, 'status/') === 0);
+            $erlaubt[marstek_gateway_name($t, $basis ? 1 : $dev)] = true;
+        }
+    }
+    $namen = array();
+    $ohne = array();
+    foreach (marstek_mqtt_namenstabelle() as $z) {
+        $namen[] = $z['name'];
+        if (!isset($erlaubt[$z['name']])) {
+            $ohne[] = $z['name'];
+        }
+    }
+    if ($ohne) {
+        return array(false, sprintf(marstek_t('TEST.NAMEN_FEHLT'), implode(', ', array_slice($ohne, 0, 5))));
+    }
+    $haken = array();
+    foreach (marstek_mqtt_hakenliste() as $h) {
+        $haken[] = $h['name'];
+    }
+    $a = $namen;
+    sort($a);
+    sort($haken);
+    if ($a !== $haken || count(array_unique($namen)) !== count($namen)) {
+        return array(false, sprintf(marstek_t('TEST.NAMEN_HAKEN'), count($namen), count($haken)));
+    }
+    return array($namen !== array(), sprintf(marstek_t('TEST.NAMEN_TEXT'), count($namen)));
 }
 
 /** Jede erzeugbare Vorlage durch den Parser schicken. Rueckgabe: array(gut, gesamt, fehler). */
@@ -404,6 +467,14 @@ function mv_test_seite($ft, $plugindir, array $cfg, array $devices, $suchergebni
                 implode(', ', array_slice($n_nur_liste, 0, 6)) ?: '-',
                 implode(', ', array_slice($n_nur_code, 0, 6)) ?: '-')
             : sprintf(marstek_t('TEST.THEMEN_TEXT'), $n_themen, $n_themen));
+
+    // --- Gruppe 1 (1.1.25): Befehlsbruecke und Namenstabelle
+    list($mv_bz_ok, $mv_bz_text) = marstek_bruecke_zustand();
+    mv_pruefzeile(marstek_t('TEST.Z_BRUECKE'), $mv_bz_ok, $mv_bz_text);
+    list($mv_bp_ok, $mv_bp_text) = mv_bruecke_pruefen();
+    mv_pruefzeile(marstek_t('TEST.Z_BRUECKE_PRUEFEN'), $mv_bp_ok, $mv_bp_text);
+    list($mv_vm_ok, $mv_vm_text) = mv_namenstabelle_pruefen();
+    mv_pruefzeile(marstek_t('TEST.Z_NAMEN'), $mv_vm_ok, $mv_vm_text);
 
     // --- Vorlagen
     list($v_gut, $v_ges, $v_fehler) = mv_vorlagen_pruefen();
