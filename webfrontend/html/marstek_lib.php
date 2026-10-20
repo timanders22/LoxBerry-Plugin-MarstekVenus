@@ -5444,9 +5444,9 @@ function marstek_vo_vorlage($dev = 1) {
  *
  * Hausherr 18.10.2026 (Bauvorschrift Gruppe 1): Werte UND Befehle zwischen Plugin und Loxone gehen ueber MQTT;
  * Musterprojekt, Vorlagen und Haus nutzen nur MQTT, die HTTP-Wege bleiben fuer bestehende Anlagen. Gateway V1 und
- * V2 werden beide unterstuetzt. Der Sollwert der Regelung bleibt vorerst beim HTTP-Weg: seine Zuordnung in der
- * Befehlsbruecke steht, ist aber ab Werk gesperrt (bin/befehle_zuordnung.php, "Freigabe nach Messung der
- * UDP-Verluste"). Entwurf: Musterprojekt/entwurf_gruppe1_mv.txt, Abschnitte 2 und 3.
+ * V2 werden beide unterstuetzt. Seit 1.1.26 geht auch der Sollwert der Regelung ueber MQTT (Hausherr 20.10.2026
+ * nach der V2-Messung; bin/befehle_zuordnung.php, $mv_sollwert_frei); der HTTP-Weg mit Aktionstoken bleibt fuer
+ * bestehende Anlagen. Entwurf: Musterprojekt/entwurf_gruppe1_mv.txt, Abschnitte 2 und 3.
  */
 
 /**
@@ -5598,8 +5598,8 @@ function marstek_mqtt_publish_energy_ohne($dev = 1) {
  * config/plugins/<ordner>/mqtt_subscriptions.cfg und abonniert daraus, ein Plugin mit einstellbarem Praefix fuehrt
  * sie selbst nach). Inhalt "<praefix>/#". Geschrieben nur, wenn sie abweicht (Minutentakt, Speichern im Reiter
  * MQTT), mit Protokollzeile. Rueckgabe true, wenn sie danach stimmt.
- * Offen (Entwurf mv E16): unter V1 nimmt dieses Abo auch <praefix>/befehl/... und die Quittungen mit; solange der
- * Sollwert beim HTTP-Weg bleibt, sind das nur die seltenen Tasten Auto/AI.
+ * Offen (Entwurf mv E16): unter V1 nimmt dieses Abo auch <praefix>/befehl/... und die Quittungen mit; seit 1.1.26
+ * (Sollwert ueber MQTT) sind das neben den seltenen Tasten Auto/AI auch der Sollwert und seine Quittung alle 30 s.
  */
 function marstek_mqtt_abo_datei_pflegen()
 {
@@ -5699,7 +5699,7 @@ function marstek_befehle_liste()
 }
 
 /** Die Vorlage der MQTT-Befehle (eigener Ausgang "Marstek MQTT-Befehle" an den UDP-Eingang des Gateways,
- *  bb_vorlage()). Gesperrte Befehle stehen nicht darin - der Sollwert bleibt vorerst beim HTTP-Weg.
+ *  bb_vorlage()). Gesperrte Befehle stehen nicht darin; seit 1.1.26 ist der Sollwert frei und steht darin.
  *  Rueckgabe array(name, inhalt) oder null. */
 function marstek_vorlage_befehle()
 {
@@ -6034,7 +6034,7 @@ function marstek_vorlagen_paket() {
         "Loxone-Vorlagen des LoxBerry-Plugins Marstek Venus E\r\n"
       . 'Erzeugt am ' . date('d.m.Y H:i') . "\r\n\r\n"
       . "ACHTUNG: die Dateien VQ_marstek_steuern* enthalten das Aktionstoken im Klartext.\r\n"
-      . "VQ_marstek_mqtt.xml ist die Vorlage der Tasten ueber MQTT (ohne Token). Die Werte ueber das\r\n"
+      . "VQ_marstek_mqtt.xml ist die Vorlage des Sollwerts und der Tasten ueber MQTT (ohne Token). Die Werte ueber das\r\n"
       . "MQTT-Gateway haben keine Vorlage (Namenstabelle im Reiter Einbindung in Loxone).\r\n"
       . "Sie gehoeren nicht weitergegeben und nicht in eine Wolke.\r\n\r\n"
       . "Loxone Config legt beim Import NEU AN und ueberschreibt nichts.\r\n"
@@ -6969,17 +6969,20 @@ function marstek_selbsttest()
     $pruefe('G1: Quittung angenommen', marstek_befehl_quittung(array('ok' => 1, 'zeile' => "MODE;OK=1;M=AI;DEV=1;UNVERAENDERT=1\n")),
         array(true, ''));
     $pruefe('G1: Vorgabe befehle_mqtt_ein 0', marstek_vorgaben()['befehle_mqtt_ein'], 0);
-    // Zuordnung der Befehlsbruecke: gueltig, Sollwert ab Werk gesperrt (ohne Geraetezugriff).
+    // Zuordnung der Befehlsbruecke (ohne Geraetezugriff): gueltig, Sollwert frei seit 1.1.26 (Hausherr 20.10.2026,
+    // V2-Messung), Sperrminute 50 s. tun() wird hier nicht gerufen - es spraeche mit dem Speicher.
     list($mv_zt, $mv_zf) = marstek_befehle_tabelle();
     if ($mv_zt === null) {
         $pruefe('G1: Zuordnung ladbar (' . $mv_zf . ')', false, true);
     } else {
         $pruefe('G1: Zuordnung: Befehle', array_map('strval', array_keys($mv_zt['befehle'])),
             array('sollwert', 'modus_auto', 'modus_ai', '{nr}/sollwert', '{nr}/modus_auto', '{nr}/modus_ai'));
-        $pruefe('G1: Sollwert ab Werk gesperrt', array(!empty($mv_zt['befehle']['sollwert']['gesperrt']),
-            call_user_func($mv_zt['befehle']['sollwert']['tun'], '100', array())),
-            array(true, array(false, 'gesperrt: Freigabe nach Messung der UDP-Verluste')));
-        $pruefe('G1: Sollwert Sperrminute 50 s', $mv_zt['befehle']['sollwert']['sperre_s'], 50);
+        $pruefe('G1: Zuordnung gueltig', bb_zuordnung_pruefen($mv_zt)[0], array());
+        $pruefe('G1: Sollwert frei (seit 1.1.26)', array(!empty($mv_zt['befehle']['sollwert']['gesperrt']),
+            !empty($mv_zt['befehle']['{nr}/sollwert']['gesperrt']), isset($mv_zt['befehle']['sollwert']['vermerk']),
+            isset($mv_zt['befehle']['{nr}/sollwert']['vermerk'])), array(false, false, false, false));
+        $pruefe('G1: Sollwert Sperrminute 50 s', array($mv_zt['befehle']['sollwert']['sperre_s'],
+            $mv_zt['befehle']['{nr}/sollwert']['sperre_s']), array(50, 50));
         $pruefe('G1: zweiter Haken steuerung_ein', $mv_zt['zweiter_haken'], 'steuerung_ein');
     }
 

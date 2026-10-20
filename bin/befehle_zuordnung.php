@@ -1,6 +1,7 @@
 <?php
 /**
- * bin/befehle_zuordnung.php - Zuordnungstabelle der Befehlsbruecke, Linie Marstek Venus E (Gruppe 1, 1.1.25).
+ * bin/befehle_zuordnung.php - Zuordnungstabelle der Befehlsbruecke, Linie Marstek Venus E (Gruppe 1, 1.1.25;
+ * Sollwert frei seit 1.1.26).
  *
  * Die Befehlsbruecke (bin/befehlsbruecke.php, byte-gleich aus der Stammfassung Werkzeuge/gemeinsam/) abonniert
  * <praefix>/befehl/# und gibt jeden gueltigen Befehl an tun() dieser Tabelle. tun() ruft DIESELBE Funktion wie der
@@ -13,9 +14,10 @@
  * (befehlsbruecke.php --pruefen).
  *
  * Die Befehle (Entwurf mv 3.2, E5):
- *   sollwert     ganze Zahl in W (-10000 bis 10000; + laedt, - entlaedt), t = 240 s. AB WERK GESPERRT (Hausherr
- *                18.10.2026: der Sollwert bleibt vorerst beim HTTP-Weg) - Freigabe nach Messung der UDP-Verluste:
- *                $mv_sollwert_frei unten auf true setzen. Sperrminute 50 s statt 60 (Begruendung am Eintrag).
+ *   sollwert     ganze Zahl in W (-10000 bis 10000; + laedt, - entlaedt), t = 240 s. FREI SEIT 1.1.26 nach der
+ *                V2-Messung (Hausherr 20.10.2026: Nachtmessung 19./20.10. mit Gateway V2, 0 Verluste an UDP 11884,
+ *                209/209 Werte). In 1.1.25 war er noch gesperrt. Rueckweg: $mv_sollwert_frei unten auf false
+ *                setzen. Sperrminute 50 s statt 60 (Begruendung am Eintrag).
  *   modus_auto   Puls (nur 1): Regie an den Auto-Modus des Speichers zurueck.
  *   modus_ai     Puls (nur 1): Regie an den AI-Modus des Speichers.
  *   Geraet 2 bis 9: dieselben Befehle unter <praefix>/befehl/<nr>/... (die Bruecke abonniert genau ein Praefix;
@@ -37,8 +39,9 @@ if (!function_exists('marstek_config')) {
         }
     }
 }
-// Schalter in der Tabelle (Bauvorschrift Gruppe 1, Nachtrag 19.10.2026): Freigabe nach Messung der UDP-Verluste.
-$mv_sollwert_frei = false;
+// Schalter in der Tabelle (Bauvorschrift Gruppe 1, Nachtrag 19.10.2026): frei seit 1.1.26 nach der V2-Messung
+// (MV26_BAUVORSCHRIFT.md, Hausherr 20.10.2026). false sperrt den Sollwert ueber MQTT wieder (Rueckweg).
+$mv_sollwert_frei = true;
 $mv_sperre_grund = 'Loxone wechselt den Sollwert im 30-s-Takt zwischen S und S+1 (Dither); derselbe Wert kommt alle 60 s '
     . 'und muss durch, denn der Watchdog des Speichers ist 240 s. Die Befehlsbremse des Plugins (58 s, an t gebunden) '
     . 'bleibt die eine Pruefung.';
@@ -64,10 +67,10 @@ return array(
         'sollwert' => array('art' => 'ganz', 'min' => -10000, 'max' => 10000, 'eingreifend' => true,
             'sperre_s' => 50, 'begruendung' => $mv_sperre_grund,
             'titel' => 'Marstek Sollwert senden (MQTT)', 'kachel' => 'BEFEHL.K_SOLLWERT', 'quittung' => 'ausgefuehrt',
-            'gesperrt' => !$mv_sollwert_frei, 'vermerk' => 'Freigabe nach Messung der UDP-Verluste',
+            'gesperrt' => !$mv_sollwert_frei,
             'tun' => function ($w, $t) use ($mv_sollwert_frei) {
                 if (!$mv_sollwert_frei) {
-                    return array(false, 'gesperrt: Freigabe nach Messung der UDP-Verluste');
+                    return array(false, 'gesperrt');
                 }
                 $GLOBALS['marstek_nur_lesen'] = true;
                 return marstek_befehl_quittung(marstek_befehl_ausfuehren('p', array('p' => (string) $w, 't' => '240',
@@ -90,10 +93,10 @@ return array(
         '{nr}/sollwert' => array('art' => 'ganz', 'min' => -10000, 'max' => 10000, 'eingreifend' => true,
             'sperre_s' => 50, 'begruendung' => $mv_sperre_grund,
             'titel' => 'Marstek Sollwert senden Geraet N (MQTT)', 'kachel' => 'BEFEHL.K_SOLLWERT', 'quittung' => 'ausgefuehrt',
-            'gesperrt' => !$mv_sollwert_frei, 'vermerk' => 'Freigabe nach Messung der UDP-Verluste',
+            'gesperrt' => !$mv_sollwert_frei,
             'tun' => function ($w, $t) use ($mv_sollwert_frei) {
                 if (!$mv_sollwert_frei) {
-                    return array(false, 'gesperrt: Freigabe nach Messung der UDP-Verluste');
+                    return array(false, 'gesperrt');
                 }
                 if (marstek_dev((int) $t['nr']) === null) {
                     return array(false, 'DEV_NICHT_EINGETRAGEN');

@@ -13,6 +13,22 @@ den Auto-Modus des Geräts zurück.
 
 Kompatibel mit LoxBerry 3.x und **LoxBerry 4** (reines PHP, läuft mit PHP 7.4 und 8.x).
 
+## Neu in 1.1.26
+
+**Sollwert über MQTT freigegeben** (Hausherr 20.10.2026, nach einer Nachtmessung mit Gateway Fassung 2: kein
+Verlust am UDP-Eingang 11884).
+
+* Der Sollwert geht wie die Tasten über MQTT: `publish marstek/befehl/sollwert <v.0>` am gemeinsamen Ausgang
+  „LoxBerry MQTT-Gateway“ (Musterprojekt Seite „Marstek Venus E Steuerung“, Nr. 35). Er braucht die Haken
+  „Befehle über MQTT annehmen“ (Reiter MQTT) und „Steuerung aktiv“ (Reiter Einstellungen). Die Vorlage
+  `VQ_marstek_mqtt.xml` enthält ihn jetzt (Knopf „Sollwert und Tasten Auto/AI (MQTT-Befehle)“).
+* Mit Gateway Fassung 1 verliert der UDP-Eingang unter Last Datagramme. Der 30-s-Takt fängt das ab: Der Speicher
+  bleibt erst nach sieben verlorenen Sollwerten in Folge stehen.
+* Der HTTP-Weg (Vorlage „Marstek steuern Venus E“ mit Aktionstoken) bleibt für bestehende Anlagen erhalten.
+* Im Reiter Test erscheint der Sollwert über MQTT als Schreiber „mqtt“. Wer unter „Fremde Schreiber abweisen“
+  nur „loxone“ zulässt, muss „mqtt“ ergänzen, sonst werden Sollwerte über MQTT als FREMDSCHREIBER abgewiesen.
+* Baustein-Liste „Marstek Venus E Steuerung“ wortgleich zum Musterprojekt (Stand 20.10.2026, Nr. 35, 36, 45).
+
 ## Neu in 1.1.25
 
 Gruppe 1 – Umstellung auf MQTT (Hausherr 18.10.2026: Werte UND Befehle zwischen Plugin und Loxone gehen über
@@ -39,9 +55,8 @@ MQTT; das LoxBerry-Plugins Musterprojekt nutzt nur noch MQTT; die HTTP-Wege blei
   zusätzlich „Steuerung aktiv“. Die Brücke startet und endet mit dem Minutentakt, das Update hält sie an, die
   Deinstallation beendet sie samt Zugangsdaten. Die Verarbeitung von `?p=` und `?mode=` steht dafür in einer
   Funktion, die Endpunkt und Brücke gemeinsam nutzen – am HTTP-Weg ändert sich nichts.
-* **Der Sollwert bleibt vorerst beim HTTP-Weg.** Die Brücke kennt ihn schon (`marstek/befehl/sollwert`,
-  Sperrminute 50 s), er ist dort aber **ab Werk gesperrt** – Freigabe nach Messung der UDP-Verluste des
-  MQTT-Gateways.
+* **Sollwert:** In 1.1.25 blieb er noch beim HTTP-Weg; die Brücke kannte ihn schon (`marstek/befehl/sollwert`,
+  Sperrminute 50 s), aber gesperrt. Seit 1.1.26 ist er über MQTT freigegeben (siehe oben).
 * **-1 statt 0, wo kein Wert da ist** (auch in der HTTP-Zeile): Ränge ohne Preise (`CURP`, `MINP`, `MAXP`,
   `SPREAD`, `NEXTP`), nie gelesene Energiezähler, unbekannte Firmware; über MQTT einmal -1 für Ladezustand,
   Firmware, Antwortzeit, Leistungen und Temperatur, solange noch nie gemessen wurde. In den HTTP-Vorlagen tragen
@@ -830,9 +845,9 @@ Rundruf und Gerätesuche aus, und der Reiter Test sagt das ausdrücklich.
 - MQTT über das LoxBerry MQTT Gateway — Status, Energiezähler (`energie_*`),
   Spotpreis-Ränge (`rang_*`), der Takt und das Lebenszeichen (`status/*`), mit
   eigenen MQTT-Vorlagen und Hakenliste für Gateway Fassung 2 (Weg des Musterprojekts seit 1.1.25)
-- **Befehle über MQTT** (Befehlsbrücke, seit 1.1.25): Tasten Auto/AI unter
-  `marstek/befehl/…` mit Quittung; Haken „Befehle über MQTT annehmen“, ab Werk aus;
-  der Sollwert bleibt vorerst beim HTTP-Weg
+- **Befehle über MQTT** (Befehlsbrücke, seit 1.1.25): Sollwert (seit 1.1.26) und
+  Tasten Auto/AI unter `marstek/befehl/…` mit Quittung; Haken „Befehle über MQTT
+  annehmen“, ab Werk aus; der HTTP-Weg mit Aktionstoken bleibt für bestehende Anlagen
 - Anschluss an den LoxBerry-Healthcheck und an das Benachrichtigungszentrum
 - Die **Konfiguration** übersteht Plugin-Updates (Zweitschrift außerhalb des
   Plugin-Ordners; `preinstall.sh` spielt sie bei einer Aktualisierung schon vor

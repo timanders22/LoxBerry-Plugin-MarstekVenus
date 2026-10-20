@@ -1390,7 +1390,8 @@ if ($mv_gwf >= 2) { ?>
  * MQTT, die HTTP-Wege bleiben fuer bestehende Anlagen; Gateway V1 und V2): SIEBEN feste Schritte wie bisher, jetzt
  * in der Reihenfolge des MQTT-Wegs - einschalten, Virtuelle Eingaenge nach der Namenstabelle (keine Importvorlage
  * fuer Gateway-Werte, Hausherr 19.10.2026), Abo bzw. Datenpunkte im Gateway, Befehle
- * (Tasten ueber MQTT, Sollwert vorerst HTTP), Ausfallerkennung, Baustein-Seiten, Gegenprobe. Die HTTP-Eingaenge
+ * (Sollwert und Tasten ueber MQTT, der Sollwert seit 1.1.26; der HTTP-Ausgang mit Aktionstoken bleibt fuer
+ * bestehende Anlagen), Ausfallerkennung, Baustein-Seiten, Gegenprobe. Die HTTP-Eingaenge
  * stehen darunter unter "Fuer bestehende Anlagen: HTTP". Die Nummern haengen nicht an der Geraetezahl, und die
  * Baustein-Listen verweisen auf sie. */
 $mv_schritt = 0;
