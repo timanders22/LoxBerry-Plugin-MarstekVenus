@@ -102,9 +102,11 @@ require_once $mv_htmldir . '/marstek_lib.php';
  * "--selftest" statt "--selbsttest" stillschweigend in der Dienstschleife
  * landete.
  */
-$mv_erlaubt = array('--selbsttest', '--einmal', '--mqtt-leeren');
+$mv_erlaubt = array('--selbsttest', '--einmal', '--mqtt-leeren', '--haus-lesen');
+/* Gruppe 22 (1.1.27, M14): auch ein Argument OHNE "--" ("test", "-h") beendet mit rc 2. Bis 1.1.26 liefen
+ * sie an der Pruefung vorbei in den vollen Durchgang (Pruefbericht: rc 0). */
 foreach ($argv as $mv_i => $mv_a) {
-    if ($mv_i === 0 || strncmp((string) $mv_a, '--', 2) !== 0) {
+    if ($mv_i === 0) {
         continue;
     }
     if (!in_array($mv_a, $mv_erlaubt, true)) {
@@ -128,7 +130,23 @@ if (in_array('--selbsttest', $argv, true)) {
  * (gemessen, Fall U1). */
 if (in_array('--mqtt-leeren', $argv, true)) {
     marstek_keine_wurzel_abbruch('cron.php');
-    exit(marstek_mqtt_leeren());
+    $mv_rc = marstek_mqtt_leeren();
+    // Gruppe 22 (1.1.27, V5/E-E12): haus/speicher mit Ruecklesen abraeumen - nur, wenn diese Installation
+    // Anbieter ist oder war (Merkdatei neben dem Ordner); fremde Themen nie.
+    marstek_haus_deinstallation();
+    exit($mv_rc);
+}
+
+/* --haus-lesen (Geraetetest 1.1.27): der abgekoppelte Leser der Haus-Themen - vom Minutenlauf gestartet
+ * (marstek_haus_abnehmer_starten()), eigene Sperre haus_lesen.lock, wartet bis zu 65 s am Broker, bis jeder
+ * gewartete Zaehler einmal live kam, und schreibt haus_quellen.json. Waehrend einer Aktualisierung nichts. */
+if (in_array('--haus-lesen', $argv, true)) {
+    marstek_keine_wurzel_abbruch('cron.php');
+    if (marstek_takt_pausiert()) {
+        exit(0);
+    }
+    marstek_haus_leser_lauf(65);
+    exit(0);
 }
 
 /* Ohne Wurzel oder aus einem ausgepackten Archiv: NICHTS tun. NEU 25.09.2026.
@@ -155,7 +173,8 @@ if (marstek_takt_pausiert()) {
 }
 
 $sperre = marstek_tmpdir() . '/cron.lock';
-$fp = @fopen($sperre, 'c');
+// Geraetetest 1.1.27: 'e' = close-on-exec - der abgekoppelte Leser erbt die Sperre des Takts nicht.
+$fp = @fopen($sperre, 'ce');
 if ($fp === false) {
     // Ohne Sperre lieber gar nicht laufen, als sich zu stapeln.
     marstek_log('Cron: Sperrdatei ' . $sperre . ' nicht anlegbar - Durchgang uebersprungen.');
@@ -209,7 +228,20 @@ if (is_file($mv_bb)) {
     }
 }
 
-marstek_spot_fetch();
+/* Gruppe 22 (1.1.27, Entwurf 2.7, E-E3): Abnehmerteil der Haus-Sitzung - haus/strompreis (V1) und haus/kalender
+ * (V2), nur mit einem der Haken (sonst keine Verbindung). Fenster hoechstens 32 s, Bremse fuer eine seit 10 min
+ * schweigende Quelle. Danach die Urlaubslage an Loxone (<praefix>/urlaub, retained, Aenderungsfilter). */
+$mv_cfg_h = marstek_config();
+// Geraetetest 1.1.27: der Abnehmer liest abgekoppelt (cron.php --haus-lesen, bis 65 s, eigene Sperre); dieser Lauf
+// startet hoechstens einen Leser, wartet nie darauf und nimmt den letzten Stand aus haus_quellen.json.
+marstek_haus_abnehmer_starten($mv_cfg_h, __FILE__);
+marstek_mqtt_publish_urlaub(marstek_urlaub_wert(marstek_urlaub_lage($mv_cfg_h)));
+
+// Gruppe 22 (V1/E-E2): liefert das Spotpreis-Plugin brauchbare Preise, holt dieser Lauf nicht bei aWATTar.
+list($mv_pq) = marstek_preis_quelle($mv_cfg_h);
+if ($mv_pq !== 'haus') {
+    marstek_spot_fetch();
+}
 
 // Raenge einmal je Durchgang bilden - das meldet sie zugleich per MQTT
 // (seit 1.0.14). Ohne diesen Aufruf kaemen sie nur dann in den Broker, wenn
@@ -248,6 +280,8 @@ $mv_z = marstek_herzschlag();
 marstek_mqtt_publish_takt($mv_z);
 // Gruppe 1 (1.1.25): das Lebenszeichen nach Regeln/07 (status/zaehler, status/ts, status/ok).
 marstek_mqtt_publish_lebenszeichen($mv_z, $mv_ok_alle);
+// Gruppe 22 (1.1.27, V5/E-E12): Anbieterteil der Haus-Sitzung - haus/speicher/* nur mit dem Haken UND MQTT.
+marstek_haus_anbieter(marstek_config(), $mv_z);
 
 flock($fp, LOCK_UN);
 fclose($fp);

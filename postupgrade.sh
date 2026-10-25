@@ -46,6 +46,20 @@ fi
 # Dort hat preupgrade.sh gesichert - NEBEN dem Ordner, weil der
 # Installer data/plugins/<x>/ zwischen beiden Skripten loescht.
 SICHER="$BASE/data/plugins/$PFOLDER.upgrade_sicherung"
+# Gruppe 22 (1.1.27, M1; Bauform Abfahrts-Assistent 1.6.31 abf_marke_weg): die Marke von preupgrade.sh
+# (data/plugins/<ordner>.upgrade_laeuft) faellt erst HIER - per trap, also auch, wenn das Skript vorzeitig
+# endet. Der Rueckgabewert bleibt der des Skripts. Die Zeile vor dem Brueckenstart unten bleibt als Rueckfall
+# (befehlsbruecke.sh lehnt den Start waehrend einer frischen Marke ab).
+MARKE="$BASE/data/plugins/$PFOLDER.upgrade_laeuft"
+mv_marke_weg() {
+    mv_rc=$?
+    rm -f "$MARKE" 2>/dev/null
+    if [ -e "$MARKE" ]; then
+        echo "<WARNING> Die Marke $MARKE liess sich nicht entfernen - bitte von Hand loeschen; bis dahin ruht der Minutentakt hoechstens eine Stunde."
+    fi
+    exit $mv_rc
+}
+trap mv_marke_weg EXIT
 mkdir -p "$BASE/config/plugins/$PFOLDER" 2>/dev/null
 # Dieselbe Frage wie in postinstall.sh: mindestens ein Speicher mit Adresse.
 mv_eingerichtet() {
@@ -60,11 +74,36 @@ mv_eingerichtet() {
 }
 MV_VORHER=0; mv_eingerichtet "$BASE/config/plugins/$PFOLDER/marstek.json" && MV_VORHER=1
 MV_GESICHERT=0; mv_eingerichtet "$SICHER/marstek.json" && MV_GESICHERT=1
-if [ -f "$SICHER/marstek.json" ]; then
-    cp -p "$SICHER/marstek.json" "$BASE/config/plugins/$PFOLDER/marstek.json"
-fi
 BK="$BASE/config/plugins/$PFOLDER.backup.json"
 CF="$BASE/config/plugins/$PFOLDER/marstek.json"
+MV_PHP="$(command -v php 2>/dev/null)"
+# Lesbares JSON mit Aktionstoken? (Begruendung bei der Zweitschrift unten; seit 1.1.27 hier oben, weil die Kopie
+# aus der Update-Sicherung dieselbe Frage stellt.)
+mv_hat_token() {
+    [ -f "$1" ] || return 1
+    if [ -n "$MV_PHP" ]; then
+        "$MV_PHP" -r '$d = json_decode((string) @file_get_contents($argv[1]), true); exit(is_array($d) && isset($d["aktionstoken"]) && trim((string) $d["aktionstoken"]) !== "" ? 0 : 1);' "$1" >/dev/null 2>&1
+        return $?
+    fi
+    # Ohne PHP bleibt nur die Form. Das ist schwaecher - und der Grund, warum
+    # die Entscheidung im Plugin selbst noch einmal faellt.
+    [ -s "$1" ] && [ "$(cat "$1" 2>/dev/null)" != "{}" ]
+}
+# Gruppe 22 (1.1.27, M1 + E2): die Update-Sicherung nur zurueckspielen, wenn sie vom eingespielten Stand ABWEICHT
+# und Inhalt (Aktionstoken) traegt - dann atomar wie preinstall.sh (Nebendatei, 0600 vor dem Inhalt, cmp, mv -f).
+# Bis 1.1.26 stand hier ein bedingungsloses "cp -p" ueber die Konfiguration: ein Takt im Fenster nach
+# postinstall verlor seine Ergaenzung (Pruefbericht Probe m1). Die Bedingung des Fremden ("! mv_hat_token CF")
+# waere zu eng - sie verloere den Fall, dass postinstall aus der aelteren Zweitschrift geholt hat (E2).
+if [ -f "$SICHER/marstek.json" ] && ! cmp -s "$SICHER/marstek.json" "$CF" && mv_hat_token "$SICHER/marstek.json"; then
+    T="$CF.postupgrade.$$"
+    if ( umask 077 && : > "$T" ) 2>/dev/null && chmod 600 "$T" && cat "$SICHER/marstek.json" > "$T" \
+       && cmp -s "$SICHER/marstek.json" "$T" && mv -f "$T" "$CF"; then
+        echo "<INFO> Konfiguration aus der Update-Sicherung uebernommen (sie wich vom eingespielten Stand ab)."
+    else
+        rm -f "$T" 2>/dev/null
+        echo "<WARNING> Die Konfiguration liess sich nicht aus der Update-Sicherung uebernehmen - es gilt der eingespielte Stand."
+    fi
+fi
 # Entschieden wird nach INHALT, nicht nach Form.
 #
 # BERICHTIGT 18.09.2026. Bis 1.1.14 stand hier
@@ -81,17 +120,7 @@ CF="$BASE/config/plugins/$PFOLDER/marstek.json"
 # Ein grep-Muster faerbte die Messung am 18.09.2026 zunaechst gruen, obwohl
 # nichts wiederhergestellt wurde. Deshalb antwortet PHP - es liegt auf jedem
 # LoxBerry, und genau dieser Leser entscheidet spaeter auch im Plugin.
-MV_PHP="$(command -v php 2>/dev/null)"
-mv_hat_token() {
-    [ -f "$1" ] || return 1
-    if [ -n "$MV_PHP" ]; then
-        "$MV_PHP" -r '$d = json_decode((string) @file_get_contents($argv[1]), true); exit(is_array($d) && isset($d["aktionstoken"]) && trim((string) $d["aktionstoken"]) !== "" ? 0 : 1);' "$1" >/dev/null 2>&1
-        return $?
-    fi
-    # Ohne PHP bleibt nur die Form. Das ist schwaecher - und der Grund, warum
-    # die Entscheidung im Plugin selbst noch einmal faellt.
-    [ -s "$1" ] && [ "$(cat "$1" 2>/dev/null)" != "{}" ]
-}
+# (mv_hat_token steht seit 1.1.27 weiter oben.)
 if mv_hat_token "$BK" && ! mv_hat_token "$CF"; then
     # Der verdraengte Stand bleibt lesbar - es kann etwas darin stehen, das
     # nur der Bediener wiederherstellen kann.
@@ -104,6 +133,39 @@ if mv_hat_token "$BK" && ! mv_hat_token "$CF"; then
     chmod 600 "$CF" 2>/dev/null
     echo "<OK> Die Konfiguration trug kein lesbares Aktionstoken und wurde aus der Zweitschrift wiederhergestellt."
 fi
+# Gruppe 22 (1.1.27, Entwurf 3.2, E-E10): bestehende Anlage -> der HTTP-Lesezweig bleibt erreichbar
+# (endpunkt_ein=1), in Datei und Zweitschrift, nur wenn sie Inhalt tragen und der Schluessel fehlt. Nebendatei .neu
+# (umask 077, JSON wie marstek_cfg_schreiben()), Gegenprobe (Schluessel 1, Token unveraendert), mv -f, 0600.
+# Scheitert es, gilt die Lese-Regel marstek_uebergang() im Plugin - das Ergebnis ist dasselbe.
+mv_endpunkt_nachtragen() {
+    [ -n "$MV_PHP" ] || return 1
+    mv_hat_token "$1" || return 1
+    "$MV_PHP" -r '$d = json_decode((string) @file_get_contents($argv[1]), true); exit(is_array($d) && !array_key_exists("endpunkt_ein", $d) ? 0 : 1);' "$1" >/dev/null 2>&1 || return 1
+    N="$1.neu"
+    if ! ( umask 077 && "$MV_PHP" -r '$d = json_decode((string) @file_get_contents($argv[1]), true);
+            $d["endpunkt_ein"] = 1;
+            $j = json_encode($d, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+            if ($j === false || @file_put_contents($argv[2], $j) !== strlen($j)) { exit(1); }' "$1" "$N" ) 2>/dev/null; then
+        rm -f "$N" 2>/dev/null
+        return 2
+    fi
+    if ! "$MV_PHP" -r '$a = json_decode((string) @file_get_contents($argv[1]), true); $n = json_decode((string) @file_get_contents($argv[2]), true);
+            exit(is_array($a) && is_array($n) && isset($n["endpunkt_ein"]) && $n["endpunkt_ein"] === 1
+                 && isset($n["aktionstoken"]) && $n["aktionstoken"] === $a["aktionstoken"] ? 0 : 1);' "$1" "$N" >/dev/null 2>&1; then
+        rm -f "$N" 2>/dev/null
+        return 2
+    fi
+    chmod 600 "$N" 2>/dev/null && mv -f "$N" "$1" || { rm -f "$N" 2>/dev/null; return 2; }
+    chmod 600 "$1" 2>/dev/null
+    return 0
+}
+for MV_D in "$CF" "$BK"; do
+    mv_endpunkt_nachtragen "$MV_D"
+    case $? in
+        0) echo "<INFO> Konfiguration ergaenzt: endpunkt_ein=1 (bestehende Anlage - der HTTP-Lesezweig bleibt erreichbar; abschalten im Reiter Einbindung): $(basename "$MV_D")" ;;
+        2) echo "<WARNING> endpunkt_ein liess sich nicht nachtragen ($(basename "$MV_D")) - es gilt die Lese-Regel des Plugins (bestehende Anlage = an)." ;;
+    esac
+done
 # I5 (Durchgang 30.09.2026): das gesicherte Protokoll wird VOR die Zeilen
 # aus der Luecke gesetzt, nicht darueber kopiert. Bis 1.1.17 ersetzte es das
 # laufende Protokoll immer - gemessen (U1, U6): die Zeilen aus der Luecke,
@@ -184,8 +246,7 @@ if [ -d "$SICHER" ] && mv_inhalt "$SICHER/marstek.json" && ! cmp -s "$SICHER/mar
 else
     rm -rf "$SICHER" 2>/dev/null
 fi
-# Die Marke hat postinstall.sh schon entfernt; bricht dessen trap einmal nicht,
-# faellt sie spaetestens hier (I1).
+# Gruppe 22 (1.1.27, M1): die Marke faellt hier (und im trap oben als Rueckfall) - vor dem Brueckenstart.
 rm -f "$BASE/data/plugins/$PFOLDER.upgrade_laeuft" 2>/dev/null
 
 # Gruppe 1 (1.1.25): die Befehlsbruecke wieder starten - startet nur mit Haken "Befehle ueber MQTT annehmen"

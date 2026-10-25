@@ -13,6 +13,39 @@ den Auto-Modus des Geräts zurück.
 
 Kompatibel mit LoxBerry 3.x und **LoxBerry 4** (reines PHP, läuft mit PHP 7.4 und 8.x).
 
+## Neu in 1.1.27
+
+Gruppe 22 (Hausherr 25.10.2026): Korrekturen aus der Prüfung der Fremdbefunde, Hausform und drei Haus-Themen
+nach Regeln/07 Nr. 15 – alle neuen Haken **ab Werk aus**.
+
+* **Strompreis aus dem Haus** (Reiter Einstellungen, „Strompreis vom Spotpreis-Plugin übernehmen“): Marstek liest
+  `haus/strompreis/*` (Vorschau der Endpreise, Raster 900 oder 3600 s) und bildet daraus seine Ränge –
+  Viertelstunden als Stundenmittel, ohne eigenen Aufschlag. Schweigt das Spotpreis-Plugin länger als zwei Minuten
+  oder deckt es die laufende Stunde nicht, holt das Plugin wie bisher selbst bei aWATTar. Neues Feld `QUELLE`
+  hinten im Satz `ranks` (MQTT `rang_quelle`: 0 eigener Abruf, 1 Spotpreis-Plugin, -1 keine Preise). Auch der
+  eigene Abruf fasst Viertelstunden jetzt zu Stundenmitteln zusammen (bis 1.1.26 zählte jede Viertelstunde als
+  eigene „Stunde“).
+* **Urlaubsregel aus dem Kalender** (Reiter Einstellungen, Abschnitt Schutz; liest `haus/kalender` des Plugins
+  Ferien und Feiertage): im Urlaub werden Sollwerte außerhalb des Urlaubsfensters (ab Werk 20–80 %) auf 0 W
+  begrenzt, Ladesollwerte der aWATTar-Kopplung abgelehnt (`ERR=URLAUB_NETZ`), und Loxone erfährt es über das neue
+  Thema `marstek/urlaub` (1/0/-1, Musterprojekt „Marstek Venus E Steuerung“ Nr. 63/64).
+* **Speicherstand an andere Plugins** (Reiter MQTT): `haus/speicher/soc`, `kwh`, `leistung`, `richtung` und
+  `zaehler` – über eine kurze Sitzung direkt am Broker; beim Ausschalten und bei der Deinstallation mit Rücklesen
+  abgeräumt, nur wenn diese Installation Anbieter ist oder war.
+* **Verlauf für das Dashboard:** `marstek.php?verlauf=svg|json&dev=n[&tag=JJJJMMTT]` (lesend, ohne Token).
+* **HTTP-Lesezweig hinter einem Haken** (Reiter Einbindung, „Bestehende Anlagen“): `status`, `energy`, `summe`,
+  `ranks` und `verlauf` antworten nur mit „HTTP-Lesezweig für Loxone annehmen“ – bei einem Update an, bei einer
+  Neuinstallation aus (sonst HTTP 403 `ERR=ENDPUNKT_AUS`). Sollwert und Modus (`?p=`, `?mode=` mit Token),
+  Selbsttest und Diagnose bleiben.
+* **Korrekturen:** Upgrade-Marke fällt erst in postupgrade, die Sicherung wird dort nur bei Abweichung und atomar
+  zurückgespielt; eine Marke aus der Zukunft hält den Takt nicht mehr an; `cron.01min` legt den Protokollordner
+  an und läuft auch ohne ihn; `mosquitto-clients` in der Paketliste; Zurückspielen einer Sicherung räumt den alten
+  Präfix ab und schaltet die Befehlsbrücke wie das Speichern; Fehler nicht mehr in der Seite (Downloads sauber);
+  Reiter Test mit dem Port des Webservers; Schalter des Endpunkts am Wert; unbekannte Argumente an `cron.php`
+  enden mit rc 2; Hilfelink auf die eigene Wikiseite.
+* Befehlsbrücke 1.0.1 (gemeinsame Stammfassung). Baustein-Liste „Marstek Venus E Steuerung“ jetzt 65 Zeilen,
+  Preise in den Statustexten in EUR/kWh, Vermerke „Noncached“.
+
 ## Neu in 1.1.26
 
 **Sollwert über MQTT freigegeben** (Hausherr 20.10.2026, nach einer Nachtmessung mit Gateway Fassung 2: kein
@@ -44,7 +77,7 @@ MQTT; das LoxBerry-Plugins Musterprojekt nutzt nur noch MQTT; die HTTP-Wege blei
   (`VQ_marstek_mqtt.xml`, Virtueller Ausgang an UDP 11884) und die HTTP-Vorlagen für bestehende Anlagen.
 * **Gateway Fassung 1 und 2:** Schritt 3 nennt je Fassung, was zu tun ist – unter Fassung 1 das Abo
   `marstek/#` (das Plugin meldet es zusätzlich über `config/plugins/marstekvenus/mqtt_subscriptions.cfg`),
-  unter Fassung 2 die Hakenliste (36 Datenpunkte bei einem Speicher, vier davon „Noncached“).
+  unter Fassung 2 die Hakenliste (seit 1.1.27 38 Datenpunkte bei einem Speicher, vier davon „Noncached“).
 * **Lebenszeichen** nach Hausstandard: `marstek/status/zaehler`, `status/ts` und `status/ok` jede Minute, nie
   retained. `takt_zaehler`/`takt_ts` bleiben für bestehende Anlagen (abgelöst; ein Abbau wird angekündigt).
 * **Befehle über MQTT** (gemeinsame Befehlsbrücke, `bin/befehlsbruecke.php`/`.sh`, Zuordnung

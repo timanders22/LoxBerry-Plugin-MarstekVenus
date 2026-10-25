@@ -270,7 +270,8 @@ for ALT in "$BASE/config/plugins/$PDIR.backup.json.alt" \
            "$BASE/data/plugins/$PDIR.verlauf.alt" \
            "$BASE/data/plugins/$PDIR.upgrade_sicherung.alt" \
            "$BASE/data/plugins/$PDIR.upgrade_sicherung.neu" \
-           "$BASE/data/plugins/$PDIR.upgrade_laeuft"; do
+           "$BASE/data/plugins/$PDIR.upgrade_laeuft" \
+           "$BASE/data/plugins/$PDIR.haus_frueher"; do
     if [ -e "$ALT" ] || [ -L "$ALT" ]; then
         rm -rf "${ALT:?}" && echo "<OK> Entfernt: $(basename "$ALT")"
     fi

@@ -19,7 +19,10 @@
  */
 
 error_reporting(E_ALL & ~E_DEPRECATED & ~E_NOTICE);
-ini_set('display_errors', '1');
+// Gruppe 22 (1.1.27, M2; Bauform Abfahrts-Assistent 1.6.31): Fehler ins Protokoll, nicht in die Seite - eine
+// Warnung vor header() nahm sonst Umleitungen und Downloads die Kopfzeilen (Pruefbericht Probe m2).
+ini_set('display_errors', '0');
+ini_set('log_errors', '1');
 
 /* Bibliothek finden: installiert im html-Zweig, im Archiv daneben.
  *
@@ -189,6 +192,7 @@ if (!$mv_post) {
 
 /* ---------- Loxone-Vorlagen herunterladen (Download, veraendert nichts) ---------- */
 if ($mv_post && isset($_POST['vorlage_paket'])) {
+    while (ob_get_level() > 0) { ob_end_clean(); }   // Gruppe 22 (1.1.27, M2): nichts vor dem Download
     $paket = marstek_vorlagen_paket();
     if ($paket !== null) {
         header('Content-Type: application/x-download');
@@ -199,6 +203,7 @@ if ($mv_post && isset($_POST['vorlage_paket'])) {
     mv_weiter('tab-loxone', array('fehler' => marstek_t('MELD.KEIN_ZIP')));
 }
 if ($mv_post && isset($_POST['vorlage_vo'])) {
+    while (ob_get_level() > 0) { ob_end_clean(); }   // Gruppe 22 (1.1.27, M2): nichts vor dem Download
     list($mv_vname, $mv_vinhalt) = marstek_vo_vorlage(isset($_POST['vorlage_dev']) && is_string($_POST['vorlage_dev']) ? (int) $_POST['vorlage_dev'] : 1);
     header('Content-Type: application/x-download');
     header('Content-Disposition: attachment; filename="' . $mv_vname . '"');
@@ -208,6 +213,7 @@ if ($mv_post && isset($_POST['vorlage_vo'])) {
 /* ---------- Gruppe 1 (1.1.25): Vorlage der MQTT-Befehle (Download, veraendert nichts). Fuer die Werte ueber das
  * MQTT-Gateway gibt es keine Vorlage (Hausherr 19.10.2026, Regeln/07 R2_078): Namenstabelle in Schritt 2. ---------- */
 if ($mv_post && isset($_POST['vorlage_befehle'])) {
+    while (ob_get_level() > 0) { ob_end_clean(); }   // Gruppe 22 (1.1.27, M2): nichts vor dem Download
     $mv_vq = marstek_vorlage_befehle();
     if ($mv_vq === null) {
         list(, $mv_vqf) = marstek_befehle_liste();
@@ -219,6 +225,7 @@ if ($mv_post && isset($_POST['vorlage_befehle'])) {
     exit;
 }
 if ($mv_post && isset($_POST['vorlage'])) {
+    while (ob_get_level() > 0) { ob_end_clean(); }   // Gruppe 22 (1.1.27, M2): nichts vor dem Download
     list($mv_vname, $mv_vinhalt) = marstek_vorlage(
         is_string($_POST['vorlage']) ? $_POST['vorlage'] : 'status',
         isset($_POST['vorlage_dev']) && is_string($_POST['vorlage_dev']) ? (int) $_POST['vorlage_dev'] : 1);
@@ -235,6 +242,7 @@ if ($mv_post && isset($_POST['vorlage'])) {
  * Miniserver ungueltig wuerden.
  */
 if ($mv_post && isset($_POST['mv_sichern'])) {
+    while (ob_get_level() > 0) { ob_end_clean(); }   // Gruppe 22 (1.1.27, M2): nichts vor dem Download
     // Mit lesbarem Kopf (_hinweis, _stand, _fassung).
     header('Content-Type: application/x-download');
     header('Content-Disposition: attachment; filename="marstekvenus_' . date('Ymd_His') . '.json"');
@@ -257,6 +265,7 @@ if ($mv_post && isset($_POST['mv_zurueck'])) {
      * fehlenden Schluesseln geschah; C13: weggefallene Geraetenummern werden
      * abgemeldet wie beim Speichern des Formulars. */
     $mv_vorher = array_keys(marstek_devices());
+    $mv_alt_cfg = marstek_config();   // Gruppe 22 (M3): fuer marstek_nach_konfigwechsel()
     $roh = (string) @file_get_contents($_FILES['konfigdatei']['tmp_name']);
     $mv_imp = marstek_sicherung_lesen($roh);
     $mv_imp_cfg = $mv_imp[0];
@@ -290,6 +299,12 @@ if ($mv_post && isset($_POST['mv_zurueck'])) {
         } elseif (strncmp($mv_h, 'BEHALTEN:', 9) === 0) {
             $mv_texte[] = sprintf(marstek_t('MELD.IMPORT_BEHALTEN'), substr($mv_h, 9));
         }
+    }
+    /* Gruppe 22 (1.1.27, M3): wie beim Speichern - alter Praefix abgeraeumt, Merker geloescht, Abo-Datei,
+     * Befehlsbruecke nach ihrem Soll, haus/speicher abgeraeumt, wenn Haken oder MQTT durch die Sicherung ausgehen. */
+    list($mv_kw) = marstek_nach_konfigwechsel($mv_alt_cfg, marstek_config());
+    foreach ($mv_kw as $mv_z) {
+        $mv_texte[] = $mv_z;
     }
     foreach (array_diff($mv_vorher, array_keys(marstek_devices())) as $mv_n) {
         $mv_a = marstek_geraet_abmelden($mv_n);
@@ -428,6 +443,7 @@ if ($mv_post && isset($_POST['schalten']) && is_string($_POST['schalten'])) {
  * O14 (30.09.2026): ein unbekanntes Geraet oder ein ungueltiger Tag ergibt
  * HTTP 400. Bis 1.1.17 kam eine leere Datei "marstek_verlauf_7_.csv". */
 if ($mv_post && isset($_POST['verlauf_csv'])) {
+    while (ob_get_level() > 0) { ob_end_clean(); }   // Gruppe 22 (1.1.27, M2): nichts vor dem Download
     $n = (isset($_POST['verlauf_dev']) && is_string($_POST['verlauf_dev']) && preg_match('/^[1-9]$/', $_POST['verlauf_dev']))
         ? (int) $_POST['verlauf_dev'] : 0;
     $tag = (isset($_POST['verlauf_tag']) && is_string($_POST['verlauf_tag'])) ? $_POST['verlauf_tag'] : '';
@@ -460,32 +476,27 @@ if ($mv_post && isset($_POST['verlauf_csv'])) {
  */
 if ($mv_post && isset($_POST['mqtt_save'])) {
     $cfg = marstek_config();
-    $mv_alt_praefix = marstek_mqtt_prefix(1);
-    $mv_alt_ein = !empty($cfg['mqtt_enabled']);
+    $mv_alt_cfg = $cfg;   // Gruppe 22 (M3): Vergleich in marstek_nach_konfigwechsel()
     $topic = (isset($_POST['mqtt_topic']) && is_string($_POST['mqtt_topic'])) ? trim($_POST['mqtt_topic']) : '';
     $mv_g = marstek_wert_pruefen('mqtt_topic', $topic);
     if ($mv_g !== '') {
         // X-2: das eingetippte Praefix und der Schalter kommen zurueck ins Formular.
         mv_weiter('tab-mqtt', array('fehler' => sprintf(marstek_t('MELD.PRAEFIX_UNGUELTIG'), $topic, $mv_g),
             'formular' => 'mqtt', 'falsch' => array('mqtt_topic'),
-            'eingaben' => array('mqtt_topic' => $topic, 'mqtt_enabled' => isset($_POST['mqtt_enabled']) ? 1 : 0)));
+            'eingaben' => array('mqtt_topic' => $topic, 'mqtt_enabled' => isset($_POST['mqtt_enabled']) ? 1 : 0,
+                                 'haus_speicher_ein' => isset($_POST['haus_speicher_ein']) ? 1 : 0)));
     }
     $cfg['mqtt_enabled'] = isset($_POST['mqtt_enabled']) ? 1 : 0;
     $cfg['mqtt_topic'] = $topic;
+    // Gruppe 22 (1.1.27, V5/E-E12): Speicherstand an andere Plugins geben (haus/speicher), nur mit MQTT.
+    $cfg['haus_speicher_ein'] = isset($_POST['haus_speicher_ein']) ? 1 : 0;
     if (!marstek_cfg_schreiben($cfg)) {
         mv_weiter('tab-mqtt', array('fehler' => marstek_t('MELD.SPEICHERN_FEHLGESCHLAGEN')));
     }
-    // Gruppe 1 (1.1.25): die Abo-Datei fuer Gateway Fassung 1 folgt dem Praefix (marstek_mqtt_abo_datei_pflegen()).
-    marstek_mqtt_abo_datei_pflegen();
-    $mv_texte = array();
-    if ($topic !== $mv_alt_praefix) {
-        marstek_mqtt_merker_loeschen();
-        $mv_z = marstek_mqtt_praefix_abraeumen($mv_alt_praefix);
-        $mv_texte[] = $mv_z >= 0 ? sprintf(marstek_t('MELD.PRAEFIX_GEWECHSELT'), $mv_alt_praefix, $mv_z)
-                                 : sprintf(marstek_t('MELD.PRAEFIX_GEWECHSELT_OHNE'), $mv_alt_praefix);
-    } elseif (!$mv_alt_ein && !empty($cfg['mqtt_enabled'])) {
-        marstek_mqtt_merker_loeschen();
-    }
+    /* Gruppe 22 (1.1.27, M3): EINE Stelle fuer MQTT-Formular, Befehlsformular und Zurueckspielen - Abo-Datei,
+     * Praefixwechsel (Merker loeschen, alten Praefix abraeumen), Merker beim Einschalten, Befehlsbruecke nach
+     * ihrem Soll, haus/speicher abraeumen (Haken oder MQTT aus) bzw. Vollversand vormerken (beide an). */
+    list($mv_texte) = marstek_nach_konfigwechsel($mv_alt_cfg, $cfg);
     mv_weiter('tab-mqtt', array('saved' => 1, 'meldung' => implode(' ', $mv_texte)));
 }
 
@@ -498,17 +509,34 @@ if ($mv_post && isset($_POST['mqtt_save'])) {
  * unberuehrt. */
 if ($mv_post && isset($_POST['befehle_save'])) {
     $cfg = marstek_config();
+    $mv_alt_cfg = $cfg;   // Gruppe 22 (M3)
     $cfg['befehle_mqtt_ein'] = isset($_POST['befehle_mqtt_ein']) ? 1 : 0;
     if (!marstek_cfg_schreiben($cfg)) {
         mv_weiter('tab-mqtt', array('fehler' => marstek_t('MELD.SPEICHERN_FEHLGESCHLAGEN')));
     }
     $mv_ban = !empty($cfg['befehle_mqtt_ein']) && !empty($cfg['mqtt_enabled']);
-    list($mv_brc, $mv_baus) = marstek_bruecke_schalten($mv_ban);
+    // Gruppe 22 (1.1.27, M3): die Bruecke ueber die gemeinsame Stelle - hier wie bisher immer geschaltet.
+    list(, $mv_bkw) = marstek_nach_konfigwechsel($mv_alt_cfg, $cfg, true);
+    list($mv_brc, $mv_baus) = $mv_bkw;
     $mv_bmeld = marstek_t($cfg['befehle_mqtt_ein'] ? 'BEFEHL.MELD_AN' : 'BEFEHL.MELD_AUS');
     if ($mv_ban && $mv_brc !== 0) {
         $mv_bmeld = sprintf(marstek_t('BEFEHL.MELD_START_FEHL'), marstek_mqtt_wert_saeubern(substr((string) $mv_baus, 0, 160)));
     }
     mv_weiter('tab-mqtt', array('saved' => 1, 'meldung' => $mv_bmeld));
+}
+
+/* ---------- Gruppe 22 (1.1.27, E-E10/E-E11): Haken "HTTP-Lesezweig fuer Loxone annehmen" (Reiter Einbindung) ----------
+ * Eigenes Formular, ab Werk aus (Neuinstallation), bei einem Update an (Lese-Regel und postupgrade.sh). Der
+ * Sollwert ueber HTTP (?p= mit Token) wirkt unabhaengig davon. */
+if ($mv_post && isset($_POST['endpunkt_save'])) {
+    $cfg = marstek_config();
+    $cfg['endpunkt_ein'] = isset($_POST['endpunkt_ein']) ? 1 : 0;
+    if (!marstek_cfg_schreiben($cfg)) {
+        mv_weiter('tab-loxone', array('fehler' => marstek_t('MELD.SPEICHERN_FEHLGESCHLAGEN')));
+    }
+    marstek_log('Oberflaeche: HTTP-Lesezweig ' . ($cfg['endpunkt_ein'] ? 'eingeschaltet' : 'ausgeschaltet') . '.');
+    mv_weiter('tab-loxone', array('saved' => 1,
+        'meldung' => marstek_t($cfg['endpunkt_ein'] ? 'LOX.EP_MELD_AN' : 'LOX.EP_MELD_AUS')));
 }
 
 /* ---------- Einstellungen speichern ----------
@@ -599,7 +627,9 @@ if ($mv_post && isset($_POST['save'])) {
                        'soc_min' => 'EINST.L_SOC_MIN', 'soc_max' => 'EINST.L_SOC_MAX',
                        'vat' => 'EINST.L_UST', 'aufschlag_ct' => 'EINST.L_AUFSCHLAG', 'awattar' => 'EINST.L_MARKT',
                        // Energie-1 C1: die Schreiber-Wache (Nr. 16/19: abweisen, nichts speichern, Eingabe zurueck)
-                       'wache_fenster_min' => 'EINST.L_WACHE_FENSTER', 'wache_erlaubt' => 'EINST.L_WACHE_ERLAUBT');
+                       'wache_fenster_min' => 'EINST.L_WACHE_FENSTER', 'wache_erlaubt' => 'EINST.L_WACHE_ERLAUBT',
+                       // Gruppe 22 (1.1.27, V2): das Urlaubsfenster
+                       'urlaub_soc_min' => 'EINST.L_URLAUB_SOC_MIN', 'urlaub_soc_max' => 'EINST.L_URLAUB_SOC_MAX');
     $mv_neu = array();
     foreach ($mv_felder as $mv_k => $mv_l) {
         $v = $mv_str($mv_k);
@@ -629,7 +659,7 @@ if ($mv_post && isset($_POST['save'])) {
         }
     }
     foreach (array('steuerung_ein', 'verteilen_ein', 'melden_ein', 'schutz_ein', 'bremse_abstand_ein',
-                   'wache_ein', 'wache_lb_melden', 'wache_sperren_ein') as $mv_k) {
+                   'wache_ein', 'wache_lb_melden', 'wache_sperren_ein', 'haus_preis_ein', 'haus_urlaub_ein') as $mv_k) {
         $mv_neu[$mv_k] = isset($_POST[$mv_k]) ? 1 : 0;
         $mv_rueck[$mv_k] = $mv_neu[$mv_k];
     }
@@ -638,7 +668,7 @@ if ($mv_post && isset($_POST['save'])) {
     }
     // X-2: bei einer Kreuzbeanstandung sind beide Felder des Paars markiert.
     foreach (array(array('soc_min', 'soc_max'), array('temp_min', 'temp_max'),
-                   array('wache_sperren_ein', 'wache_erlaubt')) as $mv_paar) {
+                   array('wache_sperren_ein', 'wache_erlaubt'), array('urlaub_soc_min', 'urlaub_soc_max')) as $mv_paar) {
         $mv_pw = array_intersect_key($mv_neu + $alt, array_flip($mv_paar));
         if (marstek_cfg_kreuzmaengel($mv_pw)) {
             $mv_falsch_neu[] = $mv_paar[0];
@@ -735,7 +765,8 @@ if (is_array($mv_form_rueck)) {
     foreach (array('cache_sec', 'fallback_min', 'verlauf_tage', 'melden_ab', 'temp_min', 'temp_max',
                    'soc_min', 'soc_max', 'vat', 'aufschlag_ct', 'awattar',
                    'steuerung_ein', 'verteilen_ein', 'melden_ein', 'schutz_ein', 'bremse_abstand_ein',
-                   'wache_ein', 'wache_fenster_min', 'wache_lb_melden', 'wache_sperren_ein', 'wache_erlaubt') as $mv_k) {
+                   'wache_ein', 'wache_fenster_min', 'wache_lb_melden', 'wache_sperren_ein', 'wache_erlaubt',
+                   'haus_preis_ein', 'haus_urlaub_ein', 'urlaub_soc_min', 'urlaub_soc_max') as $mv_k) {
         if (array_key_exists($mv_k, $mv_form_rueck) && is_scalar($mv_form_rueck[$mv_k])) {
             $mv_cfg[$mv_k] = $mv_form_rueck[$mv_k];
         }
@@ -744,7 +775,7 @@ if (is_array($mv_form_rueck)) {
 
 // X-2: dasselbe fuer das MQTT-Formular.
 if (is_array($mv_mqtt_rueck)) {
-    foreach (array('mqtt_topic', 'mqtt_enabled') as $mv_k) {
+    foreach (array('mqtt_topic', 'mqtt_enabled', 'haus_speicher_ein') as $mv_k) {
         if (array_key_exists($mv_k, $mv_mqtt_rueck) && is_scalar($mv_mqtt_rueck[$mv_k])) {
             $mv_cfg[$mv_k] = $mv_mqtt_rueck[$mv_k];
         }
@@ -776,74 +807,15 @@ $mv_err_lines = array_reverse(marstek_log_ende($mv_err_file, 50));
  * Jetzt gibt es einen Maskierhelfer, und der liegt in der Bibliothek.
  */
 
-/**
- * Mini-SVG: SOC-Verlauf eines Tages, dazu die Batterieleistung als zweite
- * Kurve.
- *
- * $tag ist 'Ymd'. Der Tagesanfang richtet sich nach dem GEZEIGTEN Tag, nicht
- * nach heute - sonst faellt bei der Tagesauswahl jeder Punkt aus dem Bild.
- */
-function mv_soc_svg($points, $tag = '') {
-    $w = 720; $h = 150; $x0 = 34; $y0 = 8; $pw = $w - $x0 - 34; $ph = $h - $y0 - 20;
-    $day0 = $tag !== '' ? (int) strtotime(substr($tag, 0, 4) . '-' . substr($tag, 4, 2) . '-' . substr($tag, 6, 2) . ' 00:00')
-                        : (int) strtotime('today 00:00');
-    // O12 (30.09.2026): ein Tag hat 23, 24 oder 25 Stunden. Bis 1.1.17 wurde
-    // mit 86400 s gerechnet - am 25.10.2026 standen 25 Stundenpunkte in der
-    // Datei, gezeichnet wurden 24, und die Achse lag ab 03:00 eine Stunde daneben.
-    $day1 = (int) strtotime('+1 day', $day0);
-    $tlen = max(1, $day1 - $day0);
-    $svg = '<svg viewBox="0 0 ' . $w . ' ' . $h . '" style="width:100%;max-width:' . $w . 'px;height:auto;background:#fafafa;border:1px solid #e0e0e0;border-radius:8px;" xmlns="http://www.w3.org/2000/svg">';
-    // Grenzen der Leistungsachse aus den Daten - eine feste Achse waere bei
-    // einem Venus E Mini (800 W) genauso falsch wie bei zwei Gen 3.0.
-    $pmax = 100;
-    foreach ($points as $pt) {
-        if (abs($pt[2]) > $pmax) { $pmax = abs($pt[2]); }
-    }
-    $pmax = ceil($pmax / 500) * 500;
-    foreach (array(0, 25, 50, 75, 100) as $pct) {
-        $y = $y0 + $ph - $ph * $pct / 100;
-        $svg .= '<line x1="' . $x0 . '" y1="' . $y . '" x2="' . ($x0 + $pw) . '" y2="' . $y . '" stroke="#e5e5e5" stroke-width="1"/>';
-        $svg .= '<text x="' . ($x0 - 5) . '" y="' . ($y + 3) . '" font-size="9" fill="#999" text-anchor="end">' . $pct . '</text>';
-    }
-    // rechte Achse: Leistung
-    foreach (array(-$pmax, 0, $pmax) as $wt) {
-        $y = $y0 + $ph / 2 - ($ph / 2) * $wt / $pmax;
-        $svg .= '<text x="' . ($x0 + $pw + 4) . '" y="' . ($y + 3) . '" font-size="9" fill="#c47b1a" text-anchor="start">' . (int) $wt . '</text>';
-    }
-    foreach (array(0, 6, 12, 18, 24) as $hh) {
-        $tsh = $hh === 24 ? $day1 : (int) strtotime(date('Y-m-d', $day0) . sprintf(' %02d:00', $hh));
-        $x = $x0 + $pw * ($tsh - $day0) / $tlen;
-        $svg .= '<line x1="' . $x . '" y1="' . $y0 . '" x2="' . $x . '" y2="' . ($y0 + $ph) . '" stroke="#eeeeee" stroke-width="1"/>';
-        $svg .= '<text x="' . $x . '" y="' . ($h - 6) . '" font-size="9" fill="#999" text-anchor="middle">' . $hh . ':00</text>';
-    }
-    $poly = array(); $polyp = array();
-    foreach ($points as $pt) {
-        $frac = ($pt[0] - $day0) / $tlen;
-        if ($frac < 0 || $frac > 1) {
-            continue;
-        }
-        $x = round($x0 + $pw * $frac, 1);
-        $poly[] = $x . ',' . round($y0 + $ph - $ph * max(0, min(100, $pt[1])) / 100, 1);
-        $polyp[] = $x . ',' . round($y0 + $ph / 2 - ($ph / 2) * max(-$pmax, min($pmax, $pt[2])) / $pmax, 1);
-    }
-    if (count($poly) >= 2) {
-        $first = explode(',', $poly[0]); $last = explode(',', $poly[count($poly) - 1]);
-        $svg .= '<polygon points="' . $first[0] . ',' . ($y0 + $ph) . ' ' . implode(' ', $poly) . ' ' . $last[0] . ',' . ($y0 + $ph) . '" fill="#6dac20" opacity="0.15"/>';
-        $svg .= '<polyline points="' . implode(' ', $polyp) . '" fill="none" stroke="#e0a020" stroke-width="1" opacity="0.85"/>';
-        $svg .= '<polyline points="' . implode(' ', $poly) . '" fill="none" stroke="#6dac20" stroke-width="2"/>';
-        $svg .= '<circle cx="' . $last[0] . '" cy="' . $last[1] . '" r="3" fill="#6dac20"/>';
-    } else {
-        $svg .= '<text x="' . ($x0 + $pw / 2) . '" y="' . ($y0 + $ph / 2) . '" font-size="11" fill="#aaa" text-anchor="middle">'
-              . marstek_e(marstek_t('EINST.KEINE_MESSPUNKTE')) . '</text>';
-    }
-    return $svg . '</svg>';
-}
+/* Gruppe 22 (1.1.27, V4/E-E9): mv_soc_svg() steht jetzt als marstek_soc_svg() in der Bibliothek - EINE
+ * Stelle fuer diese Seite und den Endpunkt ?verlauf=svg. */
 
 // WICHTIG: LBWeb::lbheader() setzt SDK-GLOBALS (u.a. $cfg aus general.json als stdClass)
 // und wuerde gleichnamige Plugin-Variablen ueberschreiben - daher hier ueberall mv_-Praefix.
 $mv_use_frame = class_exists('LBWeb', false);
 if ($mv_use_frame) {
-    LBWeb::lbheader('Marstek Venus E', 'https://wiki.loxberry.de/', 'help.html');
+    // Gruppe 22 (1.1.27, E3): die eigene Plugin-Seite im Wiki (am 25.10.2026 mit curl: HTTP 200).
+    LBWeb::lbheader('Marstek Venus E', 'https://wiki.loxberry.de/plugins/marstekvenus/start', 'help.html');
 }
 $mv_host = marstek_e(isset($_SERVER['HTTP_HOST']) ? $_SERVER['HTTP_HOST'] : '<loxberry-ip>');
 $mv_ft = marstek_e(marstek_formtoken());
@@ -953,6 +925,9 @@ $mv_verlauf_tag = isset($_GET['vtag']) && is_string($_GET['vtag']) ? preg_replac
 .sm-ja  { color: #1a7f1a; font-weight: 700; }
 .sm-nein { color: #b00000; font-weight: 700; }
 .sm-hinw { color: #8a6d1a; font-weight: 700; }
+/* Gruppe 22 (1.1.27): der zugeklappte Abschnitt "Bestehende Anlagen" im Reiter Einbindung */
+.sm-alt { margin: 18px 0 8px; border: 1px solid #d9dee1; border-radius: 8px; padding: 6px 12px; }
+.sm-alt summary { cursor: pointer; font-weight: 700; margin: 6px 0; }
 </style>
 <div class="sm-wrap">
 <?php if ($mv_ft_stoerung !== '') { ?>
@@ -1004,6 +979,11 @@ foreach ($mv_statuses as $mv_kopf_st) {
     <td><?= marstek_e(!empty($mv_cfg['mqtt_enabled']) ? marstek_t('EINST.EIN') : marstek_t('EINST.AUS')) ?></td></tr>
 </table>
 
+<?php if ($mv_statuses) { /* Gruppe 22 (1.1.27, N4/E-E19): Regeln/04 - keine Knopfreihe ohne Legende ueber sich. */ ?>
+<div class="sm-legende">
+<span><i class="sm-punkt sm-b-lesen"></i> <?= marstek_e(marstek_t('LEGENDE.LESEN')) ?></span>
+</div>
+<?php } ?>
 <?php foreach ($mv_statuses as $n => $st) {
     $alter = !empty($st['mess']) ? time() - (int) $st['mess'] : -1; ?>
 <div class="sm-alert sm-info"><b><?= marstek_e($mv_devices[$n]['name']) ?></b>
@@ -1031,7 +1011,7 @@ foreach ($mv_statuses as $mv_kopf_st) {
     $vtage = marstek_history_tage($n);
     $hist = marstek_history_read($n, $vtag);
     $kz = marstek_history_kennzahlen($n, $vtag); ?>
-<div style="margin-top:8px;"><?= mv_soc_svg($hist, $vtag) ?></div>
+<div style="margin-top:8px;"><?= marstek_soc_svg($hist, $vtag) ?></div>
 <div class="sm-small"><?= marstek_e(marstek_t('EINST.VERLAUF_ERKLAERUNG')) ?>
 <?php if (!empty($kz['ok'])) { ?> &middot; <?= marstek_e(sprintf(marstek_t('EINST.VERLAUF_KENNZAHLEN'), $kz['socmin'], $kz['socmax'], $kz['hub'], $kz['n'])) ?><?php } ?>
 </div>
@@ -1218,6 +1198,20 @@ for ($i = 0; $i < 4; $i++) {
     <div><label><?= marstek_e(marstek_t('EINST.L_SOC_MAX')) ?></label>
         <input<?= mv_fa('soc_max') ?> data-role="none" type="number" name="soc_max" value="<?= mv_wert($mv_cfg['soc_max']) ?>" min="50" max="100"></div>
 </div>
+<?php /* Gruppe 22 (1.1.27, V2/E-E4): Urlaubsregel aus dem Kalender (haus/kalender, Plugin Ferien und Feiertage), ab
+       * Werk aus, mit dem Urlaubsfenster. Unabhaengig von schutz_ein; haengt am vorhandenen Speichern. */ ?>
+<label style="display:inline-flex;align-items:center;gap:6px;margin-top:14px;">
+    <input data-role="none" type="checkbox" name="haus_urlaub_ein" <?= !empty($mv_cfg['haus_urlaub_ein']) ? 'checked' : '' ?>>
+    <?= marstek_e(marstek_t('EINST.L_HAUS_URLAUB')) ?>
+</label>
+<div class="sm-row" style="margin-top:6px;">
+    <div><label><?= marstek_e(marstek_t('EINST.L_URLAUB_SOC_MIN')) ?></label>
+        <input<?= mv_fa('urlaub_soc_min') ?> data-role="none" type="number" name="urlaub_soc_min" value="<?= mv_wert($mv_cfg['urlaub_soc_min']) ?>" min="5" max="50"></div>
+    <div><label><?= marstek_e(marstek_t('EINST.L_URLAUB_SOC_MAX')) ?></label>
+        <input<?= mv_fa('urlaub_soc_max') ?> data-role="none" type="number" name="urlaub_soc_max" value="<?= mv_wert($mv_cfg['urlaub_soc_max']) ?>" min="50" max="100"></div>
+</div>
+<div class="sm-hilfe"><?= marstek_e(marstek_t('EINST.H_HAUS_URLAUB')) ?></div>
+<div class="sm-hilfe"><?= marstek_e(marstek_t('EINST.H_URLAUB_AUTO')) ?></div>
 
 <h2><?= marstek_e(marstek_t('EINST.H_MELDEN')) ?></h2>
 <label style="display:inline-flex;align-items:center;gap:6px;">
@@ -1250,6 +1244,13 @@ for ($i = 0; $i < 4; $i++) {
         <div class="sm-hilfe"><?= marstek_e(marstek_t('EINST.H_AUFSCHLAG')) ?></div>
     </div>
 </div>
+<?php /* Gruppe 22 (1.1.27, V1/E-E2): Strompreis vom Spotpreis-Plugin (haus/strompreis), ab Werk aus. Haengt am
+       * vorhandenen Speichern (orange). Wirkt auch ohne "Werte ueber MQTT" - es wird nur gelesen. */ ?>
+<label style="display:inline-flex;align-items:center;gap:6px;margin-top:14px;">
+    <input data-role="none" type="checkbox" name="haus_preis_ein" <?= !empty($mv_cfg['haus_preis_ein']) ? 'checked' : '' ?>>
+    <?= marstek_e(marstek_t('EINST.L_HAUS_PREIS')) ?>
+</label>
+<div class="sm-hilfe"><?= marstek_e(marstek_t('EINST.H_HAUS_PREIS')) ?></div>
 
 <button data-role="none" class="sm-btn sm-b-aktion" type="submit" style="margin-top:18px;"><?= marstek_e(marstek_t('EINST.K_SPEICHERN')) ?></button>
 </form>
@@ -1313,6 +1314,19 @@ if ($mv_sich_gruende) { ?>
         <div class="sm-hilfe"><?= marstek_e(marstek_t('MQTT.H_PRAEFIX')) ?></div>
     </div>
 </div>
+<?php /* Gruppe 22 (1.1.27, V5/E-E12): Speicherstand an andere Plugins geben (haus/speicher), ab Werk aus, wirkt nur mit
+       * "Werte ueber MQTT veroeffentlichen". Haengt am vorhandenen Speichern des MQTT-Formulars (orange). */ ?>
+<label style="display:inline-flex;align-items:center;gap:6px;margin-top:14px;">
+    <input data-role="none" type="checkbox" name="haus_speicher_ein" <?= !empty($mv_cfg['haus_speicher_ein']) ? 'checked' : '' ?>>
+    <?= marstek_e(marstek_t('MQTT.L_HAUS_SPEICHER')) ?>
+</label>
+<div class="sm-hilfe"><?= marstek_e(marstek_t('MQTT.H_HAUS_SPEICHER')) ?></div>
+<?php
+$mv_ohne_kwh = 0;
+foreach ($mv_devices as $mv_hd) { if (empty($mv_hd['kwh']) || (float) $mv_hd['kwh'] <= 0) { $mv_ohne_kwh++; } }
+if (count($mv_devices) > 1 && $mv_ohne_kwh > 0) { ?>
+<div class="sm-warnung"><?= marstek_e(marstek_t('MQTT.W_HAUS_SPEICHER_KWH')) ?></div>
+<?php } ?>
 <button data-role="none" class="sm-btn sm-b-aktion" type="submit" style="margin-top:18px;"><?= marstek_e(marstek_t('EINST.K_SPEICHERN')) ?></button>
 </form>
 
@@ -1544,6 +1558,50 @@ foreach (marstek_bausteinliste() as $mv_bs) { ?>
 <?= marstek_t('LOX.GEGENPROBE_TEXT') ?>
 </div>
 
+<h2><?= marstek_e(marstek_t('LOX.H_TOKEN')) ?></h2>
+<table class="sm-tbl">
+<tr><th style="width:34%;"><?= marstek_e(marstek_t('LOX.SP_EIGENSCHAFT')) ?></th><th><?= marstek_e(marstek_t('LOX.SP_WERT')) ?></th></tr>
+<tr><td><?= marstek_e(marstek_t('LOX.AKTUELLES_TOKEN')) ?></td><td><span class="sm-mono"><?= marstek_e($mv_cfg['aktionstoken']) ?></span></td></tr>
+</table>
+<div class="sm-knopfreihe">
+  <form method="post" action="index.php">
+    <input data-role="none" type="hidden" name="formtoken" value="<?= $mv_ft ?>">
+    <input data-role="none" type="hidden" name="activetab" value="tab-loxone">
+    <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="token_neu" value="1"><?= marstek_e(marstek_t('LOX.K_TOKEN_NEU')) ?></button>
+  </form>
+</div>
+<div class="sm-hilfe"><?= marstek_e(marstek_t('LOX.TOKEN_NEU_HINWEIS')) ?></div>
+
+<?php
+/* Gruppe 22 (1.1.27, Entwurf 3.2, E-E10/E-E11): der HTTP-Lesezweig fuer bestehende Anlagen - zugeklappt (offen, solange
+ * er an ist), hinter dem Haken "HTTP-Lesezweig fuer Loxone annehmen" (eigenes Formular 'endpunkt_save', orange). Darin
+ * die Eingaenge und Vorlagen der Lesesaetze und (V4) die Adressen des Verlaufs. Der Sollwert ueber HTTP (?p= mit Token,
+ * Schritt 4 und Aktionstoken oben) wirkt unabhaengig von diesem Haken. */
+$mv_ep_an = !empty($mv_cfg['endpunkt_ein']);
+?>
+<details class="sm-alt"<?= $mv_ep_an ? ' open' : '' ?>>
+<summary><?= marstek_e(marstek_t('LOX.EP_TITEL')) ?></summary>
+<div class="sm-hinweis"><?= marstek_t('LOX.EP_HINWEIS') ?></div>
+<form action="index.php" method="post">
+<input data-role="none" type="hidden" name="formtoken" value="<?= $mv_ft ?>">
+<input data-role="none" type="hidden" name="endpunkt_save" value="1">
+<input data-role="none" type="hidden" name="activetab" value="tab-loxone">
+<label style="display:inline-flex;align-items:center;gap:6px;">
+    <input data-role="none" type="checkbox" name="endpunkt_ein" <?= $mv_ep_an ? 'checked' : '' ?>>
+    <?= marstek_e(marstek_t('LOX.EP_HAKEN')) ?>
+</label>
+<div class="sm-hilfe"><?= marstek_e(marstek_t($mv_ep_an ? 'LOX.EP_ZUSTAND_AN' : 'LOX.EP_ZUSTAND_AUS')) ?></div>
+<button data-role="none" class="sm-btn sm-b-aktion" type="submit" style="margin-top:12px;"><?= marstek_e(marstek_t('EINST.K_SPEICHERN')) ?></button>
+</form>
+<?php if ($mv_ep_an) { ?>
+<h3 class="sm-h3"><?= marstek_e(marstek_t('LOX.VERLAUF_TITEL')) ?></h3>
+<div class="sm-hilfe"><?= marstek_e(marstek_t('LOX.VERLAUF_TEXT')) ?></div>
+<table class="sm-tbl">
+<tr><th style="width:34%;"><?= marstek_e(marstek_t('LOX.SP_EIGENSCHAFT')) ?></th><th><?= marstek_e(marstek_t('LOX.SP_WERT')) ?></th></tr>
+<tr><td><?= marstek_e(marstek_t('LOX.VERLAUF_SVG')) ?></td><td><span class="sm-mono">http://<?= $mv_host ?>/plugins/<?= marstek_e($mv_plugindir) ?>/marstek.php?verlauf=svg&amp;dev=1</span></td></tr>
+<tr><td><?= marstek_e(marstek_t('LOX.VERLAUF_JSON')) ?></td><td><span class="sm-mono">http://<?= $mv_host ?>/plugins/<?= marstek_e($mv_plugindir) ?>/marstek.php?verlauf=json&amp;dev=1</span></td></tr>
+</table>
+<?php } ?>
 <h2><?= marstek_e(marstek_t('LOX.H_HTTP')) ?></h2>
 <div class="sm-hinweis"><?= marstek_t('LOX.HTTP_TEXT') ?></div>
 <?php
@@ -1590,20 +1648,6 @@ foreach ($mv_saetze as $mv_s => $mv_unused) {
 <div class="sm-hilfe"><?= marstek_e(sprintf(marstek_t('LOX.JE_GERAET'), $info['q'])) ?></div>
 <?php } ?>
 <?php } ?>
-
-<h2><?= marstek_e(marstek_t('LOX.H_TOKEN')) ?></h2>
-<table class="sm-tbl">
-<tr><th style="width:34%;"><?= marstek_e(marstek_t('LOX.SP_EIGENSCHAFT')) ?></th><th><?= marstek_e(marstek_t('LOX.SP_WERT')) ?></th></tr>
-<tr><td><?= marstek_e(marstek_t('LOX.AKTUELLES_TOKEN')) ?></td><td><span class="sm-mono"><?= marstek_e($mv_cfg['aktionstoken']) ?></span></td></tr>
-</table>
-<div class="sm-knopfreihe">
-  <form method="post" action="index.php">
-    <input data-role="none" type="hidden" name="formtoken" value="<?= $mv_ft ?>">
-    <input data-role="none" type="hidden" name="activetab" value="tab-loxone">
-    <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="token_neu" value="1"><?= marstek_e(marstek_t('LOX.K_TOKEN_NEU')) ?></button>
-  </form>
-</div>
-<div class="sm-hilfe"><?= marstek_e(marstek_t('LOX.TOKEN_NEU_HINWEIS')) ?></div>
 
 <h2><?= marstek_e(marstek_t('LOX.H_VORLAGEN')) ?></h2>
 <div class="sm-hinweis"><?= marstek_t('LOX.VORLAGEN_ERKLAERUNG') ?></div>
@@ -1658,6 +1702,7 @@ foreach ($mv_vdevs as $n => $d) { ?>
   </form>
 <?php } ?>
 </div>
+</details>
 </div>
 
 <!-- ================= Reiter: Test ================= -->

@@ -21,8 +21,10 @@
  *
  * NEBENEFFEKT OHNE ZUSATZARBEIT: healthcheck.pl veroeffentlicht das Ergebnis
  * zusaetzlich retained nach MQTT unter <rechnername>/healthcheck/<titel>.
- * Das ist der einzige retained Weg, den dieses Plugin hat - das UDP-Tor des
- * MQTT-Gateways kennt kein Retain-Flag.
+ * BERICHTIGT 25.10.2026 (Gruppe 22, M15): healthcheck.pl sendet sein Ergebnis
+ * selbst retained; das Plugin sendet seine Zustaende ueber "retain" am
+ * UDP-Eingang des Gateways (marstek_mqtt_senden()). Bis 1.1.26 stand hier,
+ * das UDP-Tor kenne kein Retain - das widersprach der eigenen Bibliothek.
  *
  * Der Healthcheck laeuft cron.daily und cron.reboot sowie auf Knopfdruck. Er
  * ist keine Sekundenueberwachung - dafuer ist der Minutentakt da.

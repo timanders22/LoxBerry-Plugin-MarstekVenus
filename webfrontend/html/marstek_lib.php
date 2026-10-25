@@ -258,6 +258,8 @@ function marstek_paths() {
             // I2 (Durchgang 30.09.2026): die Marke, die preupgrade.sh als
             // Erstes anlegt und postinstall.sh wieder entfernt.
             'marke' => $home . '/data/plugins/' . $ordner . '.upgrade_laeuft',
+            // Gruppe 22 (1.1.27, V5/E-E12): diese Installation ist oder war Anbieter von haus/speicher.
+            'haus_frueher' => $home . '/data/plugins/' . $ordner . '.haus_frueher',
             'tmp' => '/tmp/marstekvenus',
             'lbhome' => $home,
             'plugin' => $ordner,
@@ -280,6 +282,7 @@ function marstek_paths() {
         'datadir' => $tmp . '/data.verlauf',
         'data_alt' => '',
         'marke' => '',
+        'haus_frueher' => '',
         'tmp' => $tmp,
         'lbhome' => '',
         'plugin' => $ordner,
@@ -318,6 +321,14 @@ function marstek_vorgaben() {
         'mqtt_enabled'   => 0,
         'mqtt_topic'     => 'marstek',
         'befehle_mqtt_ein' => 0,    // Gruppe 1 (1.1.25): Befehle ueber MQTT annehmen (Befehlsbruecke), ab Werk aus
+        // Gruppe 22 (1.1.27, Entwurf 2.9): Lesezweig des Endpunkts (Neuinstallation 0, Update 1 ueber
+        // marstek_uebergang() und postupgrade.sh), Haus-Themen nach Regeln/07 Nr. 15 - alle ab Werk aus.
+        'endpunkt_ein'      => 0,   // HTTP-Lesezweig status/energy/summe/ranks/verlauf (Sollwert ?p= mit Token bleibt)
+        'haus_preis_ein'    => 0,   // V1: Strompreis vom Spotpreis-Plugin (haus/strompreis), sonst eigener Abruf
+        'haus_urlaub_ein'   => 0,   // V2: Urlaubsregel aus dem Kalender (haus/kalender)
+        'urlaub_soc_min'    => 20,  // V2: Urlaubsfenster unten (%)
+        'urlaub_soc_max'    => 80,  // V2: Urlaubsfenster oben (%)
+        'haus_speicher_ein' => 0,   // V5: Speicherstand an andere Plugins geben (haus/speicher), nur mit MQTT
         'fallback_min'   => 30,     // Standard 30 min; 0 = Auto-Fallback aus
         'aktionstoken'   => '',     // schuetzt ?p= und ?mode= (unangemeldeter Endpunkt)
         'melden_ein'     => 0,      // Benachrichtigungszentrum des LoxBerry
@@ -550,6 +561,8 @@ function marstek_config($erzeugen = true) {
     }
     $cfg = $roh !== '' ? json_decode($roh, true) : array();
     if (!is_array($cfg)) { $cfg = array(); }
+    // Gruppe 22 (1.1.27, E-E10): Bestandsdatei ohne endpunkt_ein -> 1 (vor den Vorgaben, sonst gaelte 0).
+    $cfg = marstek_uebergang($cfg);
     $cfg += marstek_vorgaben();
     // Migration: alte Ein-Geraete-Konfiguration (ip/port/pmax_* auf oberster Ebene)
     if (empty($cfg['devices']) && !empty($cfg['ip'])) {
@@ -740,6 +753,8 @@ function marstek_cfg_vervollstaendigen() {
         return array();
     }
     $fehlten = array();
+    // Gruppe 22 (1.1.27, E-E10): die Lese-Regel auch hier, sonst schriebe der erste Takt die Vorgabe 0 hinein.
+    $cfg = marstek_uebergang($cfg, $fehlten);
     foreach (marstek_vorgaben() as $k => $v) {
         if (!array_key_exists($k, $cfg)) {
             $cfg[$k] = $v;
@@ -907,7 +922,8 @@ function marstek_cfg_kreuzmaengel(array $c)
 {
     $m = array();
     foreach (array(array('soc_min', 'soc_max', 'PRUEF.SOC_REIHE'),
-                   array('temp_min', 'temp_max', 'PRUEF.TEMP_REIHE')) as $r) {
+                   array('temp_min', 'temp_max', 'PRUEF.TEMP_REIHE'),
+                   array('urlaub_soc_min', 'urlaub_soc_max', 'PRUEF.URLAUB_REIHE')) as $r) {
         if (isset($c[$r[0]], $c[$r[1]]) && is_numeric($c[$r[0]]) && is_numeric($c[$r[1]])
                 && (float) $c[$r[0]] >= (float) $c[$r[1]]) {
             $m[] = sprintf(marstek_t($r[2]), $c[$r[0]], $c[$r[1]]);
@@ -953,7 +969,12 @@ function marstek_wert_pruefen($schluessel, $wert)
                   'schutz_ein' => array(0, 1), 'bremse_abstand_ein' => array(0, 1),
                   'wache_ein' => array(0, 1), 'wache_sperren_ein' => array(0, 1),
                   'wache_lb_melden' => array(0, 1), 'wache_fenster_min' => array(1, 120),
-                  'befehle_mqtt_ein' => array(0, 1));
+                  'befehle_mqtt_ein' => array(0, 1),
+                  // Gruppe 22 (1.1.27, Entwurf 2.9): die sechs neuen Schluessel - Pflicht, sonst ginge eine
+                  // Sicherung mit urlaub_soc_max "x" ungeprueft durch.
+                  'endpunkt_ein' => array(0, 1), 'haus_preis_ein' => array(0, 1), 'haus_urlaub_ein' => array(0, 1),
+                  'urlaub_soc_min' => array(5, 50), 'urlaub_soc_max' => array(50, 100),
+                  'haus_speicher_ein' => array(0, 1));
     if (isset($ganz[$schluessel])) {
         $g = $ganz[$schluessel];
         return marstek_wert_ganz($wert, $g[0], $g[1]) ? ''
@@ -1342,6 +1363,12 @@ function marstek_formtoken_ok() {
 }
 
 function marstek_tmpdir() {
+    // Geraetetest 1.1.27: waehrend --selbsttest ein eigener Ordner im Temp des Systems, nie /tmp/marstekvenus.
+    if (!empty($GLOBALS['marstek_selbsttest_laeuft'])) {
+        $st = rtrim(sys_get_temp_dir(), '/\\') . '/marstekvenus-selbsttest';
+        if (!is_dir($st)) { @mkdir($st, 0700, true); }
+        return $st;
+    }
     $p = marstek_paths();
     if (!is_dir($p['tmp'])) {
         @mkdir($p['tmp'], 0775, true);
@@ -1493,6 +1520,9 @@ function marstek_log_ende($f, $n = 300) {
 }
 
 function marstek_log($msg) {
+    if (!empty($GLOBALS['marstek_selbsttest_laeuft'])) {
+        return;   // Geraetetest 1.1.27: der Selbsttest schreibt nicht ins Protokoll der Anlage
+    }
     $f = marstek_logfile();
     marstek_log_kappen($f);
     // Die Fehlerausgabe des Minutentakts liegt daneben und hat keinen
@@ -2714,12 +2744,28 @@ function marstek_set_passive($p, $t, $dev = 1, $trocken = false, $nachhol = null
     if ($t > 3600) { $t = 3600; $begrenzt = 1; }
 
     $sperre = empty($cfg['steuerung_ein']) ? 'STEUERUNG_AUS' : marstek_schutz_pruefen($p, $dev);
+    /* Gruppe 22 (1.1.27, V2/E-E4): im Urlaub (haus/kalender, Haken haus_urlaub_ein) wird ein Ladesollwert ab
+     * urlaub_soc_max und ein Entladesollwert bis urlaub_soc_min auf 0 W BEGRENZT - angenommen, nicht abgelehnt
+     * (sonst wuchse marstek_sollalter, und das Musterprojekt meldete nach 10 min "Sollwert fehlt"). Eine
+     * Schutzschwelle oder ausgeschaltete Steuerung geht vor (der strengere Grund). Wirkt auch auf das Nachholen;
+     * ohne frischen Ladezustand wird nicht begrenzt. */
+    $mv_urlaub = '';
+    if ($sperre === '') {
+        $mv_urlaub = marstek_urlaub_grenze($p, $dev, $cfg);
+        if ($mv_urlaub !== '') {
+            if (!$trocken) {
+                marstek_urlaub_begrenzung_merken($dev, $p, $mv_urlaub);
+            }
+            $p = 0;
+            $begrenzt = 1;
+        }
+    }
     if ($trocken) {
         /* O5 (Durchgang 30.09.2026): OHNE Nebenwirkung. Bis 1.1.17 standen
          * Hauptschalter und Schutzsperre VOR dieser Zeile, und ein Trockenlauf
          * loeschte einen offenen Sollwert-Merker und schrieb eine
          * Protokollzeile - gemessen unter 7.4 und 8.5. */
-        return array($sperre === '' ? 1 : 0, $p, $t, $sperre === '' ? 'TROCKEN' : $sperre, $begrenzt);
+        return array($sperre === '' ? 1 : 0, $p, $t, $sperre === '' ? ($mv_urlaub !== '' ? $mv_urlaub : 'TROCKEN') : $sperre, $begrenzt);
     }
     if ($sperre === 'STEUERUNG_AUS') {
         // Kein Nachholen: das ist keine Stoerung, sondern eine Einstellung.
@@ -2836,7 +2882,7 @@ function marstek_set_passive($p, $t, $dev = 1, $trocken = false, $nachhol = null
         marstek_log($mv_grund);
         marstek_ereignis($mv_grund);
     }
-    return array($ok, $p, $t, ($verworfen && $nachhol === null) ? 'UEBERHOLT' : '', $begrenzt);
+    return array($ok, $p, $t, ($verworfen && $nachhol === null) ? 'UEBERHOLT' : $mv_urlaub, $begrenzt);
 }
 
 /**
@@ -4078,79 +4124,36 @@ function marstek_ranks($debug = false) {
  *     Wirtschaftlichkeitsrechnung sehr wohl.
  */
 function marstek_ranks_ermitteln($debug = false) {
+    /* Gruppe 22 (1.1.27, Entwurf 2.4/2.5, E-E1/E-E2/E-E15): geteilt in (1) Liste beschaffen und (2) den
+     * unveraenderten Rechenteil marstek_ranks_aus_liste(). Quelle je Lauf aus marstek_preis_quelle(): "haus" = die
+     * Vorschau des Spotpreis-Plugins ueber haus/strompreis (Endpreis, KEIN eigener Aufschlag und keine USt; Raster
+     * 900 zu Stundenmitteln), sonst der eigene aWATTar-Zwischenspeicher - auch er jetzt mit gemessener Schrittweite
+     * und Stundenmitteln (N1). Neues Feld QUELLE: 0 eigener Abruf, 1 Spotpreis-Plugin, -1 keine Preise.
+     * Liest nur Dateien (haus_quellen.json, Zwischenspeicher) - auch am Endpunkt; der Abruf bei aWATTar geschieht
+     * ausschliesslich im Cron (marstek_spot_fetch()). */
     $cfg = marstek_config();
-    $vat = (float) $cfg['vat'];
-    if ($vat <= 0) { $vat = 1.0; }
-    $aufschlag = (float) $cfg['aufschlag_ct'] / 100.0;   // ct/kWh netto -> EUR/kWh netto
-    // Gruppe 1 (1.1.25, Entwurf mv 2.3 c, E7): ohne Daten -1 statt 0 - 0 EUR/kWh ist ein moeglicher Preis. Bei
-    // errc 2 ist CURP echt (unten); RANK/RANKD 99, HBIS/HBISMAX -1 und N 0 bleiben.
-    $leer = array('ok' => 0, 'n' => 0, 'rank' => 99, 'rankd' => 99, 'curp' => -1, 'neg' => 0,
-                  'minp' => -1, 'maxp' => -1, 'spread' => -1, 'nextp' => -1,
-                  'hbis' => -1, 'hbismax' => -1, 'errc' => 1, 'list' => array());
-    $rows = array();
-    $dateien = 0;
-    foreach (array(strtotime('today 00:00'), strtotime('tomorrow 00:00')) as $startTs) {
-        // NUR LESEN. Der Abruf bei aWATTar geschieht ausschliesslich im Cron -
-        // siehe marstek_spot_fetch() und den Kommentar dort.
-        $cache = marstek_tmpdir() . '/spot_' . date('Ymd', $startTs) . '.cache';
-        if (!is_file($cache)) {
-            continue;
-        }
-        $dateien++;
-        $d = @json_decode((string) @file_get_contents($cache), true);
-        if (isset($d['data']) && is_array($d['data'])) {
-            $rows = array_merge($rows, $d['data']);
+    list($quelle, $grund) = marstek_preis_quelle($cfg);
+    $liste = null;
+    if ($quelle === 'haus') {
+        $c = marstek_haus_quellen();
+        $w = (isset($c['strompreis']['werte']) && is_array($c['strompreis']['werte'])) ? $c['strompreis']['werte'] : array();
+        $liste = marstek_haus_preisliste(isset($w['vorschau']) ? (string) $w['vorschau'] : '',
+            isset($w['ab']) ? $w['ab'] : 0, isset($w['raster']) ? $w['raster'] : 0);
+        if ($liste === null) {
+            $quelle = 'eigen';
+            $grund = 'unbrauchbar';
         }
     }
-    if ($dateien === 0) {
-        return $leer;                       // errc 1: noch gar keine Preise geholt
+    if ($quelle !== 'haus') {
+        $liste = marstek_spot_liste_eigen($cfg);
     }
-    $now = time(); $hstart = $now - ($now % 3600); $list = array(); $cur = null;
-    foreach ($rows as $r) {
-        if (!isset($r['start_timestamp'], $r['marketprice'])) { continue; }
-        $ts = (int) ($r['start_timestamp'] / 1000);
-        if ($ts < $hstart || $ts >= $hstart + 24 * 3600) {
-            continue;
-        }
-        $pr = round(($r['marketprice'] / 1000 + $aufschlag) * $vat, 5); // EUR/MWh netto -> EUR/kWh inkl. USt
-        $list[$ts] = $pr;
-        if ($ts == $hstart) {
-            $cur = $pr;
-        }
+    $r = marstek_ranks_aus_liste($liste, time());
+    $r['quelle'] = $liste === null ? -1 : ($quelle === 'haus' ? 1 : 0);
+    $r['quelle_grund'] = $grund;
+    if (!$debug) {
+        $r['list'] = array();
     }
-    if ($cur === null) {
-        $leer['errc'] = 3;                  // Preise da, aber nicht fuer die laufende Stunde
-        return $leer;
-    }
-    if (count($list) < 6) {
-        $leer['errc'] = 2;                  // Fenster zu kurz - die Preise fuer morgen fehlen
-        $leer['curp'] = $cur;
-        $leer['neg'] = $cur < 0 ? 1 : 0;
-        return $leer;
-    }
-    ksort($list);
-    $vals = array_values($list);
-    sort($vals);
-    $rank = 1;
-    foreach ($vals as $v) {
-        if ($v < $cur) {
-            $rank++;
-        }
-    }
-    $minp = $vals[0];
-    $maxp = $vals[count($vals) - 1];
-    // Stunden bis zum Tiefst- bzw. Hoechstpreis. 0 heisst: das ist jetzt.
-    $hbis = -1; $hbismax = -1;
-    foreach ($list as $ts => $pr) {
-        if ($hbis < 0 && $pr === $minp) { $hbis = (int) round(($ts - $hstart) / 3600); }
-        if ($hbismax < 0 && $pr === $maxp) { $hbismax = (int) round(($ts - $hstart) / 3600); }
-    }
-    $nextp = isset($list[$hstart + 3600]) ? $list[$hstart + 3600] : $cur;
-    return array('ok' => 1, 'n' => count($vals), 'rank' => $rank, 'rankd' => count($vals) + 1 - $rank,
-                 'curp' => $cur, 'neg' => $cur < 0 ? 1 : 0,
-                 'minp' => $minp, 'maxp' => $maxp, 'spread' => round($maxp - $minp, 5),
-                 'nextp' => $nextp, 'hbis' => $hbis, 'hbismax' => $hbismax, 'errc' => 0,
-                 'list' => $debug ? $list : array());
+    return $r;
 }
 
 /** Klartext zu errc - fuer den Reiter Test und die Debug-Ansicht, NICHT fuer Loxone. */
@@ -4245,6 +4248,10 @@ function marstek_mqtt_retain($schluessel)
     // Gruppe 1 (1.1.25): auch das Lebenszeichen status/* (Regeln/07 Abschnitt 3).
     if ($schluessel === 'ts' || strpos($schluessel, 'takt_') === 0 || strpos($schluessel, 'status/') === 0) {
         return false;
+    }
+    // Gruppe 22 (1.1.27, V2): die Urlaubslage ist ein Zustand - retained (Aenderungsfilter wie die Zustaende).
+    if ($schluessel === 'urlaub') {
+        return true;
     }
     if (strpos($schluessel, 'energie_') === 0) {
         $satz = 'energy'; $feld = substr($schluessel, 8);
@@ -4613,7 +4620,7 @@ function marstek_mqtt_leer_themen($basis = true)
 {
     $t = array();
     foreach (array_keys(marstek_mqtt_themen(true)) as $k) {
-        if (!$basis && strpos($k, 'rang_') === 0) { continue; }
+        if (!$basis && (strpos($k, 'rang_') === 0 || $k === 'urlaub')) { continue; }
         if (marstek_mqtt_retain($k)) { $t[] = $k; }
     }
     foreach (marstek_mqtt_altlast_liste($basis) as $k) {
@@ -4826,6 +4833,8 @@ function marstek_mqtt_themen($mit_geraet = true)
     // des Durchgangs hochzaehlt. Gemessen am 05.09.2026 im Broker: zaehler
     // 202, takt_zaehler 203 - in derselben Sekunde. Wer auf den Takt schaut,
     // nimmt takt_zaehler.
+    // Gruppe 22 (1.1.27, V2/E-E4): die Urlaubsregel fuer Loxone (1/0/-1), Gateway-Name <praefix>_urlaub.
+    $t['urlaub'] = marstek_t('MQTT.T_URLAUB');
     $t['takt_zaehler'] = marstek_t('MQTT.T_TAKT_ZAEHLER');
     $t['takt_ts'] = marstek_t('MQTT.T_TAKT_TS');
     // Gruppe 1 (1.1.25, Entwurf mv 2.2 a): das Lebenszeichen nach Regeln/07 Abschnitt 3, nie retained.
@@ -5115,6 +5124,8 @@ function marstek_felder($satz) {
             'HBIS'    => array('quelle' => 'hbis',    'analog' => 1, 'min' => -1, 'max' => 24, 'einheit' => 'h',       'form' => '%d',   'retain' => 0, 'kurz' => 'Stunden bis günstigste', 'text' => 'Stunden bis zur günstigsten Stunde (0 = jetzt); -1 = unbekannt'),
             'HBISMAX' => array('quelle' => 'hbismax', 'analog' => 1, 'min' => -1, 'max' => 24, 'einheit' => 'h',       'form' => '%d',   'retain' => 0, 'kurz' => 'Stunden bis teuerste', 'text' => 'Stunden bis zur teuersten Stunde (0 = jetzt); -1 = unbekannt'),
             'ERRC'    => array('quelle' => 'errc',    'analog' => 1, 'min' => 0,  'max' => 9,  'einheit' => '',        'form' => '%d',   'retain' => 0, 'kurz' => 'Grund für OK=0', 'text' => 'Grund für OK=0: 0 in Ordnung, 1 keine Preise geholt, 2 Fenster zu kurz, 3 keine Preise für die laufende Stunde'),
+            // Gruppe 22 (1.1.27, V1/E-E1): woher die Preise dieses Laufs kommen - neues Feld HINTEN im Satz.
+            'QUELLE'  => array('quelle' => 'quelle',  'analog' => 1, 'min' => -1, 'max' => 1,  'einheit' => '',        'form' => '%d',   'retain' => 0, 'kurz' => 'Preisquelle', 'text' => 'Preisquelle: 0 = eigener Abruf bei aWATTar, 1 = Spotpreis-Plugin über haus/strompreis; -1 = keine Preise'),
         );
     }
     if ($satz === 'summe') {
@@ -5296,7 +5307,8 @@ function marstek_satz_takt($satz) {
 function marstek_vorlage($satz = 'status', $dev = 1) {
     $satz = in_array($satz, array('status', 'energy', 'ranks', 'summe'), true) ? $satz : 'status';
     $host = marstek_host();
-    $ordner = getenv('LBPPLUGINDIR') ?: 'marstekvenus';
+    // Gruppe 22 (1.1.27, M9): der Ordner aus marstek_paths() - dieselbe Quelle wie jeder andere Pfad.
+    $ordner = marstek_paths()['plugin'];
     $dev = max(1, min(9, (int) $dev));
     $d = marstek_dev($dev);
     $je_geraet = ($satz !== 'ranks' && $satz !== 'summe');
@@ -5375,7 +5387,8 @@ function marstek_vorlage($satz = 'status', $dev = 1) {
  */
 function marstek_vo_vorlage($dev = 1) {
     $host = marstek_host();
-    $ordner = getenv('LBPPLUGINDIR') ?: 'marstekvenus';
+    // Gruppe 22 (1.1.27, M9): der Ordner aus marstek_paths().
+    $ordner = marstek_paths()['plugin'];
     $cfg = marstek_config();
     $dev = max(1, min(9, (int) $dev));
     $d = marstek_dev($dev);
@@ -5521,13 +5534,17 @@ function marstek_mqtt_namenstabelle()
     foreach (marstek_mqtt_werte_felder('ranks', 1) as $c) {
         $dazu($c, 1);
     }
+    // Gruppe 22 (1.1.27, V2): die Urlaubsregel (Musterprojekt Steuerung #63).
+    $dazu(array('thema' => 'urlaub', 'kurz' => marstek_t('FELD_KURZ.URLAUB'), 'einheit' => '', 'analog' => 1,
+                'min' => -1, 'max' => 1), 1);
     return $aus;
 }
 
 /**
- * Gateway Fassung 2: die Datenpunkte zum Anhaken (Entwurf mv 2.6, E18). Reihenfolge des Entwurfs: die 13 Raenge
- * (Grundpraefix), je Speicher die 10 Zaehler und die 11 Statuswerte (ohne zaehler), nach dem ersten Speicher die
- * beiden Lebenszeichen status/zaehler und status/befehle - bei einem Speicher 36 Haken. "Noncached" (N) brauchen
+ * Gateway Fassung 2: die Datenpunkte zum Anhaken (Entwurf mv 2.6, E18). Reihenfolge des Entwurfs: die 14 Raenge
+ * (Grundpraefix; seit 1.1.27 mit rang_quelle) und die Urlaubsregel urlaub (Gruppe 22), je Speicher die 10 Zaehler
+ * und die 11 Statuswerte (ohne zaehler), nach dem ersten Speicher die beiden Lebenszeichen status/zaehler und
+ * status/befehle - bei einem Speicher 38 Haken. "Noncached" (N) brauchen
  * die Werte, die oft denselben Wert senden und nach einem Neustart des Miniservers sonst fehlten: rang_ok,
  * energie_ok, ok, status/befehle. "Zuruecksetzen nach Senden" bekommt keiner (ok fiele sonst nach jedem Wert auf 0).
  * Rueckgabe Liste array('name', 'thema', 'bedeutung', 'noncached').
@@ -5543,6 +5560,7 @@ function marstek_mqtt_hakenliste()
     foreach (array_keys(marstek_felder('ranks')) as $n) {
         $dazu('rang_' . strtolower($n), 1, marstek_feldtext('ranks', $n));
     }
+    $dazu('urlaub', 1, marstek_t('MQTT.T_URLAUB'));   // Gruppe 22 (1.1.27, V2)
     $devs = marstek_devices();
     $erster = true;
     foreach ($devs ? array_keys($devs) : array(1) as $dev) {
@@ -5825,6 +5843,14 @@ function marstek_befehl_ausfuehren($art, array $par, $quelle = 'http')
         if ($vz !== '') {
             return $raus(400, $vz, 'abweisung');
         }
+        /* Gruppe 22 (1.1.27, V2/E-E4, N8): im Urlaub keine Ladesollwerte der aWATTar-Kopplung (von=awattar) -
+         * sie ist reines Netzladen in billigen Stunden. Abgelehnt mit HTTP 200 wie die uebrigen Sperren und nie
+         * nachgeholt. Loxone selbst erfaehrt die Lage ueber <praefix>/urlaub (Netz- und Ueberschussladen eines
+         * Loxone-Sollwerts kann das Plugin nicht unterscheiden). */
+        if ((int) $p > 0 && $von === 'awattar' && marstek_urlaub_lage() === 'urlaub') {
+            return $raus(200, 'SET;OK=0;ERR=URLAUB_NETZ;DEV=' . ($alle ? 'alle' : $dev) . "\n", '', $trocken ? array()
+                : array(array('urlaub_netz', 'p=' . $p . ' von=awattar abgelehnt - Urlaubsregel (kein Netzladen der aWATTar-Kopplung)')));
+        }
         $wz = '';
         if ($alle) {
             $cfg_v = marstek_config(false);
@@ -6106,7 +6132,8 @@ function marstek_bausteinliste()
     $seiten = array(
         // Gruppe 1 (1.1.25): Steuerung 36 -> 62 und Werte 30 -> 37 Zeilen (Musterprojekt 18.10.2026).
         1 => array('Marstek Venus E', 'einbindung_loxone.png', 35, 6, 8),
-        2 => array('Marstek Venus E Steuerung', 'einbindung_loxone_steuerung.png', 62, 7, 12),
+        // Gruppe 22 (1.1.27, Entwurf 9/E-E6): Steuerung 62 -> 65 Zeilen (#63 marstek_urlaub, #64 Formel, #65 UND; Nachzug 25.10.).
+        2 => array('Marstek Venus E Steuerung', 'einbindung_loxone_steuerung.png', 65, 7, 12),
         3 => array('Marstek Venus E Werte', 'einbindung_loxone_werte.png', 37, 6, 5),
     );
     $aus = array();
@@ -6411,7 +6438,7 @@ function marstek_takt_pausiert()
     if ($t <= 0) {
         $t = (int) @filemtime($p['marke']);
     }
-    return time() - $t < 3600;
+    return marstek_marke_pausiert_bei($t, time());
 }
 
 /**
@@ -6909,8 +6936,9 @@ function marstek_selbsttest()
     foreach ($mv_nt as $mv_z) {
         $mv_ntn[] = $mv_z['name'];
     }
-    $pruefe('G1: Namenstabelle: 36 Zeilen bei einem Speicher (11 Status + 2 Lebenszeichen, 10 Zaehler, 13 Raenge)',
-        count($mv_nt), 36);
+    // Gruppe 22 (1.1.27): + rang_quelle (V1) und urlaub (V2).
+    $pruefe('G1: Namenstabelle: 38 Zeilen bei einem Speicher (11 Status + 2 Lebenszeichen, 10 Zaehler, 14 Raenge, Urlaubsregel)',
+        count($mv_nt), 38);
     $pruefe('G1: Namenstabelle: Namen = Gateway-Namen gesendeter Themen',
         array_values(array_filter($mv_ntn, function ($x) use ($mv_erlaubt) { return !isset($mv_erlaubt[$x]); })), array());
     $pruefe('G1: Namenstabelle: ohne doppelte Namen', count(array_unique($mv_ntn)), count($mv_ntn));
@@ -6986,6 +7014,111 @@ function marstek_selbsttest()
         $pruefe('G1: zweiter Haken steuerung_ein', $mv_zt['zweiter_haken'], 'steuerung_ein');
     }
 
+    /* --- Gruppe 22 (1.1.27): endpunkt_ein, Haus-Themen V1/V2/V5, N1, M10 (ohne Geraet, ohne Broker) --- */
+    $pruefe('G22: Vorgaben neu', array(marstek_vorgaben()['endpunkt_ein'], marstek_vorgaben()['haus_preis_ein'],
+        marstek_vorgaben()['haus_urlaub_ein'], marstek_vorgaben()['urlaub_soc_min'], marstek_vorgaben()['urlaub_soc_max'],
+        marstek_vorgaben()['haus_speicher_ein']), array(0, 0, 0, 20, 80, 0));
+    $pruefe('G22: Lese-Regel ohne Inhalt', array_key_exists('endpunkt_ein', marstek_uebergang(array())), false);
+    $pruefe('G22: Lese-Regel Bestand -> 1', marstek_uebergang(array('aktionstoken' => 'abc'))['endpunkt_ein'], 1);
+    $pruefe('G22: Lese-Regel gesetzt bleibt', marstek_uebergang(array('aktionstoken' => 'abc', 'endpunkt_ein' => 0))['endpunkt_ein'], 0);
+    $pruefe('G22: urlaub_soc_max x abgewiesen', marstek_wert_pruefen('urlaub_soc_max', 'x') !== '', true);
+    $pruefe('G22: urlaub_soc_min 51 abgewiesen', marstek_wert_pruefen('urlaub_soc_min', 51) !== '', true);
+    $pruefe('G22: endpunkt_ein 1 frei', marstek_wert_pruefen('endpunkt_ein', 1), '');
+    $pruefe('G22: Urlaubsfenster Reihe', count(marstek_cfg_kreuzmaengel(array('urlaub_soc_min' => 50, 'urlaub_soc_max' => 50))), 1);
+    $mv_g22j = mktime(14, 30, 0, 10, 25, 2026);
+    $pruefe('M10: Marke -10 s pausiert', marstek_marke_pausiert_bei($mv_g22j - 10, $mv_g22j), true);
+    $pruefe('M10: Marke -4000 s nicht', marstek_marke_pausiert_bei($mv_g22j - 4000, $mv_g22j), false);
+    $pruefe('M10: Marke +300 s nicht', marstek_marke_pausiert_bei($mv_g22j + 300, $mv_g22j), false);
+    $pruefe('M10: Marke +86400 s nicht', marstek_marke_pausiert_bei($mv_g22j + 86400, $mv_g22j), false);
+    // V1: Vorschau - unbrauchbare Formen (probe_v1 F1-F5) und Stundenmittel
+    $mv_g22h = $mv_g22j - ($mv_g22j % 3600);
+    foreach (array('F1 leer' => array('', $mv_g22h, 900), 'F2 Komma' => array('12,5;13', $mv_g22h, 900),
+                   'F3 ab nicht im Raster' => array('12.5;13', $mv_g22h + 60, 900), 'F4 Raster 1800' => array('12.5', $mv_g22h, 1800),
+                   'F5 5000 Byte' => array(str_repeat('12.50;', 833) . '1', $mv_g22h, 900)) as $mv_n => $mv_f) {
+        $pruefe('V1: Vorschau ' . $mv_n . ' verworfen', marstek_haus_preisliste($mv_f[0], $mv_f[1], $mv_f[2]), null);
+    }
+    $pruefe('V1: Raster 900 -> Stundenmittel', marstek_haus_preisliste('10;20;30;40;50', $mv_g22h, 900), array($mv_g22h => 0.25));
+    $pruefe('V1: Raster 3600', marstek_haus_preisliste('-1.5;2', $mv_g22h, 3600), array($mv_g22h => -0.015, $mv_g22h + 3600 => 0.02));
+    // V1: Preisquelle (probe_v2 P1-P6)
+    $mv_g22c = array('haus_preis_ein' => 1, 'haus_urlaub_ein' => 1, 'urlaub_soc_min' => 20, 'urlaub_soc_max' => 80);
+    $mv_g22sp = function ($ab, $r, $n, $seit) {
+        return array('strompreis' => array('werte' => array('ab' => (string) $ab, 'raster' => (string) $r,
+            'vorschau' => implode(';', array_fill(0, $n, '25.10'))), 'zaehler' => '7', 'seit' => $seit));
+    };
+    foreach (array('P1' => array($mv_g22sp($mv_g22h, 900, 40, $mv_g22j - 20), array('haus', 'ok')),
+                   'P2' => array($mv_g22sp($mv_g22h - 3600, 3600, 30, $mv_g22j - 20), array('haus', 'ok')),
+                   'P3' => array($mv_g22sp($mv_g22h + 3600, 3600, 30, $mv_g22j - 20), array('eigen', 'deckt_stunde_nicht')),
+                   'P4' => array($mv_g22sp($mv_g22h - 3600, 3600, 1, $mv_g22j - 20), array('eigen', 'deckt_stunde_nicht')),
+                   'P5' => array($mv_g22sp($mv_g22h, 900, 40, $mv_g22j - 200), array('eigen', 'schweigt')),
+                   'P6' => array($mv_g22sp($mv_g22h, 600, 40, $mv_g22j - 20), array('eigen', 'unbrauchbar'))) as $mv_n => $mv_f) {
+        $pruefe('V1: Preisquelle ' . $mv_n, marstek_preis_quelle($mv_g22c, $mv_f[0], $mv_g22j), $mv_f[1]);
+    }
+    $pruefe('V1: Preisquelle Haken aus', marstek_preis_quelle(array('haus_preis_ein' => 0), array(), $mv_g22j), array('eigen', 'aus'));
+    // N1: Viertelstunden zu Stundenmitteln ergeben dieselben Raenge wie Stundenwerte
+    $mv_g22st = array();
+    $mv_g22vt = array();
+    for ($mv_i = 0; $mv_i < 24; $mv_i++) {
+        $mv_g22st[$mv_g22h + $mv_i * 3600] = round(0.10 + 0.01 * (($mv_i * 7) % 13), 5);
+    }
+    foreach ($mv_g22st as $mv_ts => $mv_pr) {
+        foreach (array(-0.02, 0.01, 0.01, 0.0) as $mv_q => $mv_d) { $mv_g22vt[$mv_ts + $mv_q * 900] = $mv_pr + $mv_d; }
+    }
+    $mv_g22v = array();
+    foreach ($mv_g22vt as $mv_ts => $mv_pr) {
+        $mv_h = $mv_ts - ($mv_ts % 3600);
+        $mv_g22v[$mv_h] = isset($mv_g22v[$mv_h]) ? $mv_g22v[$mv_h] + $mv_pr / 4 : $mv_pr / 4;
+    }
+    foreach ($mv_g22v as $mv_h => $mv_pr) { $mv_g22v[$mv_h] = round($mv_pr, 5); }
+    $mv_ra = marstek_ranks_aus_liste($mv_g22st, $mv_g22j);
+    $mv_rb = marstek_ranks_aus_liste($mv_g22v, $mv_g22j);
+    $pruefe('N1: Stundenmittel = Stundenwerte', array($mv_rb['n'], $mv_rb['rank'], $mv_rb['curp']),
+        array($mv_ra['n'], $mv_ra['rank'], $mv_ra['curp']));
+    $pruefe('N1: ohne Liste errc 1', marstek_ranks_aus_liste(null, $mv_g22j)['errc'], 1);
+    // V2: Urlaubslage und Urlaubsfenster (probe_v2 U1-U12)
+    $mv_g22k = function ($u, $datum, $seit) {
+        return array('kalender' => array('werte' => array('heute/urlaub' => $u, 'datum' => $datum), 'zaehler' => '5', 'seit' => $seit));
+    };
+    $mv_g22t = date('Ymd', $mv_g22j);
+    foreach (array('U-ok' => array($mv_g22k('1', $mv_g22t, $mv_g22j - 30), 'urlaub'),
+                   'U5 datum gestern' => array($mv_g22k('1', date('Ymd', $mv_g22j - 86400), $mv_g22j - 30), 'schweigt'),
+                   'U6 Zaehler 121 s' => array($mv_g22k('1', $mv_g22t, $mv_g22j - 121), 'schweigt'),
+                   'U7 kein Urlaub' => array($mv_g22k('0', $mv_g22t, $mv_g22j - 30), 'kein_urlaub'),
+                   'U8 Wert -' => array($mv_g22k('-', $mv_g22t, $mv_g22j - 30), 'schweigt'),
+                   'U11 Uhr zurueck' => array($mv_g22k('1', $mv_g22t, $mv_g22j + 300), 'schweigt')) as $mv_n => $mv_f) {
+        $pruefe('V2: Lage ' . $mv_n, marstek_urlaub_lage($mv_g22c, $mv_f[0], $mv_g22j), $mv_f[1]);
+    }
+    $pruefe('V2: Lage Haken aus', marstek_urlaub_lage(array('haus_urlaub_ein' => 0), $mv_g22k('1', $mv_g22t, $mv_g22j - 30), $mv_g22j), 'aus');
+    $pruefe('V2: U1 Laden bei 85 %', marstek_urlaub_grenze(800, 1, $mv_g22c, 'urlaub', 85.0), 'URLAUB_SOC_MAX');
+    $pruefe('V2: U3 Laden bei 60 %', marstek_urlaub_grenze(800, 1, $mv_g22c, 'urlaub', 60.0), '');
+    $pruefe('V2: U4 Entladen bei 15 %', marstek_urlaub_grenze(-300, 1, $mv_g22c, 'urlaub', 15.0), 'URLAUB_SOC_MIN');
+    $pruefe('V2: U9 p 0', marstek_urlaub_grenze(0, 1, $mv_g22c, 'urlaub', 85.0), '');
+    $pruefe('V2: U10 SOC unbekannt', marstek_urlaub_grenze(800, 1, $mv_g22c, 'urlaub', null), '');
+    $pruefe('V2: kein Urlaub', marstek_urlaub_grenze(800, 1, $mv_g22c, 'kein_urlaub', 85.0), '');
+    $pruefe('V2: Themenwert 1/0/-1', array(marstek_urlaub_wert('urlaub'), marstek_urlaub_wert('kein_urlaub'),
+        marstek_urlaub_wert('schweigt'), marstek_urlaub_wert('aus')), array(1, 0, -1, -1));
+    $pruefe('Retain JA: urlaub', marstek_mqtt_retain('urlaub'), true);
+    // V5: haus/speicher aus einer Summe (probe_v5 S2/S3/S5), Themenliste beide Richtungen
+    $pruefe('V5: S5 ohne Aussage', marstek_haus_speicher_werte(array('ok' => 0, 'n' => 1, 'soc' => -1, 'restkwh' => -1, 'batp' => 0)),
+        array('soc' => -1, 'kwh' => -1, 'leistung' => -1, 'richtung' => -1));
+    $pruefe('V5: S2 entlaedt', marstek_haus_speicher_werte(array('ok' => 1, 'n' => 1, 'soc' => 50.0, 'restkwh' => 2.56, 'batp' => -300)),
+        array('soc' => 50.0, 'kwh' => 2.56, 'leistung' => 300, 'richtung' => 2));
+    $pruefe('V5: S3 ruht (Summe 10 W)', marstek_haus_speicher_werte(array('ok' => 1, 'n' => 2, 'soc' => 60.0, 'restkwh' => 4.61, 'batp' => -10)),
+        array('soc' => 60.0, 'kwh' => 4.61, 'leistung' => 10, 'richtung' => 0));
+    $mv_g22hs = array();
+    foreach (marstek_haus_speicher_themen() as $mv_t) { $mv_g22hs[] = substr($mv_t, strlen('haus/speicher/')); }
+    $pruefe('V5: Themen = Werte (beide Richtungen)', $mv_g22hs, array_keys(marstek_haus_speicher_werte(array('ok' => 0))));
+    // E-E3: Bremse - eine seit mehr als 10 min schweigende Quelle nur in jedem zehnten Lauf abwarten
+    $mv_g22m = mktime(14, 31, 5, 10, 25, 2026);   // Minute 31: kein zehnter Lauf
+    $mv_g22z = mktime(14, 30, 5, 10, 25, 2026);   // Minute 30: zehnter Lauf
+    $mv_g22th = array('kalender' => array('haus/kalender/zaehler'));
+    $pruefe('E-E3: frisch (30 s) nicht abwarten', marstek_haus_wartethemen($mv_g22th, array('kalender' => array('seit' => $mv_g22m - 30, 'beginn' => $mv_g22m - 900)), $mv_g22m), array());
+    $pruefe('E-E3: 100 s still abwarten', marstek_haus_wartethemen($mv_g22th, array('kalender' => array('seit' => $mv_g22m - 100, 'beginn' => $mv_g22m - 900)), $mv_g22m), array('haus/kalender/zaehler'));
+    $pruefe('E-E3: 700 s still, Minute 31 nicht', marstek_haus_wartethemen($mv_g22th, array('kalender' => array('seit' => 0, 'beginn' => $mv_g22m - 700)), $mv_g22m), array());
+    $pruefe('E-E3: 700 s still, Minute 30 abwarten', marstek_haus_wartethemen($mv_g22th, array('kalender' => array('seit' => 0, 'beginn' => $mv_g22z - 700)), $mv_g22z), array('haus/kalender/zaehler'));
+    $pruefe('E-E3: erster Lauf abwarten', marstek_haus_wartethemen($mv_g22th, array(), $mv_g22m), array('haus/kalender/zaehler'));
+    $pruefe('Geraetetest: Leser wartet auch auf frisch gesehene Zaehler', marstek_haus_wartethemen($mv_g22th, array('kalender' => array('seit' => $mv_g22m - 30, 'beginn' => $mv_g22m - 900)), $mv_g22m, true), array('haus/kalender/zaehler'));
+    $pruefe('Geraetetest: Leser haelt die Bremse', marstek_haus_wartethemen($mv_g22th, array('kalender' => array('seit' => 0, 'beginn' => $mv_g22m - 700)), $mv_g22m, true), array());
+
     printf("Rechenkern Marstek Venus E: %d Faelle geprueft, %d Fehlschlaege.\n",
            $faelle, count($fehl));
     foreach ($fehl as $z) {
@@ -7027,6 +7160,7 @@ function marstek_themen_abgleich()
     $code[] = 'status/ts';
     $code[] = 'status/ok';
     $code[] = 'status/befehle';
+    $code[] = 'urlaub';   // Gruppe 22 (1.1.27): marstek_mqtt_publish_urlaub()
 
     // Und was in den publish-Funktionen WIRKLICH steht: jede Zuweisung an
     // $werte[...] in den marstek_mqtt_publish*-Funktionen (seit 1.1.25 auch das Lebenszeichen, Themen mit "/").
@@ -7035,7 +7169,8 @@ function marstek_themen_abgleich()
     if (is_string($quelle) && $quelle !== '') {
         foreach (array('marstek_mqtt_publish', 'marstek_mqtt_publish_energy',
                        'marstek_mqtt_publish_ranks', 'marstek_mqtt_publish_takt',
-                       'marstek_mqtt_publish_lebenszeichen', 'marstek_mqtt_publish_energy_ohne') as $fn) {
+                       'marstek_mqtt_publish_lebenszeichen', 'marstek_mqtt_publish_energy_ohne',
+                       'marstek_mqtt_publish_urlaub') as $fn) {
             $i = strpos($quelle, 'function ' . $fn . '(');
             if ($i === false) { continue; }
             $j = strpos($quelle, "\n}\n", $i);
@@ -7052,4 +7187,1037 @@ function marstek_themen_abgleich()
 
     return array(array_values(array_diff($liste, $code)),
                  array_values(array_diff($code, $liste)));
+}
+
+/* ==================================================================
+ * Gruppe 22 (1.1.27, 25.10.2026; Entwurf Musterprojekt/entwurf_gruppe22_mv.txt 2-3, 7; Entscheidungen Gruppe 22
+ * 1-4 und E-E1-E-E21): Hausform und Haus-Themen nach Regeln/07 Nr. 15 ohne Dauerdienst.
+ *   endpunkt_ein  Lesezweig des Endpunkts (status, energy, summe, ranks, verlauf) - Update 1, Neuinstallation 0
+ *                 (Lese-Regel marstek_uebergang() und postupgrade.sh). ?p=/?mode=/?diag/?selftest bleiben mit Token.
+ *   V1  Abnehmer haus/strompreis/* (vorschau, ab, raster, anbieter, zaehler; Reiter Einstellungen, ab Werk aus):
+ *       Endpreis des Spotpreis-Plugins, Viertelstunden zu Stundenmitteln; schweigt die Quelle oder deckt sie die
+ *       laufende Stunde nicht, gilt der eigene Abruf bei aWATTar (Feld QUELLE im Satz ranks).
+ *   N1  Auch der eigene Abruf misst seine Schrittweite und bildet Stundenmittel (marstek_spot_liste_eigen()).
+ *   V2  Abnehmer haus/kalender (datum, heute/urlaub, zaehler; ab Werk aus): im Urlaub werden Sollwerte ausserhalb
+ *       des Urlaubsfensters auf 0 W BEGRENZT (angenommen), Ladesollwerte der aWATTar-Kopplung (von=awattar)
+ *       abgelehnt (URLAUB_NETZ); Loxone erfaehrt die Lage ueber das Linien-Thema <praefix>/urlaub (1/0/-1).
+ *   V4  ?verlauf=svg|json hinter endpunkt_ein, ohne Token (marstek_soc_svg(), marstek_verlauf_json()).
+ *   V5  Anbieter haus/speicher/* (soc, kwh, leistung, richtung, zaehler; Reiter MQTT, ab Werk aus, nur mit MQTT);
+ *       Abraeumen mit Ruecklesen nur, wenn diese Installation Anbieter ist oder war (Merkdatei neben dem Ordner).
+ * Technik ("Haus-Sitzung", E-E3): je Minutenlauf hoechstens zwei kurze TCP-Sitzungen am Broker aus general.json
+ * (Abschrift abfahrt_haus_sitzung() aus Abfahrts-Assistent 1.6.31) - eine am Laufanfang zum Lesen, eine nach dem
+ * Herzschlag zum Senden. Kein mosquitto_sub, kein Kennwort in einer Befehlszeile oder im Protokoll. Endpunkt,
+ * Befehlsbruecke und Oberflaeche lesen nur haus_quellen.json - bei JEDEM Gebrauch frisch, ohne static (N9).
+ * Haus-Themen gehen nicht durch die Befehlsbruecke (Entscheidung G18 aw 4). Ein Abnehmer schreibt nichts unter
+ * haus/ und raeumt nie fremde Themen ab.
+ * ================================================================== */
+
+/** Frist der Haus-Themen (Regeln/07 Nr. 15): ein Abnehmer verwendet die Werte nur, solange der Zaehler sich binnen
+ *  120 s aendert. */
+if (!defined('MARSTEK_HAUS_FRIST')) {
+    define('MARSTEK_HAUS_FRIST', 120);
+}
+
+/**
+ * Lese-Regel fuer endpunkt_ein (Entwurf 3.2, E-E10): eine Datei MIT Inhalt (Aktionstoken) ohne den Schluessel ist
+ * eine bestehende Anlage - dort bleibt der Lesezweig an (1). Sonst gilt die Vorgabe 0. Aufgerufen in
+ * marstek_config() und marstek_cfg_vervollstaendigen() VOR den Vorgaben; sonst schriebe der erste Takt die Vorgabe 0
+ * in eine Bestandsdatei. Bei einer Neuinstallation zuendet die Regel nicht (N10): jeder Schreibweg schreibt die
+ * Vorgaben mit, also endpunkt_ein 0 zugleich mit dem ersten Token.
+ */
+function marstek_uebergang(array $cfg, &$fehlten = null)
+{
+    if (!array_key_exists('endpunkt_ein', $cfg) && marstek_config_hat_inhalt($cfg)) {
+        $cfg['endpunkt_ein'] = 1;
+        if (is_array($fehlten)) {
+            $fehlten[] = 'endpunkt_ein';
+        }
+    }
+    return $cfg;
+}
+
+/** M10 (Entscheidung 1): pausiert eine Upgrade-Marke mit Zeitstempel $t den Takt? Nur, wenn sie hoechstens eine
+ *  Stunde alt ist UND nicht aus der Zukunft stammt (Hausregel "Zukunft gilt nicht", Stamm BB3). Bis 1.1.26 hielt eine
+ *  Marke von morgen den ganzen Takt 25 Stunden an (Pruefbericht Probe m10: +86 400 s -> pausiert). */
+function marstek_marke_pausiert_bei($t, $jetzt)
+{
+    $a = (int) $jetzt - (int) $t;
+    return $a >= 0 && $a < 3600;
+}
+
+/** Der Port des LoxBerry-Webservers aus general.json (Webserver.Port, Vorgabe 80) - M4, Bauform APC-UPS 1.2.23. */
+function marstek_webserver_port()
+{
+    $p = marstek_paths();
+    if ($p['lbhome'] === '') {
+        return 80;
+    }
+    $gen = json_decode((string) @file_get_contents($p['lbhome'] . '/config/system/general.json'), true);
+    $port = 0;
+    if (is_array($gen) && isset($gen['Webserver']) && is_array($gen['Webserver']) && isset($gen['Webserver']['Port'])) {
+        $port = (int) $gen['Webserver']['Port'];
+    }
+    return ($port >= 1 && $port <= 65535) ? $port : 80;
+}
+
+/* ---------------- Haus-Sitzung (E-E3) ---------------- */
+
+/**
+ * Eine kurze Sitzung am Broker: Abschrift von abfahrt_haus_sitzung() (Abfahrts-Assistent 1.6.31, gebaut und
+ * veroeffentlicht; Leser wie marstek_mqtt_behalten_liste()).
+ *   $senden  Thema => array(Wert, retain) - PUBLISH QoS 0; eine leere Nutzlast nur mit retain (Abraeumen)
+ *   $lesen   genaue Themen (kein # und kein +); SUBSCRIBE QoS 0, SUBACK mit Rueckgabebyte-Pruefung (>= 0x80 abgelehnt)
+ *   $warten  Themen, die LIVE (Retain-Bit 0) gesehen sein muessen, bevor das Fenster endet
+ *   $fenster Sekunden, hoechstens 66; ohne $warten endet das Lesen 1 s nach dem SUBACK
+ * Rueckgabe array('lage' => ok|kein_broker|abgelehnt|zeit, 'werte' => Thema => Wert, 'live' => Thema => true,
+ * 'gesendet' => n). Das Kennwort steht nur im CONNECT-Paket. Client-ID 'mvhaus<pid>' (neben 'mvrueck<pid>').
+ */
+function marstek_haus_sitzung(array $senden, array $lesen, array $warten, $fenster)
+{
+    $aus = array('lage' => 'kein_broker', 'werte' => array(), 'live' => array(), 'gesendet' => 0);
+    $p = marstek_paths();
+    $gj = $p['lbhome'] !== '' ? $p['lbhome'] . '/config/system/general.json' : '';
+    if ($gj === '' || !is_file($gj)) { return $aus; }
+    $gen = json_decode((string) @file_get_contents($gj), true);
+    if (!is_array($gen)) { return $aus; }
+    $m = array();
+    if (isset($gen['Mqtt']) && is_array($gen['Mqtt'])) { $m = $gen['Mqtt']; }
+    elseif (isset($gen['mqtt']) && is_array($gen['mqtt'])) { $m = $gen['mqtt']; }
+    if (!$m) { return $aus; }
+    $hol = function ($gross, $klein) use ($m) {
+        if (isset($m[$gross]) && is_scalar($m[$gross])) { return (string) $m[$gross]; }
+        return (isset($m[$klein]) && is_scalar($m[$klein])) ? (string) $m[$klein] : '';
+    };
+    $host = trim($hol('Brokerhost', 'brokerhost'));
+    if ($host === '' || $host === 'localhost') { $host = '127.0.0.1'; }
+    $port = (int) $hol('Brokerport', 'brokerport');
+    if ($port <= 0 || $port > 65535) { $port = 1883; }
+    $benutzer = $hol('Brokeruser', 'brokeruser');
+    $kennwort = $hol('Brokerpass', 'brokerpass');
+
+    $soll = array();
+    foreach ($lesen as $t) {
+        $t = (string) $t;
+        if ($t !== '' && strpbrk($t, '#+') === false) { $soll[$t] = true; }
+    }
+    $soll = array_slice(array_keys($soll), 0, 50);
+    $warte = array();
+    foreach ($warten as $t) {
+        if (in_array((string) $t, $soll, true)) { $warte[(string) $t] = true; }
+    }
+    // Gerätetest 1.1.27: bis 66 s - der abgekoppelte Leser wartet eine ganze Sendeperiode (60 s) ab.
+    $fenster = max(0.0, min(66.0, (float) $fenster));
+
+    $errno = 0;
+    $errstr = '';
+    $s = @stream_socket_client('tcp://' . $host . ':' . $port, $errno, $errstr, 2);
+    if (!$s) { return $aus; }
+    stream_set_timeout($s, 1);
+    $zk = function ($t) { return pack('n', strlen($t)) . $t; };
+    $laenge = function ($n) {
+        $o = '';
+        do {
+            $b = $n % 128;
+            $n = intdiv($n, 128);
+            if ($n > 0) { $b |= 128; }
+            $o .= chr($b);
+        } while ($n > 0);
+        return $o;
+    };
+    $lies = function ($n) use ($s) {
+        $d = '';
+        while (strlen($d) < $n) {
+            $t = @fread($s, $n - strlen($d));
+            if ($t === false || $t === '') {
+                $meta = stream_get_meta_data($s);
+                if (!empty($meta['timed_out']) || !empty($meta['eof']) || feof($s)) { return null; }
+                continue;
+            }
+            $d .= $t;
+        }
+        return $d;
+    };
+    $paket = function () use ($lies) {
+        $k = $lies(1);
+        if ($k === null) { return null; }
+        $n = 0; $mult = 1;
+        for ($i = 0; $i < 4; $i++) {
+            $b = $lies(1);
+            if ($b === null) { return null; }
+            $n += (ord($b) & 127) * $mult;
+            $mult *= 128;
+            if (!(ord($b) & 128)) { break; }
+        }
+        $r = ($n > 0) ? $lies($n) : '';
+        return ($r === null) ? null : array(ord($k), $r);
+    };
+    /* Ein PUBLISH merken: Wert und, ohne Retain-Bit, "live gesehen". */
+    $merke = function ($pk) use (&$aus, $soll) {
+        if (strlen($pk[1]) < 2) { return; }
+        $tl = unpack('n', substr($pk[1], 0, 2));
+        $t = substr($pk[1], 2, $tl[1]);
+        $versatz = 2 + $tl[1] + ((($pk[0] >> 1) & 3) > 0 ? 2 : 0);
+        if (!in_array($t, $soll, true)) { return; }
+        $aus['werte'][$t] = (string) substr($pk[1], $versatz);
+        if (!($pk[0] & 1)) { $aus['live'][$t] = true; }
+    };
+
+    $flags = 0x02;
+    $nutz = $zk('mvhaus' . getmypid());
+    if ($benutzer !== '') {
+        $flags |= 0x80;
+        if ($kennwort !== '') { $flags |= 0x40; }
+    }
+    $kopf = $zk('MQTT') . chr(4) . chr($flags) . pack('n', 60);
+    if ($benutzer !== '') {
+        $nutz .= $zk($benutzer);
+        if ($kennwort !== '') { $nutz .= $zk($kennwort); }
+    }
+    if (!marstek_ganz_schreiben($s, chr(0x10) . $laenge(strlen($kopf . $nutz)) . $kopf . $nutz)) {
+        fclose($s);
+        return $aus;
+    }
+    $ack = $paket();
+    if ($ack === null || ($ack[0] >> 4) !== 2 || strlen($ack[1]) < 2) {
+        fclose($s);
+        $aus['lage'] = 'zeit';
+        return $aus;
+    }
+    if (ord($ack[1][1]) !== 0) {
+        fclose($s);
+        $aus['lage'] = 'abgelehnt';
+        return $aus;
+    }
+    $lage = 'ok';
+    $suback_zeit = microtime(true);
+    if ($soll) {
+        $sub = pack('n', 1);
+        foreach ($soll as $t) { $sub .= $zk($t) . chr(0); }
+        marstek_ganz_schreiben($s, chr(0x82) . $laenge(strlen($sub)) . $sub);
+        $lage = 'zeit';
+        $ende = microtime(true) + 3.0;
+        while (microtime(true) < $ende) {
+            $pk = $paket();
+            if ($pk === null) { if (feof($s)) { break; } continue; }
+            $art = $pk[0] >> 4;
+            if ($art === 9) {
+                $rc = (string) substr($pk[1], 2);
+                if (strlen($rc) !== count($soll)) { break; }
+                $lage = 'ok';
+                for ($i = 0; $i < strlen($rc); $i++) {
+                    if (ord($rc[$i]) >= 0x80) { $lage = 'abgelehnt'; }
+                }
+                break;
+            } elseif ($art === 3) {
+                $merke($pk);
+            }
+        }
+        $suback_zeit = microtime(true);
+    }
+    if ($lage === 'ok') {
+        foreach ($senden as $t => $wr) {
+            $t = (string) $t;
+            $w = (string) (is_array($wr) ? $wr[0] : $wr);
+            $ret = is_array($wr) && !empty($wr[1]);
+            if ($t === '' || strpbrk($t, "#+\0") !== false || ($w === '' && !$ret)) { continue; }
+            $rumpf = $zk($t) . $w;
+            if (marstek_ganz_schreiben($s, chr(0x30 | ($ret ? 1 : 0)) . $laenge(strlen($rumpf)) . $rumpf)) {
+                $aus['gesendet']++;
+            }
+        }
+    }
+    if ($lage === 'ok' && $soll) {
+        $offen = function () use (&$aus, $warte) {
+            foreach (array_keys($warte) as $t) { if (empty($aus['live'][$t])) { return true; } }
+            return false;
+        };
+        $ende = $warte ? $suback_zeit + max(1.0, $fenster) : $suback_zeit + 1.0;
+        while (microtime(true) < $ende && ($offen() || !$warte)) {
+            $pk = $paket();
+            if ($pk === null) { if (feof($s)) { break; } continue; }
+            if (($pk[0] >> 4) === 3) { $merke($pk); }
+        }
+    }
+    marstek_ganz_schreiben($s, chr(0xE0) . chr(0));
+    fclose($s);
+    $aus['lage'] = $lage;
+    return $aus;
+}
+
+/** Die Ablage der gelesenen Haus-Quellen (Zwischenordner, 0600) - der Minutentakt schreibt, Endpunkt, Bruecke und
+ *  Oberflaeche lesen. */
+function marstek_haus_quellen_datei()
+{
+    return marstek_tmpdir() . '/haus_quellen.json';
+}
+
+/** Die gelesenen Haus-Quellen - bei jedem Aufruf frisch aus der Datei (N9: kein static; ein gemerkter Stand im
+ *  Brueckendienst hielte eine abgelaufene Urlaubslage fest). */
+function marstek_haus_quellen()
+{
+    $f = marstek_haus_quellen_datei();
+    $d = is_file($f) ? json_decode((string) @file_get_contents($f), true) : null;
+    return is_array($d) ? $d : array();
+}
+
+/** Welche Themen liest der Abnehmer je Quelle? Nur die eingeschalteten; nie morgen/..., nie ferien_in, nie Namen. */
+function marstek_haus_lesethemen(array $cfg)
+{
+    $aus = array();
+    if (!empty($cfg['haus_preis_ein'])) {
+        $aus['strompreis'] = array('haus/strompreis/vorschau', 'haus/strompreis/ab', 'haus/strompreis/raster',
+                                   'haus/strompreis/anbieter', 'haus/strompreis/zaehler');
+    }
+    if (!empty($cfg['haus_urlaub_ein'])) {
+        $aus['kalender'] = array('haus/kalender/datum', 'haus/kalender/heute/urlaub', 'haus/kalender/zaehler');
+    }
+    return $aus;
+}
+
+/**
+ * Das Ergebnis einer Lesesitzung in den Stand einarbeiten (Abschrift abfahrt_haus_merken()). Je Quelle: die Werte
+ * (retained gelesen; ein bestaetigtes Abo ohne retained Wert heisst ''), der zuletzt LIVE gesehene Zaehler und
+ * 'seit' = Zeitpunkt der letzten Aenderung des Zaehlers. Ein live gesehener, aber unveraenderter Zaehler verlaengert
+ * nichts (Anbieter klemmt). 'beginn' = erster Leseversuch (fuer die Bremse, E-E3).
+ */
+function marstek_haus_merken(array $alt, array $erg, array $lesethemen, $jetzt)
+{
+    $neu = $alt;
+    foreach ($lesethemen as $q => $themen) {
+        $e = (isset($alt[$q]) && is_array($alt[$q])) ? $alt[$q] : array();
+        $e += array('werte' => array(), 'zaehler' => null, 'seit' => 0, 'beginn' => (int) $jetzt);
+        foreach ($themen as $t) {
+            $k = substr($t, strlen('haus/' . $q . '/'));
+            $da = array_key_exists($t, $erg['werte']);
+            if ($k === 'zaehler') {
+                if ($da && !empty($erg['live'][$t]) && (string) $erg['werte'][$t] !== (string) $e['zaehler']) {
+                    $e['zaehler'] = (string) $erg['werte'][$t];
+                    $e['seit'] = (int) $jetzt;
+                }
+            } elseif ($da) {
+                $e['werte'][$k] = (string) $erg['werte'][$t];
+            } elseif ($erg['lage'] === 'ok') {
+                $e['werte'][$k] = '';
+            }
+        }
+        $neu[$q] = $e;
+    }
+    return $neu;
+}
+
+/** Ist die Quelle frisch? 0 < jetzt - seit <= 120 und seit nicht in der Zukunft (Uhr zurueck = nicht frisch). */
+function marstek_haus_frisch(array $c, $q, $jetzt)
+{
+    $seit = isset($c[$q]['seit']) ? (int) $c[$q]['seit'] : 0;
+    return $seit > 0 && $seit <= (int) $jetzt && (int) $jetzt - $seit <= MARSTEK_HAUS_FRIST;
+}
+
+/** Schweigt die Quelle laenger als 10 min (Bremse E-E3)? Gemessen ab der letzten Zaehleraenderung, ohne eine ab
+ *  dem ersten Leseversuch. */
+function marstek_haus_lange_still(array $c, $q, $jetzt)
+{
+    $seit = isset($c[$q]['seit']) ? (int) $c[$q]['seit'] : 0;
+    $beginn = isset($c[$q]['beginn']) ? (int) $c[$q]['beginn'] : (int) $jetzt;
+    $ab = ($seit > 0 && $seit <= (int) $jetzt) ? $seit : $beginn;
+    return (int) $jetzt - $ab > 600;
+}
+
+/** Auf welche Zaehler wartet die Lesesitzung? Auf eine seit mehr als 10 min schweigende Quelle nur in jedem zehnten
+ *  Lauf (Minute durch 10 teilbar; Bremse E-E3). Im kurzen Fenster (Abschrift Abfahrt) nicht auf einen, der binnen 45 s
+ *  live gesehen wurde; der abgekoppelte Leser ($immer, Gerätetest 1.1.27) wartet jeden Zaehler einmal ab - sonst liesse
+ *  ein Lauf direkt nach dem Senden die Quelle bis zu 120 s altern. */
+function marstek_haus_wartethemen(array $themen, array $c, $jetzt, $immer = false)
+{
+    $warten = array();
+    $zehnter = ((int) floor($jetzt / 60)) % 10 === 0;
+    foreach (array_keys($themen) as $q) {
+        $seit = isset($c[$q]['seit']) ? (int) $c[$q]['seit'] : 0;
+        if (!$immer && $seit > 0 && $seit <= $jetzt && $jetzt - $seit <= 45) { continue; }
+        if (isset($c[$q]) && marstek_haus_lange_still($c, $q, $jetzt) && !$zehnter) { continue; }
+        $warten[] = 'haus/' . $q . '/zaehler';
+    }
+    return $warten;
+}
+
+/**
+ * Abnehmerteil im Minutenlauf (bin/cron.php, am ANFANG des Laufs nach bb_waechter(); Entwurf 2.7): nur mit
+ * haus_preis_ein oder haus_urlaub_ein. Gewartet wird nur auf die Zaehler, die nicht binnen der letzten 45 s live
+ * gesehen wurden; das Fenster endet spaetestens 32 s nach dem SUBACK und vor Sekunde 55; ein Lauf nach Sekunde 50
+ * liest nicht. Bremse (E-E3): auf eine seit mehr als 10 min schweigende Quelle wird nur in jedem zehnten Lauf
+ * gewartet (Minute durch 10 teilbar), ihre retained Werte werden trotzdem gelesen. Alle Haken aus: haus_quellen.json
+ * weg. Rueckgabe das Sitzungsergebnis oder null.
+ */
+function marstek_haus_abnehmer(array $cfg, $jetzt = null, $fenster = null)
+{
+    $themen = marstek_haus_lesethemen($cfg);
+    $datei = marstek_haus_quellen_datei();
+    if (!$themen) {
+        if (is_file($datei)) { @unlink($datei); }
+        return null;
+    }
+    if ($jetzt === null) { $jetzt = time(); }
+    $sek = (int) date('s', $jetzt);
+    if ($fenster === null && $sek > 50) { return null; }
+    $c = marstek_haus_quellen();
+    $lesen = array();
+    foreach ($themen as $q => $liste) {
+        foreach ($liste as $t) { $lesen[] = $t; }
+    }
+    $warten = marstek_haus_wartethemen($themen, $c, $jetzt, $fenster !== null);
+    $erg = marstek_haus_sitzung(array(), $lesen, $warten, $fenster !== null ? (float) $fenster : min(32, 55 - $sek));
+    $c = marstek_haus_merken($c, $erg, $themen, time());
+    $c['sitzung'] = array('zeit' => time(), 'lage' => $erg['lage'], 'gewartet' => count($warten));
+    foreach (array_keys(marstek_haus_lesethemen(array('haus_preis_ein' => 1, 'haus_urlaub_ein' => 1))) as $q) {
+        if (!isset($themen[$q])) { unset($c[$q]); }
+    }
+    if ($erg['lage'] !== 'ok') {
+        marstek_log_if_changed('haus_abnehmer', 'Haus-Themen lesen: Sitzung am Broker gescheitert (' . $erg['lage']
+            . ') - der naechste Lauf versucht es erneut; bis dahin gilt das bisherige Verhalten.', $erg['lage']);
+    } else {
+        marstek_log_if_changed('haus_abnehmer', 'Haus-Themen lesen: Sitzung am Broker in Ordnung.', 'ok');
+    }
+    $js = json_encode($c, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES
+                          | (defined('JSON_INVALID_UTF8_SUBSTITUTE') ? JSON_INVALID_UTF8_SUBSTITUTE : 0));
+    if ($js !== false) {
+        marstek_write_atomic($datei, $js, 0600);
+    }
+    return $erg;
+}
+
+/** Die Sperre des abgekoppelten Lesers (cron.php --haus-lesen). */
+function marstek_haus_leser_sperre()
+{
+    return marstek_tmpdir() . '/haus_lesen.lock';
+}
+
+/**
+ * Gerätetest 1.1.27 (Befund: haus/kalender/zaehler kommt am Geraet fest in Sekunde 03 jeder Minute; das 32-s-Fenster des
+ * Minutenlaufs ab Sekunde ~4 verpasste den nicht retained Zaehler systematisch). Der Minutenlauf liest deshalb NICHT mehr
+ * selbst, sondern startet hoechstens einen abgekoppelten Leser (bin/cron.php --haus-lesen, eigene Sperre haus_lesen.lock)
+ * und wartet nie darauf. Der Leser wartet bis zu 65 s am Broker, bis jeder gewartete Zaehler einmal live kam (eine ganze
+ * Sendeperiode von 60 s, gleich bei welcher Phase), und schreibt haus_quellen.json; der Minutenlauf nimmt den letzten
+ * Stand. Frist 120 s und Bremse E-E3 bleiben. Alle Haken aus: haus_quellen.json weg, kein Leser.
+ * Der Kindprozess erbt keine Deskriptoren: die Schale schliesst vor dem exec jede Nummer ueber 2 (cron.lock wird sonst
+ * vererbt und haelt den naechsten Takt an - Gedaechtnis sperre-vererbt-sich-an-kinder), cron.lock ist zudem mit 'e'
+ * (close-on-exec) geoeffnet. Rueckgabe: aus | laeuft | gestartet | kein_start.
+ */
+function marstek_haus_abnehmer_starten(array $cfg, $skript)
+{
+    if (!marstek_haus_lesethemen($cfg)) {
+        $datei = marstek_haus_quellen_datei();
+        if (is_file($datei)) { @unlink($datei); }
+        return 'aus';
+    }
+    $fh = @fopen(marstek_haus_leser_sperre(), 'ce');
+    if ($fh === false) { return 'kein_start'; }
+    if (!flock($fh, LOCK_EX | LOCK_NB)) {
+        fclose($fh);
+        return 'laeuft';
+    }
+    flock($fh, LOCK_UN);
+    fclose($fh);
+    $php = (defined('PHP_BINARY') && PHP_BINARY !== '' && is_executable(PHP_BINARY)) ? PHP_BINARY : 'php';
+    $befehl = 'for f in /proc/$$/fd/*; do n=${f##*/}; [ "$n" -gt 2 ] 2>/dev/null && eval "exec $n>&-"; done; '
+            . 'exec ' . escapeshellarg($php) . ' ' . escapeshellarg($skript) . ' --haus-lesen';
+    $voll = 'bash -c ' . escapeshellarg($befehl) . ' </dev/null >/dev/null 2>&1 &';
+    @exec($voll, $aus, $rc);
+    return $rc === 0 ? 'gestartet' : 'kein_start';
+}
+
+/** Der abgekoppelte Leser selbst (cron.php --haus-lesen): eigene Sperre (close-on-exec), sonst still beenden. */
+function marstek_haus_leser_lauf($fenster = 65)
+{
+    $fh = @fopen(marstek_haus_leser_sperre(), 'ce');
+    if ($fh === false || !flock($fh, LOCK_EX | LOCK_NB)) {
+        return 'laeuft';
+    }
+    $erg = marstek_haus_abnehmer(marstek_config(), null, $fenster);
+    flock($fh, LOCK_UN);
+    fclose($fh);
+    return $erg === null ? 'aus' : $erg['lage'];
+}
+
+/* ---------------- V1: Strompreis aus dem Haus, N1 Stundenmittel ---------------- */
+
+/**
+ * Vorschau aus haus/strompreis in eine Stundenliste ts => EUR/kWh (Endpreis, Entwurf mv_haus_preisliste_g22()):
+ * Form ^-?\d{1,4}(\.\d{1,3})?(;...)*$, hoechstens 4096 Byte, ab im Raster, Raster 900 oder 3600. Raster 900 ->
+ * Stundenmittel, eine angebrochene Randstunde wird verworfen. Rueckgabe null = unbrauchbar.
+ */
+function marstek_haus_preisliste($vorschau, $ab, $raster)
+{
+    if (!is_string($vorschau) || strlen($vorschau) > 4096
+            || !preg_match('/^-?\d{1,4}(\.\d{1,3})?(;-?\d{1,4}(\.\d{1,3})?)*$/', $vorschau)) {
+        return null;
+    }
+    if (!is_numeric($ab) || !is_numeric($raster)) {
+        return null;
+    }
+    $ab = (int) $ab;
+    $raster = (int) $raster;
+    if (!in_array($raster, array(900, 3600), true) || $ab <= 0 || $ab % $raster !== 0) {
+        return null;
+    }
+    $summe = array();
+    $zahl = array();
+    foreach (explode(';', $vorschau) as $i => $ct) {
+        $ts = $ab + $i * $raster;
+        $h = $ts - ($ts % 3600);
+        if (!isset($summe[$h])) { $summe[$h] = 0.0; $zahl[$h] = 0; }
+        $summe[$h] += (float) $ct / 100.0;
+        $zahl[$h]++;
+    }
+    $out = array();
+    foreach ($summe as $h => $s) {
+        if ($raster === 900 && $zahl[$h] < 4) { continue; }   // angebrochene Stunde am Rand
+        $out[$h] = round($s / $zahl[$h], 5);
+    }
+    ksort($out);
+    return $out;
+}
+
+/**
+ * Die wirksame Preisquelle je Lauf (Entwurf mv_preis_quelle_g22(), Probe probe_v2 P1-P6): array('haus'|'eigen',
+ * Grund). "haus" nur, wenn der Zaehler binnen 120 s live gewechselt hat, raster 900|3600, ab <= Beginn der
+ * laufenden Stunde und die Liste bis zu deren Ende reicht. Gruende: aus | schweigt | unbrauchbar |
+ * deckt_stunde_nicht | ok.
+ */
+function marstek_preis_quelle($cfg = null, $c = null, $jetzt = null)
+{
+    if ($cfg === null) { $cfg = marstek_config(false); }
+    if (empty($cfg['haus_preis_ein'])) { return array('eigen', 'aus'); }
+    if ($c === null) { $c = marstek_haus_quellen(); }
+    if ($jetzt === null) { $jetzt = time(); }
+    if (!marstek_haus_frisch($c, 'strompreis', $jetzt)) { return array('eigen', 'schweigt'); }
+    $w = (isset($c['strompreis']['werte']) && is_array($c['strompreis']['werte'])) ? $c['strompreis']['werte'] : array();
+    $ab = isset($w['ab']) && is_numeric($w['ab']) ? (int) $w['ab'] : 0;
+    $r = isset($w['raster']) && is_numeric($w['raster']) ? (int) $w['raster'] : 0;
+    $v = isset($w['vorschau']) ? (string) $w['vorschau'] : '';
+    $n = ($v !== '' && $v !== '-') ? count(explode(';', $v)) : 0;
+    $hstart = $jetzt - ($jetzt % 3600);
+    if ($ab <= 0 || !in_array($r, array(900, 3600), true) || $n === 0
+            || marstek_haus_preisliste($v, $ab, $r) === null) {
+        return array('eigen', 'unbrauchbar');
+    }
+    if ($ab > $hstart || $ab + $n * $r < $hstart + 3600) { return array('eigen', 'deckt_stunde_nicht'); }
+    return array('haus', 'ok');
+}
+
+/**
+ * Der eigene aWATTar-Zwischenspeicher als Stundenliste ts => EUR/kWh inkl. Aufschlag und USt (N1, Bauform spot_day()
+ * Spotpreis aWATTar 1.2.39 :1081-1110): die Schrittweite wird GEMESSEN (end - start), alles Feinere als eine Stunde
+ * zum Stundenmittel zusammengefasst. Bis 1.1.26 zaehlte jede Viertelstunde als eigene "Stunde" (Probe probe_v1 B/C:
+ * n 96, rank 57; CURP nur aus dem ersten Viertel). Die erkannte Schrittweite liegt in spot_schritt (Reiter Test); ein
+ * Wechsel steht einmal im Protokoll (nur im Minutentakt). Rueckgabe null = noch keine Datei geholt.
+ */
+function marstek_spot_liste_eigen(array $cfg)
+{
+    $vat = (float) $cfg['vat'];
+    if ($vat <= 0) { $vat = 1.0; }
+    $aufschlag = (float) $cfg['aufschlag_ct'] / 100.0;   // ct/kWh netto -> EUR/kWh netto
+    $rows = array();
+    $dateien = 0;
+    foreach (array(strtotime('today 00:00'), strtotime('tomorrow 00:00')) as $startTs) {
+        // NUR LESEN. Der Abruf bei aWATTar geschieht ausschliesslich im Cron (marstek_spot_fetch()).
+        $cache = marstek_tmpdir() . '/spot_' . date('Ymd', $startTs) . '.cache';
+        if (!is_file($cache)) {
+            continue;
+        }
+        $dateien++;
+        $d = @json_decode((string) @file_get_contents($cache), true);
+        if (isset($d['data']) && is_array($d['data'])) {
+            $rows = array_merge($rows, $d['data']);
+        }
+    }
+    if ($dateien === 0) {
+        return null;
+    }
+    $roh = array();
+    $schritt = 3600;
+    foreach ($rows as $r) {
+        if (!isset($r['start_timestamp'], $r['marketprice']) || !is_numeric($r['marketprice'])) { continue; }
+        $ts = (int) ($r['start_timestamp'] / 1000);
+        $roh[$ts] = (float) $r['marketprice'];   // EUR/MWh netto
+        if (isset($r['end_timestamp'])) {
+            $s = (int) (($r['end_timestamp'] - $r['start_timestamp']) / 1000);
+            if ($s > 0 && $s < $schritt) { $schritt = $s; }
+        }
+    }
+    ksort($roh);
+    $summe = array();
+    $zahl = array();
+    foreach ($roh as $ts => $p) {
+        $h = $ts - ($ts % 3600);
+        if (!isset($summe[$h])) { $summe[$h] = 0.0; $zahl[$h] = 0; }
+        $summe[$h] += $p;
+        $zahl[$h]++;
+    }
+    $out = array();
+    foreach ($summe as $h => $s) {
+        $out[$h] = round(($s / max(1, $zahl[$h]) / 1000 + $aufschlag) * $vat, 5);   // -> EUR/kWh inkl. USt
+    }
+    ksort($out);
+    if (!empty($GLOBALS['marstek_ist_takt'])) {
+        $sf = marstek_tmpdir() . '/spot_schritt';
+        if (!is_file($sf) || (string) @file_get_contents($sf) !== (string) $schritt) {
+            @file_put_contents($sf, (string) $schritt);
+        }
+        marstek_log_if_changed('spot_schritt', $schritt < 3600
+            ? 'aWATTar liefert ' . $schritt . '-Sekunden-Werte - zu Stundenmitteln zusammengefasst.'
+            : 'aWATTar liefert Stundenwerte.', 'schritt:' . $schritt);
+    }
+    return $out;
+}
+
+/**
+ * Der Rechenteil der Rangbildung (aus marstek_ranks_ermitteln() bis 1.1.26, unveraendert): Liste ts => EUR/kWh,
+ * rollendes 24-Stunden-Fenster ab der laufenden vollen Stunde. $liste null = noch keine Preise (errc 1).
+ */
+function marstek_ranks_aus_liste($liste, $now)
+{
+    // Gruppe 1 (1.1.25, Entwurf mv 2.3 c, E7): ohne Daten -1 statt 0 - 0 EUR/kWh ist ein moeglicher Preis. Bei
+    // errc 2 ist CURP echt (unten); RANK/RANKD 99, HBIS/HBISMAX -1 und N 0 bleiben.
+    $leer = array('ok' => 0, 'n' => 0, 'rank' => 99, 'rankd' => 99, 'curp' => -1, 'neg' => 0,
+                  'minp' => -1, 'maxp' => -1, 'spread' => -1, 'nextp' => -1,
+                  'hbis' => -1, 'hbismax' => -1, 'errc' => 1, 'list' => array());
+    if ($liste === null) {
+        return $leer;                       // errc 1: noch gar keine Preise geholt
+    }
+    $now = (int) $now;
+    $hstart = $now - ($now % 3600); $list = array(); $cur = null;
+    foreach ($liste as $ts => $pr) {
+        $ts = (int) $ts;
+        if ($ts < $hstart || $ts >= $hstart + 24 * 3600) {
+            continue;
+        }
+        $list[$ts] = $pr;
+        if ($ts == $hstart) {
+            $cur = $pr;
+        }
+    }
+    if ($cur === null) {
+        $leer['errc'] = 3;                  // Preise da, aber nicht fuer die laufende Stunde
+        return $leer;
+    }
+    if (count($list) < 6) {
+        $leer['errc'] = 2;                  // Fenster zu kurz - die Preise fuer morgen fehlen
+        $leer['curp'] = $cur;
+        $leer['neg'] = $cur < 0 ? 1 : 0;
+        return $leer;
+    }
+    ksort($list);
+    $vals = array_values($list);
+    sort($vals);
+    $rank = 1;
+    foreach ($vals as $v) {
+        if ($v < $cur) {
+            $rank++;
+        }
+    }
+    $minp = $vals[0];
+    $maxp = $vals[count($vals) - 1];
+    // Stunden bis zum Tiefst- bzw. Hoechstpreis. 0 heisst: das ist jetzt.
+    $hbis = -1; $hbismax = -1;
+    foreach ($list as $ts => $pr) {
+        if ($hbis < 0 && $pr === $minp) { $hbis = (int) round(($ts - $hstart) / 3600); }
+        if ($hbismax < 0 && $pr === $maxp) { $hbismax = (int) round(($ts - $hstart) / 3600); }
+    }
+    $nextp = isset($list[$hstart + 3600]) ? $list[$hstart + 3600] : $cur;
+    return array('ok' => 1, 'n' => count($vals), 'rank' => $rank, 'rankd' => count($vals) + 1 - $rank,
+                 'curp' => $cur, 'neg' => $cur < 0 ? 1 : 0,
+                 'minp' => $minp, 'maxp' => $maxp, 'spread' => round($maxp - $minp, 5),
+                 'nextp' => $nextp, 'hbis' => $hbis, 'hbismax' => $hbismax, 'errc' => 0,
+                 'list' => $list);
+}
+
+/* ---------------- V2: Urlaub aus dem Kalender ---------------- */
+
+/** Lage der Urlaubsregel (Entwurf mv_urlaub_lage_g22(), probe_v2 U1-U12): aus | urlaub | kein_urlaub | schweigt.
+ *  urlaub nur bei Zaehler binnen 120 s live gewechselt, datum = heute (Europe/Berlin) und heute/urlaub = "1". */
+function marstek_urlaub_lage($cfg = null, $c = null, $jetzt = null)
+{
+    if ($cfg === null) { $cfg = marstek_config(false); }
+    if (empty($cfg['haus_urlaub_ein'])) { return 'aus'; }
+    if ($c === null) { $c = marstek_haus_quellen(); }
+    if ($jetzt === null) { $jetzt = time(); }
+    if (!marstek_haus_frisch($c, 'kalender', $jetzt)) { return 'schweigt'; }
+    $w = (isset($c['kalender']['werte']) && is_array($c['kalender']['werte'])) ? $c['kalender']['werte'] : array();
+    if (!isset($w['datum']) || (string) $w['datum'] !== date('Ymd', $jetzt)) { return 'schweigt'; }
+    $u = isset($w['heute/urlaub']) ? (string) $w['heute/urlaub'] : '';
+    return $u === '1' ? 'urlaub' : ($u === '0' ? 'kein_urlaub' : 'schweigt');
+}
+
+/** Der Wert fuer <praefix>/urlaub: 1 = Urlaubsregel wirkt, 0 = kein Urlaub, -1 = Haken aus oder Kalender schweigt. */
+function marstek_urlaub_wert($lage)
+{
+    return $lage === 'urlaub' ? 1 : ($lage === 'kein_urlaub' ? 0 : -1);
+}
+
+/** Der Ladezustand eines Speichers nur, wenn er frisch gemessen ist (je Feld <= 900 s wie marstek_schutz_pruefen());
+ *  sonst null - ohne frischen Messwert wird nicht begrenzt (U10). */
+function marstek_soc_frisch($dev)
+{
+    $cache = marstek_tmpdir() . '/status_dev' . (int) $dev . '.json';
+    $st = is_file($cache) ? json_decode((string) @file_get_contents($cache), true) : null;
+    if (!is_array($st) || empty($st['mess']) || !isset($st['soc']) || !is_numeric($st['soc'])) {
+        return null;
+    }
+    $fz = isset($st['feldzeit']) && is_array($st['feldzeit']) ? $st['feldzeit'] : array();
+    $t = array_key_exists('soc', $fz) ? (int) $fz['soc'] : (int) $st['mess'];
+    return ($t > 0 && time() - $t <= 900) ? (float) $st['soc'] : null;
+}
+
+/**
+ * Urlaubsfenster (E-E4): '' frei, sonst URLAUB_SOC_MAX (Laden ab urlaub_soc_max) bzw. URLAUB_SOC_MIN (Entladen bis
+ * urlaub_soc_min). Der Aufrufer (marstek_set_passive()) BEGRENZT dann auf 0 W - angenommen, nicht abgelehnt: eine
+ * Ablehnung liesse marstek_sollalter wachsen, und das Musterprojekt meldete nach 10 min "Sollwert fehlt" (#44/#45).
+ * Unabhaengig von schutz_ein. Ohne frischen SOC keine Begrenzung.
+ */
+function marstek_urlaub_grenze($p, $dev, $cfg = null, $lage = null, $soc = false)
+{
+    $p = (int) $p;
+    if ($p === 0) { return ''; }
+    if ($cfg === null) { $cfg = marstek_config(false); }
+    if ($lage === null) { $lage = marstek_urlaub_lage($cfg); }
+    if ($lage !== 'urlaub') { return ''; }
+    if ($soc === false) { $soc = marstek_soc_frisch($dev); }
+    if ($soc === null) { return ''; }
+    $min = isset($cfg['urlaub_soc_min']) ? (float) $cfg['urlaub_soc_min'] : 20.0;
+    $max = isset($cfg['urlaub_soc_max']) ? (float) $cfg['urlaub_soc_max'] : 80.0;
+    if ($p > 0 && $soc >= $max) { return 'URLAUB_SOC_MAX'; }
+    if ($p < 0 && $soc <= $min) { return 'URLAUB_SOC_MIN'; }
+    return '';
+}
+
+/** Die letzte Begrenzung durch das Urlaubsfenster merken (Reiter Test "letzte Begrenzung"). */
+function marstek_urlaub_begrenzung_merken($dev, $p, $grund)
+{
+    marstek_write_json(marstek_tmpdir() . '/urlaub_letzte.json',
+        array('zeit' => time(), 'dev' => (int) $dev, 'p' => (int) $p, 'grund' => (string) $grund));
+    marstek_log_if_changed('urlaub_dev' . (int) $dev, 'Urlaubsregel: Sollwert p=' . (int) $p . ' auf 0 W begrenzt ('
+        . $grund . ').', $grund);
+}
+
+/** <praefix>/urlaub an Loxone (retained, Aenderungsfilter wie die Zustaende), nur mit "Werte ueber MQTT". */
+function marstek_mqtt_publish_urlaub($wert)
+{
+    $cfg = marstek_config();
+    if (empty($cfg['mqtt_enabled'])) {
+        return;
+    }
+    marstek_mqtt_senden_bei_aenderung(array('urlaub' => (int) $wert), marstek_mqtt_prefix(1), 'urlaub');
+}
+
+/* ---------------- V5: Anbieter haus/speicher ---------------- */
+
+/**
+ * Die Werte fuer haus/speicher/* (EINE Stelle fuer Senden, Reiter Test und Selbstpruefung; Entwurf
+ * mv_haus_speicher_werte_g22(), Probe probe_v5 S1-S6). Ohne Aussage alle vier -1: ein eingetragener Speicher
+ * antwortet nicht oder seine Messung ist aelter als 180 s (marstek_summe() mit marstek_ok_nach_alter()), kein
+ * Speicher eingetragen. Ein Speicher: dessen SOC auch ohne eingetragene Kapazitaet (N5). leistung = Betrag der
+ * Summe, richtung 1 laedt, 0 ruht (|P| <= 20 W), 2 entlaedt (N6: die Summe verdeckt Umladen zwischen Speichern).
+ */
+function marstek_haus_speicher_werte($s = null)
+{
+    if ($s === null) {
+        $s = marstek_ok_nach_alter('summe', marstek_summe());
+    }
+    $leer = array('soc' => -1, 'kwh' => -1, 'leistung' => -1, 'richtung' => -1);
+    if (empty($s['ok'])) { return $leer; }
+    $soc = (float) $s['soc'];
+    if ((int) $s['n'] === 1 && $soc < 0) {
+        $soc = -1;
+        foreach (array_keys(marstek_devices()) as $n) {
+            $cache = marstek_tmpdir() . '/status_dev' . (int) $n . '.json';
+            $st = is_file($cache) ? json_decode((string) @file_get_contents($cache), true) : null;
+            if (is_array($st) && isset($st['soc']) && is_numeric($st['soc'])) {
+                $soc = round((float) $st['soc'], 1);
+            }
+        }
+    }
+    $b = (int) $s['batp'];
+    return array('soc' => $soc, 'kwh' => (float) $s['restkwh'], 'leistung' => abs($b),
+                 'richtung' => $b > 20 ? 1 : ($b < -20 ? 2 : 0));
+}
+
+/** Die vier retained Themen von haus/speicher (zaehler ist nicht retained). */
+function marstek_haus_speicher_themen()
+{
+    return array('haus/speicher/soc', 'haus/speicher/kwh', 'haus/speicher/leistung', 'haus/speicher/richtung');
+}
+
+/**
+ * Anbieterteil im Minutenlauf (NACH marstek_herzschlag(); Entwurf 2.6): nur mit haus_speicher_ein UND mqtt_enabled.
+ * Nur geaenderte Themen (Merker haus_letzte.json, geschrieben NUR nach einer Sitzung mit Lage ok), zaehler (=
+ * status/zaehler) in jeder Sitzung, Vollversand ohne Merker (Neustart, Update), nach dem Einschalten (Speichern
+ * loescht den Merker) und alle 30 Minuten. Nach der ersten erfolgreichen Sitzung liegt die Merkdatei
+ * data/plugins/<ordner>.haus_frueher (neben dem Ordner) - nur dann raeumt diese Installation spaeter ab.
+ */
+function marstek_haus_anbieter(array $cfg, $zaehler)
+{
+    if (empty($cfg['haus_speicher_ein']) || empty($cfg['mqtt_enabled'])) { return null; }
+    $tmp = marstek_tmpdir();
+    $w = marstek_haus_speicher_werte();
+    $fmt = array('soc' => sprintf('%.1F', $w['soc']), 'kwh' => sprintf('%.2F', $w['kwh']),
+                 'leistung' => (string) (int) $w['leistung'], 'richtung' => (string) (int) $w['richtung']);
+    if ((float) $w['soc'] < 0) { $fmt['soc'] = '-1'; }
+    if ((float) $w['kwh'] < 0) { $fmt['kwh'] = '-1'; }
+    $mf = $tmp . '/haus_letzte.json';
+    $m = is_file($mf) ? json_decode((string) @file_get_contents($mf), true) : null;
+    $voll = !is_array($m) || !isset($m['voll']) || (int) $m['voll'] > time() || time() - (int) $m['voll'] >= 1800;
+    $senden = array('haus/speicher/zaehler' => array((string) ((int) $zaehler % 1000), false));
+    foreach ($fmt as $k => $v) {
+        if ($voll || !isset($m['werte'][$k]) || (string) $m['werte'][$k] !== $v) {
+            $senden['haus/speicher/' . $k] = array($v, true);
+        }
+    }
+    $erg = marstek_haus_sitzung($senden, array(), array(), 0);
+    if ($erg['lage'] === 'ok') {
+        marstek_write_atomic($mf, json_encode(array('werte' => $fmt,
+            'voll' => $voll ? time() : (int) $m['voll'], 'zeit' => time())), 0600);
+        $p = marstek_paths();
+        if ($p['haus_frueher'] !== '' && !is_file($p['haus_frueher'])) {
+            @file_put_contents($p['haus_frueher'], date('Y-m-d H:i:s') . " Anbieter haus/speicher\n");
+        }
+        marstek_log_if_changed('haus_anbieter', 'Haus-Thema haus/speicher: Sitzung am Broker in Ordnung.', 'ok');
+    } else {
+        marstek_log_if_changed('haus_anbieter', 'Haus-Thema haus/speicher: Sitzung am Broker gescheitert ('
+            . $erg['lage'] . ') - naechster Versuch im naechsten Lauf.', $erg['lage']);
+    }
+    marstek_write_atomic($tmp . '/haus_anbieter.json', json_encode(array('zeit' => time(), 'lage' => $erg['lage'],
+        'werte' => $fmt, 'gesendet' => (int) $erg['gesendet'])), 0600);
+    return $erg;
+}
+
+/**
+ * haus/speicher abraeumen (Haken aus, MQTT aus, Zurueckspielen mit Haken oder MQTT aus, Deinstallation; Abschrift
+ * fer_haus_leeren() Ferien 1.2.28): leere retained Nutzlast fuer die vier retained Themen ueber die Haus-Sitzung,
+ * danach Ruecklesen der genauen Namen (marstek_mqtt_behalten_liste()), hoechstens $runden Runden. NUR, wenn diese
+ * Installation Anbieter ist (haus_speicher_ein = 1) oder war (Merkdatei) - eine Zweitinstallation raeumt fremde
+ * Themen nicht ab (Nr. 15). Rueckgabe: nie_anbieter | nichts | geleert | rest | nicht_nachgelesen | kein_broker.
+ * Nach nichts/geleert faellt die Merkdatei.
+ */
+function marstek_haus_speicher_abraeumen($cfg = null, $runden = 3)
+{
+    if ($cfg === null) { $cfg = marstek_config(false); }
+    $p = marstek_paths();
+    $frueher = $p['haus_frueher'] !== '' && is_file($p['haus_frueher']);
+    if (empty($cfg['haus_speicher_ein']) && !$frueher) {
+        return 'nie_anbieter';
+    }
+    $offen = marstek_haus_speicher_themen();
+    $f = marstek_mqtt_behalten_liste($offen);
+    $zustand = 'kein_broker';
+    if ($f['lage'] === 'ok' && !$f['belegt']) {
+        $zustand = 'nichts';
+    } else {
+        if ($f['lage'] === 'ok') { $offen = array_keys($f['belegt']); }
+        for ($r = 1; $r <= max(1, (int) $runden); $r++) {
+            $senden = array();
+            foreach ($offen as $t) { $senden[$t] = array('', true); }
+            $e = marstek_haus_sitzung($senden, array(), array(), 0);
+            if ($e['lage'] !== 'ok') { $zustand = 'kein_broker'; continue; }
+            usleep(300000);
+            $f = marstek_mqtt_behalten_liste($offen);
+            if ($f['lage'] !== 'ok') { $zustand = 'nicht_nachgelesen'; continue; }
+            if (!$f['belegt']) { $zustand = 'geleert'; break; }
+            $offen = array_keys($f['belegt']);
+            $zustand = 'rest';
+        }
+    }
+    @unlink(marstek_tmpdir() . '/haus_letzte.json');
+    if (($zustand === 'geleert' || $zustand === 'nichts') && $frueher) {
+        @unlink($p['haus_frueher']);
+    }
+    marstek_log('Haus-Thema haus/speicher abraeumen: ' . $zustand . '.');
+    return $zustand;
+}
+
+/** Der Satz zum Abraeumen fuer Oberflaeche und Protokoll. */
+function marstek_haus_abraeumen_text($zustand)
+{
+    $k = array('nichts' => 'HAUS.RAEUMEN_NICHTS', 'geleert' => 'HAUS.RAEUMEN_GELEERT', 'rest' => 'HAUS.RAEUMEN_REST',
+               'nicht_nachgelesen' => 'HAUS.RAEUMEN_UNKLAR', 'kein_broker' => 'HAUS.RAEUMEN_KEIN_BROKER',
+               'nie_anbieter' => 'HAUS.RAEUMEN_NIE');
+    return marstek_t(isset($k[$zustand]) ? $k[$zustand] : 'HAUS.RAEUMEN_UNKLAR');
+}
+
+/** Deinstallation (cron.php --mqtt-leeren, nach marstek_mqtt_leeren()): haus/speicher abraeumen, nur als Anbieter. */
+function marstek_haus_deinstallation()
+{
+    $z = marstek_haus_speicher_abraeumen(marstek_config(false));
+    if ($z === 'nie_anbieter') {
+        echo '<INFO> haus/speicher: diese Installation war nie Anbieter - fremde Themen bleiben unberuehrt.' . "\n";
+    } elseif ($z === 'geleert' || $z === 'nichts') {
+        echo '<OK> haus/speicher: ' . ($z === 'geleert' ? 'vier Themen geleert' : 'nichts zurueckbehalten')
+           . ' (Ruecklesen leer).' . "\n";
+    } else {
+        echo '<WARNING> haus/speicher: ' . $z . ' - was stehen bleibt, laesst sich mit mosquitto_pub -r -n -t '
+           . '<thema> von Hand loeschen.' . "\n";
+    }
+    return $z;
+}
+
+/** Ein Alter fuer die Zeilen des Reiters Test. */
+function marstek_haus_alter($sek)
+{
+    $sek = max(0, (int) $sek);
+    return $sek < 90 ? $sek . ' s' : ($sek < 5400 ? (int) round($sek / 60) . ' min' : (int) round($sek / 3600) . ' h');
+}
+
+/* ---------------- M3: nach einem Konfigurationswechsel ---------------- */
+
+/**
+ * M3 (Entscheidung 1, E-E14): was nach einem Wechsel der Konfiguration zu tun ist - EINE Stelle fuer das MQTT-Formular,
+ * das Befehlsformular und das Zurueckspielen. Abo-Datei pflegen; bei einem Praefixwechsel die Signaturmerker loeschen
+ * und die retained Themen des alten Praefixes abraeumen, beim Einschalten von MQTT die Merker loeschen; die
+ * Befehlsbruecke schalten (bei $bruecke_immer immer, sonst nur, wenn sich ihr Soll aendert); haus/speicher abraeumen,
+ * wenn Haken oder MQTT ausgehen, und den Merker loeschen, wenn beide angehen (Vollversand). Rueckgabe array(Saetze,
+ * Brueckenergebnis array(rc, ausgabe) oder null).
+ */
+function marstek_nach_konfigwechsel(array $alt, array $neu, $bruecke_immer = false)
+{
+    $texte = array();
+    $alt_pr = marstek_mqtt_thema_saeubern(isset($alt['mqtt_topic']) ? $alt['mqtt_topic'] : 'marstek');
+    $neu_pr = marstek_mqtt_thema_saeubern(isset($neu['mqtt_topic']) ? $neu['mqtt_topic'] : 'marstek');
+    $alt_mq = !empty($alt['mqtt_enabled']);
+    $neu_mq = !empty($neu['mqtt_enabled']);
+    marstek_mqtt_abo_datei_pflegen();
+    if ($neu_pr !== $alt_pr) {
+        marstek_mqtt_merker_loeschen();
+        $z = marstek_mqtt_praefix_abraeumen($alt_pr);
+        $texte[] = $z >= 0 ? sprintf(marstek_t('MELD.PRAEFIX_GEWECHSELT'), $alt_pr, $z)
+                           : sprintf(marstek_t('MELD.PRAEFIX_GEWECHSELT_OHNE'), $alt_pr);
+    } elseif (!$alt_mq && $neu_mq) {
+        marstek_mqtt_merker_loeschen();
+    }
+    $b_alt = !empty($alt['befehle_mqtt_ein']) && $alt_mq;
+    $b_neu = !empty($neu['befehle_mqtt_ein']) && $neu_mq;
+    $bruecke = null;
+    if ($bruecke_immer || $b_alt !== $b_neu) {
+        $bruecke = marstek_bruecke_schalten($b_neu);
+    }
+    $h_alt = !empty($alt['haus_speicher_ein']) && $alt_mq;
+    $h_neu = !empty($neu['haus_speicher_ein']) && $neu_mq;
+    if ($h_alt && !$h_neu) {
+        $texte[] = marstek_haus_abraeumen_text(marstek_haus_speicher_abraeumen(array('haus_speicher_ein' => 1)));
+    } elseif (!$h_alt && $h_neu) {
+        @unlink(marstek_tmpdir() . '/haus_letzte.json');
+    }
+    return array($texte, $bruecke);
+}
+
+/* ---------------- V4: Verlauf lesend ---------------- */
+
+/**
+ * SOC-Verlauf eines Tages als statisches SVG (V4, E-E9; bis 1.1.26 mv_soc_svg() in index.php - jetzt EINE Stelle
+ * fuer Oberflaeche und Endpunkt). Ladezustand als Linie mit Flaeche, Batterieleistung als zweite Kurve (+ laedt /
+ * - entlaedt), rechte Achse aus den Daten. Kein Skript, keine externen Verweise; Texte ueber marstek_e().
+ * $tag ist 'Ymd'. Der Tagesanfang richtet sich nach dem GEZEIGTEN Tag, nicht nach heute.
+ * $eigenstaendig: mit XML-Kopf und festen Massen (Endpunkt), sonst fuer die Einbettung in die Seite.
+ */
+function marstek_soc_svg($points, $tag = '', $mit_leistung = true, $eigenstaendig = false)
+{
+    $w = 720; $h = 150; $x0 = 34; $y0 = 8; $pw = $w - $x0 - 34; $ph = $h - $y0 - 20;
+    $day0 = $tag !== '' ? (int) strtotime(substr($tag, 0, 4) . '-' . substr($tag, 4, 2) . '-' . substr($tag, 6, 2) . ' 00:00')
+                        : (int) strtotime('today 00:00');
+    // O12 (30.09.2026): ein Tag hat 23, 24 oder 25 Stunden. Bis 1.1.17 wurde
+    // mit 86400 s gerechnet - am 25.10.2026 standen 25 Stundenpunkte in der
+    // Datei, gezeichnet wurden 24, und die Achse lag ab 03:00 eine Stunde daneben.
+    $day1 = (int) strtotime('+1 day', $day0);
+    $tlen = max(1, $day1 - $day0);
+    $svg = $eigenstaendig
+        ? '<?xml version="1.0" encoding="UTF-8"?>' . "\n" . '<svg viewBox="0 0 ' . $w . ' ' . $h . '" width="' . $w . '" height="' . $h . '" xmlns="http://www.w3.org/2000/svg"><rect x="0" y="0" width="' . $w . '" height="' . $h . '" fill="#fafafa"/>'
+        : '<svg viewBox="0 0 ' . $w . ' ' . $h . '" style="width:100%;max-width:' . $w . 'px;height:auto;background:#fafafa;border:1px solid #e0e0e0;border-radius:8px;" xmlns="http://www.w3.org/2000/svg">';
+    // Grenzen der Leistungsachse aus den Daten - eine feste Achse waere bei
+    // einem Venus E Mini (800 W) genauso falsch wie bei zwei Gen 3.0.
+    $pmax = 100;
+    foreach ($points as $pt) {
+        if (abs($pt[2]) > $pmax) { $pmax = abs($pt[2]); }
+    }
+    $pmax = ceil($pmax / 500) * 500;
+    foreach (array(0, 25, 50, 75, 100) as $pct) {
+        $y = $y0 + $ph - $ph * $pct / 100;
+        $svg .= '<line x1="' . $x0 . '" y1="' . $y . '" x2="' . ($x0 + $pw) . '" y2="' . $y . '" stroke="#e5e5e5" stroke-width="1"/>';
+        $svg .= '<text x="' . ($x0 - 5) . '" y="' . ($y + 3) . '" font-size="9" fill="#999" text-anchor="end">' . $pct . '</text>';
+    }
+    if ($mit_leistung) {
+        // rechte Achse: Leistung
+        foreach (array(-$pmax, 0, $pmax) as $wt) {
+            $y = $y0 + $ph / 2 - ($ph / 2) * $wt / $pmax;
+            $svg .= '<text x="' . ($x0 + $pw + 4) . '" y="' . ($y + 3) . '" font-size="9" fill="#c47b1a" text-anchor="start">' . (int) $wt . '</text>';
+        }
+    }
+    foreach (array(0, 6, 12, 18, 24) as $hh) {
+        $tsh = $hh === 24 ? $day1 : (int) strtotime(date('Y-m-d', $day0) . sprintf(' %02d:00', $hh));
+        $x = $x0 + $pw * ($tsh - $day0) / $tlen;
+        $svg .= '<line x1="' . $x . '" y1="' . $y0 . '" x2="' . $x . '" y2="' . ($y0 + $ph) . '" stroke="#eeeeee" stroke-width="1"/>';
+        $svg .= '<text x="' . $x . '" y="' . ($h - 6) . '" font-size="9" fill="#999" text-anchor="middle">' . $hh . ':00</text>';
+    }
+    $poly = array(); $polyp = array();
+    foreach ($points as $pt) {
+        $frac = ($pt[0] - $day0) / $tlen;
+        if ($frac < 0 || $frac > 1) {
+            continue;
+        }
+        $x = round($x0 + $pw * $frac, 1);
+        $poly[] = $x . ',' . round($y0 + $ph - $ph * max(0, min(100, $pt[1])) / 100, 1);
+        $polyp[] = $x . ',' . round($y0 + $ph / 2 - ($ph / 2) * max(-$pmax, min($pmax, $pt[2])) / $pmax, 1);
+    }
+    if (count($poly) >= 2) {
+        $first = explode(',', $poly[0]); $last = explode(',', $poly[count($poly) - 1]);
+        $svg .= '<polygon points="' . $first[0] . ',' . ($y0 + $ph) . ' ' . implode(' ', $poly) . ' ' . $last[0] . ',' . ($y0 + $ph) . '" fill="#6dac20" opacity="0.15"/>';
+        if ($mit_leistung) {
+            $svg .= '<polyline points="' . implode(' ', $polyp) . '" fill="none" stroke="#e0a020" stroke-width="1" opacity="0.85"/>';
+        }
+        $svg .= '<polyline points="' . implode(' ', $poly) . '" fill="none" stroke="#6dac20" stroke-width="2"/>';
+        $svg .= '<circle cx="' . $last[0] . '" cy="' . $last[1] . '" r="3" fill="#6dac20"/>';
+    } else {
+        $svg .= '<text x="' . ($x0 + $pw / 2) . '" y="' . ($y0 + $ph / 2) . '" font-size="11" fill="#aaa" text-anchor="middle">'
+              . marstek_e(marstek_t('EINST.KEINE_MESSPUNKTE')) . '</text>';
+    }
+    return $svg . '</svg>';
+}
+
+/**
+ * V4 JSON (E-E9): Punkte, Kennzahlen und Bilanz eines Tages fuer das Dashboard. Ohne Punkte ok 0 und leere Liste.
+ * bilanz: heute [geladen, abgegeben], monat [geladen, abgegeben, tage], monate [["JJJJ-MM", geladen, abgegeben], ...]
+ * hoechstens 12, neueste zuerst. Nur gelesen (Verlauf, Tagesbilanz); kein Schreibvorgang auf die Karte.
+ */
+function marstek_verlauf_json($dev, $tag)
+{
+    $punkte = array();
+    foreach (marstek_history_read($dev, $tag) as $pt) {
+        $punkte[] = array((int) $pt[0], (float) $pt[1], (int) round($pt[2]));
+    }
+    $kz = marstek_history_kennzahlen($dev, $tag);
+    $bil = marstek_bilanz_lesen($dev);
+    $heute = date('Y-m-d');
+    $monate = array();
+    foreach ($bil as $t => $w) {
+        $mo = substr((string) $t, 0, 7);
+        if (!preg_match('/^\d{4}-\d{2}$/', $mo)) { continue; }
+        if (!isset($monate[$mo])) { $monate[$mo] = array(0.0, 0.0); }
+        $monate[$mo][0] += $w[0];
+        $monate[$mo][1] += $w[1];
+    }
+    krsort($monate);
+    $mliste = array();
+    foreach (array_slice($monate, 0, 12, true) as $mo => $w) {
+        $mliste[] = array((string) $mo, round($w[0], 2), round($w[1], 2));
+    }
+    $bm = marstek_bilanz_summe($dev, 'monat');
+    return array(
+        'ok' => count($punkte) > 0 ? 1 : 0,
+        'dev' => (int) $dev,
+        'tag' => (string) $tag,
+        'punkte' => $punkte,
+        'kennzahlen' => array('socmin' => $kz['socmin'], 'socmax' => $kz['socmax'], 'hub' => $kz['hub'],
+                              'n' => (int) $kz['n']),
+        'bilanz' => array(
+            'heute' => isset($bil[$heute]) ? array(round($bil[$heute][0], 2), round($bil[$heute][1], 2)) : array(0, 0),
+            'monat' => array($bm['chg'], $bm['dis'], (int) $bm['tage']),
+            'monate' => $mliste,
+        ),
+    );
 }

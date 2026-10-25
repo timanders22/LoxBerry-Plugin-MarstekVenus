@@ -24,3 +24,8 @@
 # Kernbestandteil von PHP; ohne php-sockets fallen nur Rundruf und
 # Geraetesuche aus, und der Reiter Test sagt das ausdruecklich.
 php-sockets
+#
+# Gruppe 22 (1.1.27; M7/BB2): mosquitto_sub/_pub fuer die Befehlsbruecke (im LoxBerry-Grundabbild ohnehin
+# vorhanden; Hausform, Bauart Ferien und Feiertage 1.2.28). Die Haus-Themen haus/strompreis, haus/kalender und
+# haus/speicher brauchen es nicht - sie gehen ueber eine kurze PHP-Sitzung direkt an den Broker.
+mosquitto-clients

@@ -98,30 +98,36 @@ return array(
                 if (!$mv_sollwert_frei) {
                     return array(false, 'gesperrt');
                 }
+                // Gruppe 22 (1.1.27, M12/E1): der Merker VOR marstek_dev() - nur in den {nr}-Zweigen, nie
+                // "einmal oben" (cron.php und index.php laden diese Tabelle mit).
+                $GLOBALS['marstek_nur_lesen'] = true;
                 if (marstek_dev((int) $t['nr']) === null) {
                     return array(false, 'DEV_NICHT_EINGETRAGEN');
                 }
-                $GLOBALS['marstek_nur_lesen'] = true;
                 return marstek_befehl_quittung(marstek_befehl_ausfuehren('p', array('p' => (string) $w, 't' => '240',
                     'dev' => (int) $t['nr'], 'alle' => false, 'trocken' => false, 'von_da' => true, 'von' => 'mqtt'), 'mqtt'));
             }),
         '{nr}/modus_auto' => array('art' => 'puls', 'eingreifend' => true,
             'titel' => 'Marstek Handbetrieb: Modus Auto Geraet N (MQTT)', 'kachel' => 'BEFEHL.K_AUTO', 'quittung' => 'ausgefuehrt',
             'tun' => function ($w, $t) {
+                // Gruppe 22 (1.1.27, M12/E1): der Merker VOR marstek_dev() - nur in den {nr}-Zweigen, nie
+                // "einmal oben" (cron.php und index.php laden diese Tabelle mit).
+                $GLOBALS['marstek_nur_lesen'] = true;
                 if (marstek_dev((int) $t['nr']) === null) {
                     return array(false, 'DEV_NICHT_EINGETRAGEN');
                 }
-                $GLOBALS['marstek_nur_lesen'] = true;
                 return marstek_befehl_quittung(marstek_befehl_ausfuehren('mode', array('mode' => 'auto',
                     'dev' => (int) $t['nr'], 'alle' => false, 'trocken' => false, 'von_da' => true, 'von' => 'mqtt'), 'mqtt'));
             }),
         '{nr}/modus_ai' => array('art' => 'puls', 'eingreifend' => true,
             'titel' => 'Marstek Handbetrieb: Modus AI Geraet N (MQTT)', 'kachel' => 'BEFEHL.K_AI', 'quittung' => 'ausgefuehrt',
             'tun' => function ($w, $t) {
+                // Gruppe 22 (1.1.27, M12/E1): der Merker VOR marstek_dev() - nur in den {nr}-Zweigen, nie
+                // "einmal oben" (cron.php und index.php laden diese Tabelle mit).
+                $GLOBALS['marstek_nur_lesen'] = true;
                 if (marstek_dev((int) $t['nr']) === null) {
                     return array(false, 'DEV_NICHT_EINGETRAGEN');
                 }
-                $GLOBALS['marstek_nur_lesen'] = true;
                 return marstek_befehl_quittung(marstek_befehl_ausfuehren('mode', array('mode' => 'ai',
                     'dev' => (int) $t['nr'], 'alle' => false, 'trocken' => false, 'von_da' => true, 'von' => 'mqtt'), 'mqtt'));
             }),

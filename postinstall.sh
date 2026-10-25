@@ -46,13 +46,16 @@ fi
 # Altersvergleich). Festgehalten wird es hier, bevor der trap die Marke
 # entfernt. Bei einer Neuinstallation hat preinstall.sh die Reste einer
 # frueheren Installation schon nach .alt gelegt.
-# Die Marke faellt ueber einen trap, nicht erst am Dateiende: bis dahin
-# pausiert der Minutentakt (bin/cron.php), und das soll er nicht laenger als
-# noetig.
+# Gruppe 22 (1.1.27, M1): die Marke faellt NICHT mehr hier, sondern erst in
+# postupgrade.sh (trap, Bauform Abfahrts-Assistent 1.6.31). Bis 1.1.26 fiel sie
+# am Ende von postinstall - im Fenster bis postupgrade konnte ein Takt laufen,
+# und dessen Aenderungen setzte die zweite Kopie in postupgrade zurueck
+# (Pruefbericht Probe m1). Dieses Skript liest die Marke nur. Bei einer
+# Neuinstallation liegt keine; bricht postupgrade ab, gilt sie hoechstens eine
+# Stunde (marstek_takt_pausiert(), Zukunft zaehlt nicht - M10).
 MARKE="$BASE/data/plugins/$PFOLDER.upgrade_laeuft"
 UPGRADE=0
 [ -f "$MARKE" ] && UPGRADE=1
-trap 'rm -f "$MARKE" 2>/dev/null' EXIT
 SICHER="$BASE/data/plugins/$PFOLDER.upgrade_sicherung"
 
 mkdir -p "$BASE/config/plugins/$PFOLDER" 2>/dev/null

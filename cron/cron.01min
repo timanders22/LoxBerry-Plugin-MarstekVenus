@@ -1,6 +1,6 @@
 #!/bin/sh
 # Marstek Venus E - minutlicher Cron (SOC-Verlauf, kWh-Zaehler, Auto-Fallback,
-# Tagesbilanz, Herzschlag)
+# Tagesbilanz, Herzschlag, Haus-Themen)
 #
 # cron.php liegt seit 1.0.5 unter bin/ statt unter webfrontend/html/. Es wird
 # nur von hier aufgerufen, ueber die PHP-Kommandozeile; im HTML-Verzeichnis
@@ -9,13 +9,26 @@
 # GEAENDERT 24.08.2026: die FEHLERausgabe landet nicht mehr im Nichts.
 # Bis 1.0.16 stand hier ">/dev/null 2>&1". cron.php schreibt aber fuer genau
 # den Fall, dass es die Bibliothek nicht findet, eine sorgfaeltig formulierte
-# Meldung auf die Fehlerausgabe - und niemand konnte sie je lesen. Dieselbe
-# Fehlerklasse hat beim Abfahrts-Assistenten acht Fassungen lang dafuer
-# gesorgt, dass der Dienst kein einziges Mal lief.
+# Meldung auf die Fehlerausgabe - und niemand konnte sie je lesen.
 #
-# Die regulaere Ausgabe bleibt still, sonst schreibt der Cron jede Minute
-# eine Zeile in den Systemlogger.
+# Gruppe 22 (1.1.27, M6; Bauform Ferien und Feiertage 1.2.28 / Abfahrts-Assistent
+# 1.6.31): der Protokollordner wird angelegt (sonst scheitert schon die
+# Umlenkung), touch frischt die Aenderungszeit auf, ab 256 kB bleiben die
+# letzten 300 Zeilen. Scheitert touch - Protokollordner root-eigen, RAM-Scheibe
+# voll -, laeuft cron.php trotzdem, nur ohne cron.err. Bis 1.1.26 stand hier nur
+# "2>>" - fehlte der Ordner, lief cron.php gar nicht (Pruefbericht Probe m6),
+# und mit ihm standen Auto-Rueckfall, Nachholen und Lebenszeichen still.
 #
-# Den bin-Pfad des Plugins setzt der Installer in der Befehlszeile ein,
-# ebenso den Pfad des Protokollordners.
-php "REPLACELBPBINDIR/cron.php" >/dev/null 2>>"REPLACELBPLOGDIR/cron.err"
+# Die regulaere Ausgabe bleibt still. Den bin- und den log-Pfad des Plugins
+# setzt der Installer in den Zeilen ein.
+ERR="REPLACELBPLOGDIR/cron.err"
+mkdir -p "REPLACELBPLOGDIR" 2>/dev/null
+if touch "$ERR" 2>/dev/null; then
+    if [ "$(stat -c %s "$ERR" 2>/dev/null || echo 0)" -gt 262144 ]; then
+        tail -n 300 "$ERR" > "$ERR.neu" 2>/dev/null && mv -f "$ERR.neu" "$ERR"
+    fi
+    php "REPLACELBPBINDIR/cron.php" >/dev/null 2>>"$ERR"
+else
+    php "REPLACELBPBINDIR/cron.php" >/dev/null 2>&1
+fi
+exit 0

@@ -121,6 +121,23 @@ function mv_abweisen($code, $zeile, $grund) {
 /* Gruppe 1 (1.1.25): mv_von() und mv_wache() stehen jetzt in marstek_befehl_ausfuehren()
  * (marstek_lib.php) - dieselbe Pruefung fuer Endpunkt und Befehlsbruecke. */
 
+/* Gruppe 22 (1.1.27, Entwurf 3.2, E-E10): der LESEZWEIG (status, energy, summe, ranks, verlauf) antwortet nur mit
+ * endpunkt_ein = 1 (bestehende Anlagen nach dem Update; Neuinstallation 0). Das Tor steht vor Geraete- und
+ * Tokenpruefung. Nicht betroffen: ?p= und ?mode= (Sollwert und Modus mit Token - im Haus der Virtuelle Ausgang,
+ * die aWATTar-Kopplung), ?diag=1 (Token) und ?selftest=1 (Token; Reiter Test). Abweichung vom Entwurfscode:
+ * diag und selftest werden am WERT erkannt wie in M8 - ein ?selftest=0 fiele sonst am Tor vorbei in den
+ * tokenfreien Status. Kein Protokoll je Aufruf, kein Heilen (marstek_nur_lesen gilt). */
+if (!isset($_GET['p']) && !isset($_GET['mode']) && mv_par('diag') !== '1' && mv_par('selftest') !== '1') {
+    $mv_cfg_ep = marstek_config(false);
+    if ((int) (isset($mv_cfg_ep['endpunkt_ein']) ? $mv_cfg_ep['endpunkt_ein'] : 0) !== 1) {
+        $mv_satz = isset($_GET['ranks']) ? 'RANKS' : (isset($_GET['energy']) ? 'ENERGY'
+                 : (isset($_GET['summe']) ? 'SUMME' : (isset($_GET['verlauf']) ? 'VERLAUF' : 'MARSTEK')));
+        http_response_code(403);
+        echo $mv_satz . ";OK=0;ERR=ENDPUNKT_AUS\n";
+        exit;
+    }
+}
+
 // Auf den WERT sehen, nicht nur auf das Vorhandensein: ?debug=0 schaltete
 // die Rohdatenansicht bis 1.1.4 ebenfalls ein.
 $debug = (mv_par('debug') === '1');
@@ -161,7 +178,8 @@ $mv_trocken = (mv_par('dry') === '1');
  *
  * Antwort: SELFTEST;OK=1;TOKEN=OK bzw. HTTP 403 und SELFTEST;OK=0;ERR=TOKEN
  */
-if (isset($_GET['selftest'])) {
+// Gruppe 22 (1.1.27, M8): am WERT - ?selftest=0 ist kein Selbsttest.
+if (mv_par('selftest') === '1') {
     // marstek_config(false): der unangemeldete Endpunkt legt NICHTS an.
     // Bis 1.1.4 stellte ein einziger Aufruf ohne Token die Konfiguration aus
     // der Zweitschrift wieder her - gemessen, mit Gegenprobe.
@@ -184,8 +202,9 @@ if (isset($_GET['selftest'])) {
  * Rundrufe - deshalb steht es seit 1.1.0 mit in dieser Liste. debug steht
  * seit 1.1.5 dabei: es umgeht den Zwischenspeicher und erzwingt einen
  * frischen Abruf, gemessen 30 s je Aufruf gegen ein stummes Geraet. */
+// Gruppe 22 (1.1.27, M8): debug am Wert ($debug); diag bleibt am Vorhandensein (faellt geschlossen aus).
 if (isset($_GET['p']) || isset($_GET['mode']) || isset($_GET['diag'])
-        || isset($_GET['debug'])) {
+        || $debug) {
     $mv_cfg_tok = marstek_config(false);
     $mv_soll = isset($mv_cfg_tok['aktionstoken']) ? (string) $mv_cfg_tok['aktionstoken'] : '';
     $mv_ist = (string) mv_par('token');
@@ -215,7 +234,8 @@ if (isset($_GET['p']) || isset($_GET['mode'])) {
 }
 
 /* ---------- Diagnose (tokenpflichtig, siehe oben) ---------- */
-if (isset($_GET['diag'])) {
+// Gruppe 22 (1.1.27, M8): am Wert; ein ?diag=0 (mit Token) wird ein Lesesatz ohne Satz -> Status.
+if (mv_par('diag') === '1') {
     echo "MARSTEK-DIAGNOSE\n================\n";
     foreach (marstek_diag($dev) as $line) {
         echo $line . "\n";
@@ -233,6 +253,38 @@ if (isset($_GET['diag'])) {
     echo "   pruefen) - die lokale API lauscht ggf. nur auf einer davon.\n";
     echo "4. Fehlt die PHP-Erweiterung sockets, faellt NUR der Rundruf aus. Unicast, Modbus und MQTT\n";
     echo "   laufen weiter; die Geraetesuche im Reiter Test steht dann nicht zur Verfuegung.\n";
+    exit;
+}
+
+/* ---------- Gruppe 22 (1.1.27, V4/E-E9): Verlauf lesend fuer das Dashboard ----------
+ * ?verlauf=svg|json&dev=<n>[&tag=JJJJMMTT] - hinter endpunkt_ein (Tor oben), OHNE Token wie die uebrigen
+ * Lesesaetze: ein Token im Dashboard laege neben dem Schaltrecht fuer ?p=; die Kurve verraet nur Ladezustand und
+ * Leistung je 4 min (Klasse ?status). Nur gelesen (Verlauf, Tagesbilanz). dev wie oben (1..9, eingetragen), tag
+ * ^\d{8}$ und vorhanden (oder heute), sonst 400. SVG rein statisch (marstek_soc_svg(), kein Skript). */
+if (isset($_GET['verlauf'])) {
+    $mv_art = mv_par('verlauf');
+    if ($mv_art !== 'svg' && $mv_art !== 'json') {
+        mv_abweisen(400, "VERLAUF;OK=0;ERR=ART\n", 'abweisung');
+    }
+    if (marstek_dev($dev) === null) {
+        mv_abweisen(400, 'VERLAUF;OK=0;ERR=DEV_NICHT_EINGETRAGEN;DEV=' . $dev . "\n", 'abweisung');
+    }
+    $mv_tag = mv_par('tag');
+    if ($mv_tag === null || $mv_tag === '') {
+        $mv_tag = date('Ymd');
+    } elseif (!preg_match('/^\d{8}$/', $mv_tag)
+              || (!in_array($mv_tag, marstek_history_tage($dev), true) && $mv_tag !== date('Ymd'))) {
+        mv_abweisen(400, "VERLAUF;OK=0;ERR=TAG\n", 'abweisung');
+    }
+    header('Cache-Control: no-store');
+    header('X-Content-Type-Options: nosniff');
+    if ($mv_art === 'json') {
+        header('Content-Type: application/json; charset=utf-8');
+        echo json_encode(marstek_verlauf_json($dev, $mv_tag), JSON_UNESCAPED_SLASHES) . "\n";
+        exit;
+    }
+    header('Content-Type: image/svg+xml; charset=utf-8');
+    echo marstek_soc_svg(marstek_history_read($dev, $mv_tag), $mv_tag, true, true) . "\n";
     exit;
 }
 

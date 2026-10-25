@@ -73,7 +73,9 @@ function mv_endpunkt_probe($plugindir, $token)
         }
     }
     if ($c === null) {
-        $url = 'http://127.0.0.1/plugins/' . rawurlencode($plugindir) . '/marstek.php?selftest=1&token=' . rawurlencode($token);
+        // Gruppe 22 (1.1.27, M4): der Port des Webservers aus general.json (Webserver.Port, Vorgabe 80).
+        $url = 'http://127.0.0.1:' . marstek_webserver_port() . '/plugins/' . rawurlencode($plugindir)
+             . '/marstek.php?selftest=1&token=' . rawurlencode($token);
         $ctx = stream_context_create(array('http' => array(
             'timeout' => 3, 'ignore_errors' => true, 'user_agent' => 'LoxBerry Marstek Selbsttest')));
         $antwort = @file_get_contents($url, false, $ctx);
@@ -543,6 +545,69 @@ function mv_test_seite($ft, $plugindir, array $cfg, array $devices, $suchergebni
         !empty($r['ok']) ? sprintf(marstek_t('TEST.SPOT_OK'), $r['n'], $r['rank'], $r['curp'])
                          : marstek_ranks_grund($r['errc']));
 
+    // --- Gruppe 22 (1.1.27): Preisquelle (V1), Urlaubsregel (V2), haus/speicher (V5), HTTP-Lesezweig (E-E10).
+    //     Alles aus Dateien (haus_quellen.json, haus_anbieter.json, Konfiguration) - keine Sitzung im Webserver.
+    $mv_hc = marstek_config(false);
+    $mv_hq = marstek_haus_quellen();
+    list($mv_pq, $mv_pg) = marstek_preis_quelle($mv_hc, $mv_hq);
+    if ($mv_pq === 'haus') {
+        $mv_pw = $mv_hq['strompreis']['werte'];
+        $mv_pn = count(explode(';', (string) $mv_pw['vorschau']));
+        mv_pruefzeile(marstek_t('TEST.Z_PREISQUELLE'), true, sprintf(marstek_t('TEST.PREISQUELLE_HAUS'),
+            preg_replace('/[^a-z]/', '', (string) (isset($mv_pw['anbieter']) ? $mv_pw['anbieter'] : '')), (int) $mv_pw['raster'],
+            $mv_pn, date('d.m. H:i', (int) $mv_pw['ab']), marstek_haus_alter(time() - (int) $mv_hq['strompreis']['seit'])));
+    } else {
+        $mv_ps = is_file(marstek_tmpdir() . '/spot_schritt') ? (int) @file_get_contents(marstek_tmpdir() . '/spot_schritt') : 0;
+        $mv_pgt = marstek_t('TEST.PREISQUELLE_GRUND_' . strtoupper($mv_pg));
+        if ($mv_pg === 'schweigt') {
+            $mv_seit = isset($mv_hq['strompreis']['seit']) ? (int) $mv_hq['strompreis']['seit'] : 0;
+            $mv_pgt = $mv_seit > 0 ? sprintf(marstek_t('TEST.PREISQUELLE_SCHWEIGT_SEIT'), marstek_haus_alter(time() - $mv_seit))
+                                   : marstek_t('TEST.PREISQUELLE_SCHWEIGT_NIE');
+        }
+        mv_pruefzeile(marstek_t('TEST.Z_PREISQUELLE'), $mv_pg === 'aus' ? true : null,
+            sprintf(marstek_t('TEST.PREISQUELLE_EIGEN'), $mv_pgt)
+            . ($mv_ps > 0 && $mv_ps < 3600 ? ' ' . sprintf(marstek_t('TEST.PREISQUELLE_SCHRITT'), $mv_ps) : ''));
+    }
+    $mv_ul = marstek_urlaub_lage($mv_hc, $mv_hq);
+    if ($mv_ul === 'aus') {
+        mv_pruefzeile(marstek_t('TEST.Z_URLAUB'), true, marstek_t('TEST.URLAUB_AUS'));
+    } elseif ($mv_ul === 'urlaub') {
+        mv_pruefzeile(marstek_t('TEST.Z_URLAUB'), true, sprintf(marstek_t('TEST.URLAUB_JA'),
+            (int) $mv_hc['urlaub_soc_min'], (int) $mv_hc['urlaub_soc_max']));
+    } elseif ($mv_ul === 'kein_urlaub') {
+        mv_pruefzeile(marstek_t('TEST.Z_URLAUB'), true, marstek_t('TEST.URLAUB_NEIN'));
+    } else {
+        $mv_ks = isset($mv_hq['kalender']['seit']) ? (int) $mv_hq['kalender']['seit'] : 0;
+        mv_pruefzeile(marstek_t('TEST.Z_URLAUB'), null, $mv_ks > 0 && time() - $mv_ks <= MARSTEK_HAUS_FRIST
+            ? marstek_t('TEST.URLAUB_DATUM') : ($mv_ks > 0 ? sprintf(marstek_t('TEST.URLAUB_SCHWEIGT_SEIT'), marstek_haus_alter(time() - $mv_ks))
+            : marstek_t('TEST.URLAUB_SCHWEIGT_NIE')));
+    }
+    $mv_ub = is_file(marstek_tmpdir() . '/urlaub_letzte.json')
+        ? json_decode((string) @file_get_contents(marstek_tmpdir() . '/urlaub_letzte.json'), true) : null;
+    if ($mv_ul !== 'aus' && is_array($mv_ub) && isset($mv_ub['zeit'])) {
+        mv_pruefzeile(marstek_t('TEST.Z_URLAUB_LETZTE'), null, sprintf(marstek_t('TEST.URLAUB_LETZTE'),
+            date('d.m. H:i:s', (int) $mv_ub['zeit']), (int) $mv_ub['dev'], (int) $mv_ub['p'],
+            preg_replace('/[^A-Z_]/', '', (string) $mv_ub['grund'])));
+    }
+    if (empty($mv_hc['haus_speicher_ein'])) {
+        mv_pruefzeile(marstek_t('TEST.Z_HAUS_SPEICHER'), true, marstek_t('TEST.HAUS_SPEICHER_AUS'));
+    } elseif (empty($mv_hc['mqtt_enabled'])) {
+        mv_pruefzeile(marstek_t('TEST.Z_HAUS_SPEICHER'), false, marstek_t('TEST.HAUS_SPEICHER_OHNE_MQTT'));
+    } else {
+        $mv_hw = marstek_haus_speicher_werte();
+        $mv_ha = is_file(marstek_tmpdir() . '/haus_anbieter.json')
+            ? json_decode((string) @file_get_contents(marstek_tmpdir() . '/haus_anbieter.json'), true) : null;
+        $mv_hal = is_array($mv_ha) && isset($mv_ha['zeit'])
+            ? sprintf(marstek_t('TEST.HAUS_SPEICHER_SITZUNG'), date('H:i:s', (int) $mv_ha['zeit']),
+                      preg_replace('/[^a-z_]/', '', (string) $mv_ha['lage']))
+            : marstek_t('TEST.HAUS_SPEICHER_NOCH_NIE');
+        mv_pruefzeile(marstek_t('TEST.Z_HAUS_SPEICHER'), is_array($mv_ha) && isset($mv_ha['lage']) && $mv_ha['lage'] === 'ok',
+            sprintf(marstek_t('TEST.HAUS_SPEICHER_AN'), $mv_hw['soc'], $mv_hw['kwh'], $mv_hw['leistung'], $mv_hw['richtung'])
+            . ' ' . $mv_hal);
+    }
+    mv_pruefzeile(marstek_t('TEST.Z_LESEZWEIG'), true, marstek_t(!empty($mv_hc['endpunkt_ein'])
+        ? 'TEST.LESEZWEIG_AN' : 'TEST.LESEZWEIG_AUS'));
+
     // --- Schreiber-Wache (Energie-1 C1, Entscheidung Nr. 25). Die Einstellungen
     //     frisch aus der Datei: $cfg traegt nach einer Beanstandung die
     //     abgewiesene Eingabe (X-2). Ueber eine leere Menge wird nicht geurteilt.
@@ -651,21 +716,32 @@ function mv_test_seite($ft, $plugindir, array $cfg, array $devices, $suchergebni
 
 <h3 class="sm-h3"><?= marstek_e(marstek_t('TEST.H_TECHNIK')) ?></h3>
 <?php $mv_tok = rawurlencode((string) $cfg['aktionstoken']);
+// Gruppe 22 (1.1.27, E-E11): die Lesesaetze (status, energy, ranks, summe, verlauf) nur, wenn der Lesezweig an ist.
+$mv_ep = !empty($cfg['endpunkt_ein']);
+if (!$mv_ep) { ?>
+<div class="sm-hilfe"><?= marstek_e(marstek_t('TEST.LESEZWEIG_LINKS_AUS')) ?></div>
+<?php }
 $mv_testdevs = $devices ? $devices : array(1 => array('name' => 'Venus E', 'modbus' => 1));
 foreach ($mv_testdevs as $n => $d) {
     $q = $n > 1 ? '&amp;dev=' . (int) $n : ''; ?>
 <div class="sm-small" style="margin-top:10px;"><b><?= marstek_e($d['name']) ?></b><?= $n > 1 ? ' <span class="sm-mono">&amp;dev=' . (int) $n . '</span>' : '' ?></div>
 <div class="sm-knopfreihe">
+<?php if ($mv_ep) { ?>
 <a class="sm-btn sm-b-technik" href="/plugins/<?= marstek_e($plugindir) ?>/marstek.php?status&amp;debug=1<?= $q ?>&amp;token=<?= $mv_tok ?>" target="_blank"><?= marstek_e(marstek_t('TEST.K_STATUS')) ?></a>
-<?php if (!empty($d['modbus'])) { ?>
+<a class="sm-btn sm-b-technik" href="/plugins/<?= marstek_e($plugindir) ?>/marstek.php?verlauf=svg&amp;dev=<?= (int) $n ?>" target="_blank"><?= marstek_e(marstek_t('TEST.K_VERLAUF_SVG')) ?></a>
+<a class="sm-btn sm-b-technik" href="/plugins/<?= marstek_e($plugindir) ?>/marstek.php?verlauf=json&amp;dev=<?= (int) $n ?>" target="_blank"><?= marstek_e(marstek_t('TEST.K_VERLAUF_JSON')) ?></a>
+<?php } ?>
+<?php if ($mv_ep && !empty($d['modbus'])) { ?>
 <a class="sm-btn sm-b-technik" href="/plugins/<?= marstek_e($plugindir) ?>/marstek.php?energy&amp;debug=1<?= $q ?>&amp;token=<?= $mv_tok ?>" target="_blank"><?= marstek_e(marstek_t('TEST.K_ENERGY')) ?></a>
 <?php } ?>
 <a class="sm-btn sm-b-technik" href="/plugins/<?= marstek_e($plugindir) ?>/marstek.php?diag=1<?= $q ?>&amp;token=<?= $mv_tok ?>" target="_blank"><?= marstek_e(marstek_t('TEST.K_DIAG')) ?></a>
 </div>
 <?php } ?>
 <div class="sm-knopfreihe" style="margin-top:10px;">
+<?php if ($mv_ep) { ?>
 <a class="sm-btn sm-b-technik" href="/plugins/<?= marstek_e($plugindir) ?>/marstek.php?ranks&amp;debug=1&amp;token=<?= $mv_tok ?>" target="_blank"><?= marstek_e(marstek_t('TEST.K_RANKS')) ?></a>
-<?php if (count($devices) > 1) { ?>
+<?php } ?>
+<?php if ($mv_ep && count($devices) > 1) { ?>
 <a class="sm-btn sm-b-technik" href="/plugins/<?= marstek_e($plugindir) ?>/marstek.php?summe&amp;debug=1&amp;token=<?= $mv_tok ?>" target="_blank"><?= marstek_e(marstek_t('TEST.K_SUMME')) ?></a>
 <?php } ?>
 </div>
