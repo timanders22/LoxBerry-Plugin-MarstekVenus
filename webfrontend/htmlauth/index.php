@@ -464,6 +464,16 @@ if ($mv_post && isset($_POST['verlauf_csv'])) {
     exit;
 }
 
+/* ---------- Nachzug Anbieterregel (1.1.28, 29.10.2026): Knopf "Diese Installation soll Anbieter sein" ----------
+ * Eigenes Formular im Reiter MQTT, eigener Handler (Abschrift zd_haus_waehlen()/spot_haus_waehlen()): schreibt einmal
+ * haus/speicher/anbieter = marstekvenus; der bisherige Anbieter hoert selbst auf, wenn er die Regel kennt (Zendure
+ * SolarFlow ab 0.9.38) - sonst sagt die Meldung, wo der Haken auszuschalten ist. */
+if ($mv_post && isset($_POST['haus_anbieter_waehlen'])) {
+    list($mv_wm, $mv_wa) = marstek_haus_waehlen(marstek_config());
+    marstek_log('Oberflaeche: Knopf "Diese Installation soll Anbieter sein" (haus/speicher): ' . $mv_wa . '.');
+    mv_weiter('tab-mqtt', $mv_wa === 'ok' ? array('meldung' => $mv_wm) : array('warnungen' => array($mv_wm)));
+}
+
 /* ---------- MQTT speichern (eigener Reiter, Hausstandard) ----------
  *
  * M6 (30.09.2026): das Praefix wird mit DERSELBEN Pruefung wie die Sicherung
@@ -975,8 +985,16 @@ foreach ($mv_statuses as $mv_kopf_st) {
     <td><?= $mv_kopf_mess > 0
         ? marstek_e(date('d.m.Y H:i:s', $mv_kopf_mess) . ' (' . max(0, time() - $mv_kopf_mess) . ' s)')
         : marstek_e(marstek_t('EINST.NIE')) ?></td></tr>
+<?php /* Nachtwelle N4 (1.1.28): Zeile MQTT in der Hausform der Kopfkachel (Regeln/04 :798, Vorbild MGiSmart
+   1.1.28, Spotpreis aWATTar 1.2.40) - gross der Schalter DIESES Plugins, klein der Autostart des Gateways aus
+   marstek_mqtt_gateway_info() (null = general.json ohne Mqtt-Abschnitt: nicht feststellbar, nicht "aus"). */
+$mv_k_gw = marstek_mqtt_gateway_info(); ?>
 <tr><td>MQTT</td>
-    <td><?= marstek_e(!empty($mv_cfg['mqtt_enabled']) ? marstek_t('EINST.EIN') : marstek_t('EINST.AUS')) ?></td></tr>
+    <td><?= !empty($mv_cfg['mqtt_enabled']) ? '<span class="sm-ja">' . marstek_e(marstek_t('EINST.EIN')) . '</span>'
+                                             : marstek_e(marstek_t('EINST.AUS')) ?>
+    <div class="sm-hilfe" style="font-weight:400;"><?= marstek_e(sprintf(marstek_t('EINST.KACHEL_MQTT_HILFE'),
+        $mv_k_gw === null ? marstek_t('EINST.KOPF_NICHT_FESTSTELLBAR')
+        : marstek_t(!empty($mv_k_gw['autostart']) ? 'EINST.EIN' : 'EINST.AUS'))) ?></div></td></tr>
 </table>
 
 <?php if ($mv_statuses) { /* Gruppe 22 (1.1.27, N4/E-E19): Regeln/04 - keine Knopfreihe ohne Legende ueber sich. */ ?>
@@ -1329,6 +1347,19 @@ if (count($mv_devices) > 1 && $mv_ohne_kwh > 0) { ?>
 <?php } ?>
 <button data-role="none" class="sm-btn sm-b-aktion" type="submit" style="margin-top:18px;"><?= marstek_e(marstek_t('EINST.K_SPEICHERN')) ?></button>
 </form>
+<?php if (!empty($mv_cfg['haus_speicher_ein'])) {
+    /* Nachzug Anbieterregel (1.1.28): die Lage der Regel und der Knopf - eigenes Formular, eigener Handler. */
+    list($mv_hr_st, $mv_hr_txt) = marstek_haus_rolle_zeile(marstek_haus_regel_zustand($mv_cfg)); ?>
+<h2><?= marstek_e(marstek_t('HAUS.H_ANBIETER')) ?></h2>
+<div class="<?= $mv_hr_st === true ? 'sm-hilfe' : 'sm-warnung' ?>"><?= marstek_e($mv_hr_txt) ?></div>
+<form action="index.php" method="post">
+<input data-role="none" type="hidden" name="formtoken" value="<?= $mv_ft ?>">
+<input data-role="none" type="hidden" name="haus_anbieter_waehlen" value="1">
+<input data-role="none" type="hidden" name="activetab" value="tab-mqtt">
+<div class="sm-hilfe"><?= marstek_e(marstek_t('HAUS.H_WAEHLEN')) ?></div>
+<button data-role="none" class="sm-btn sm-b-aktion" type="submit" style="margin-top:12px;"><?= marstek_e(marstek_t('HAUS.K_WAEHLEN')) ?></button>
+</form>
+<?php } ?>
 
 <h2><?= marstek_e(marstek_t('BEFEHL.H_BEFEHLE')) ?></h2>
 <form action="index.php" method="post">

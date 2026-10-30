@@ -13,6 +13,35 @@ den Auto-Modus des Geräts zurück.
 
 Kompatibel mit LoxBerry 3.x und **LoxBerry 4** (reines PHP, läuft mit PHP 7.4 und 8.x).
 
+## Neu in 1.1.28
+
+Pflegefassung der Nachtwelle (29.10.2026) mit dem Nachzug der Anbieterregel für `haus/speicher`:
+
+* **Befehlsbrücke 1.0.2** (gemeinsame Stammfassung). Die Vorlage der MQTT-Befehle (`VQ_marstek_mqtt.xml`) kommt jetzt wie die Ausfuhren der Loxone
+  Config mit Windows-Zeilenenden (CRLF). Titel, Adresse und Befehle sind unverändert, ein Neuimport ist
+  nicht nötig.
+* **Reiter Test, neue Zeile „Gateway V2: sind alle Datenpunkte der Hakenliste angehakt?“** Unter MQTT-Gateway V2
+  liest das Plugin `config/system/subscriptions.json` und nennt jeden Datenpunkt der Hakenliste (Reiter MQTT),
+  der dort nicht angehakt ist, und jeden, bei dem „Noncached“ nicht stimmt (`rang_ok`, `energie_ok`, `ok` und `status/befehle` brauchen es, die übrigen nicht).
+  Unter Gateway V1 und bei ausgeschalteter MQTT-Veröffentlichung heißt die Zeile „trifft nicht zu“.
+* **Kopf, Zeile MQTT:** Groß steht weiter der Schalter dieses Plugins, klein darunter jetzt der Autostart des
+  MQTT-Gateways (ein/aus, „nicht feststellbar“ ohne MQTT-Abschnitt in der LoxBerry-Konfiguration) – wie in
+  den übrigen Plugins.
+* **Anbieterregel für `haus/speicher`** (gemeinsames Stück `haus_anbieter.php`, wie Zendure SolarFlow 0.9.38):
+  Nur EIN Speicher-Plugin im Haus sendet den Speicherstand an andere Plugins. Neu ist
+  `haus/speicher/anbieter` = `marstekvenus` (retained, immer, auch ohne Werte). Ist schon ein anderes Plugin
+  Anbieter, wartet diese Installation; der neue Knopf „Diese Installation soll Anbieter sein“ (Reiter MQTT)
+  übernimmt. Wird Marstek so abgelöst, hört es selbst auf und räumt die Themen des anderen beim Ausschalten oder
+  Deinstallieren **nicht** mehr ab (bis 1.1.27 geschah das auch dann, wenn inzwischen ein anderer sendete).
+  Wer bisher schon Anbieter war, bleibt es. Beim Abräumen sind es jetzt fünf Themen (mit `anbieter`).
+* **Behoben: Antworten des Speichers wurden verworfen** (Fehler bis 1.1.27). Das Plugin fragte mit einer
+  Kennung (`id`) bis 999 999; der Venus E mit Firmware 148 gibt sie nur als 16-Bit-Zahl zurück (id mod 65536).
+  Das Plugin hielt die Antwort deshalb für fremd und verwarf rund 93 % – `OK` sprang zwischen 1 und 0, der
+  Healthcheck meldete „Kein Speicher antwortet“, und ein Sollwert galt als gescheitert und wurde nachgeholt.
+  Jetzt liegt die `id` im Bereich 1–65535, und eine Antwort mit der vollen `id` oder der `id` mod 65536 gilt als
+  passend; jede andere bleibt fremd. Verworfene Antworten zählt das Plugin getrennt: Healthcheck, Reiter Test
+  und Protokoll sagen dann „Antwort verworfen (id passt nicht)“ statt „Kein Speicher antwortet“.
+
 ## Neu in 1.1.27
 
 Gruppe 22 (Hausherr 25.10.2026): Korrekturen aus der Prüfung der Fremdbefunde, Hausform und drei Haus-Themen

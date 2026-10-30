@@ -477,6 +477,10 @@ function mv_test_seite($ft, $plugindir, array $cfg, array $devices, $suchergebni
     mv_pruefzeile(marstek_t('TEST.Z_BRUECKE_PRUEFEN'), $mv_bp_ok, $mv_bp_text);
     list($mv_vm_ok, $mv_vm_text) = mv_namenstabelle_pruefen();
     mv_pruefzeile(marstek_t('TEST.Z_NAMEN'), $mv_vm_ok, $mv_vm_text);
+    // Nachtwelle N4 (1.1.28): stehen unter MQTT-Gateway V2 die Haken der Hakenliste mit dem richtigen Noncached?
+    // Liest config/system/subscriptions.json; unter V1 und bei ausgeschaltetem MQTT ein Hinweis.
+    list($mv_v2s, $mv_v2t) = marstek_v2_haken_lage($cfg);
+    mv_pruefzeile(marstek_t('TEST.Z_V2_HAKEN'), $mv_v2s === 2 ? null : ($mv_v2s === 1), $mv_v2t);
 
     // --- Vorlagen
     list($v_gut, $v_ges, $v_fehler) = mv_vorlagen_pruefen();
@@ -601,9 +605,18 @@ function mv_test_seite($ft, $plugindir, array $cfg, array $devices, $suchergebni
             ? sprintf(marstek_t('TEST.HAUS_SPEICHER_SITZUNG'), date('H:i:s', (int) $mv_ha['zeit']),
                       preg_replace('/[^a-z_]/', '', (string) $mv_ha['lage']))
             : marstek_t('TEST.HAUS_SPEICHER_NOCH_NIE');
-        mv_pruefzeile(marstek_t('TEST.Z_HAUS_SPEICHER'), is_array($mv_ha) && isset($mv_ha['lage']) && $mv_ha['lage'] === 'ok',
-            sprintf(marstek_t('TEST.HAUS_SPEICHER_AN'), $mv_hw['soc'], $mv_hw['kwh'], $mv_hw['leistung'], $mv_hw['richtung'])
-            . ' ' . $mv_hal);
+        /* Nachzug Anbieterregel (1.1.28): erst die Rolle (marstek_haus_rolle_zeile()); wartet die Installation,
+         * steht nur die Lage der Regel da - ein bewusstes Warten ist ein Punkt, kein Kreuz. */
+        $mv_hz = marstek_haus_regel_zustand($mv_hc);
+        list($mv_hzs, $mv_hzt) = marstek_haus_rolle_zeile($mv_hz);
+        if ($mv_hz['rolle'] !== 'anbieter') {
+            mv_pruefzeile(marstek_t('TEST.Z_HAUS_SPEICHER'), $mv_hzs, $mv_hzt);
+        } else {
+            mv_pruefzeile(marstek_t('TEST.Z_HAUS_SPEICHER'),
+                $mv_hzs === true && is_array($mv_ha) && isset($mv_ha['lage']) && $mv_ha['lage'] === 'ok',
+                $mv_hzt . ' ' . sprintf(marstek_t('TEST.HAUS_SPEICHER_AN'), $mv_hw['soc'], $mv_hw['kwh'], $mv_hw['leistung'],
+                $mv_hw['richtung']) . ' ' . $mv_hal);
+        }
     }
     mv_pruefzeile(marstek_t('TEST.Z_LESEZWEIG'), true, marstek_t(!empty($mv_hc['endpunkt_ein'])
         ? 'TEST.LESEZWEIG_AN' : 'TEST.LESEZWEIG_AUS'));

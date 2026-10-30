@@ -23,6 +23,7 @@ error_reporting(E_ALL & ~E_DEPRECATED & ~E_NOTICE);
 date_default_timezone_set('Europe/Berlin');
 
 $GLOBALS['marstek_last_ms'] = 0; // Antwortzeit des letzten RPC in Millisekunden
+$GLOBALS['marstek_last_verworfen'] = 0; // Antworten des letzten RPC, deren id nicht passte (Diagnose 30.10.2026)
 
 /* Ab wann gilt der Minutentakt als stehengeblieben?
  *
@@ -32,6 +33,11 @@ $GLOBALS['marstek_last_ms'] = 0; // Antwortzeit des letzten RPC in Millisekunden
  * Selbstpruefung "Takt steht", waehrend der Healthcheck gruen blieb.
  * 180 s ist der Wert, mit dem auch der empfohlene Baustein #40 arbeitet.
  */
+/* Nachzug Anbieterregel (1.1.28, 29.10.2026): das gemeinsame Stueck der Anbieterregel fuer haus/speicher
+ * (Regeln/07 Nr. 15), byteweise gleich mit der Stammfassung Werkzeuge/gemeinsam/haus_anbieter.php (wie Zendure
+ * SolarFlow 0.9.38) - nur reine Funktionen hanb_*(), kein Netz, keine Datei; antwortet bei direktem Aufruf mit 403. */
+require_once __DIR__ . '/haus_anbieter.php';
+
 if (!defined('MARSTEK_TAKT_SCHRANKE')) {
     define('MARSTEK_TAKT_SCHRANKE', 180);
 }
@@ -1813,6 +1819,45 @@ function marstek_rundruf_adressen() {
 
 /* ---------------- Lokale UDP-JSON-API ---------------- */
 
+/**
+ * Die id einer eigenen Anfrage: 1..65535 (16 Bit).
+ *
+ * BERICHTIGT 30.10.2026 (Diagnose stiller Geraete, am Geraet gemessen): bis
+ * 1.1.27 stand in marstek_rpc() rand(1, 999999). Der Venus E 3.0 mit
+ * Firmware 148 gibt die id nur als 16-Bit-Zahl zurueck (id mod 65536 -
+ * passiver Mitschnitt: 926497 -> 8993, 717211 -> 61851). Die Antwort galt
+ * damit als fremd und wurde verworfen; nur wer zufaellig unter 65536 zog
+ * (6,5 %), bekam sie. Folgen: OK sprang zwischen 1 und 0, der Healthcheck
+ * meldete "Kein Speicher antwortet", und ein Sollwert (ES.SetMode) galt als
+ * gescheitert und wurde nachgeholt.
+ */
+function marstek_rpc_neue_id() {
+    return rand(1, 65535);
+}
+
+/**
+ * Passt die id einer Antwort zur eigenen Anfrage? Ja, wenn sie GLEICH der
+ * eigenen ist oder gleich der eigenen mod 65536 (FW 148 kappt auf 16 Bit, s.
+ * marstek_rpc_neue_id()). Mit einer id unter 65536 ist das dieselbe Zahl;
+ * die zweite Form haelt den Vergleich robust, falls eine Firmware die volle
+ * id spiegelt oder die Erzeugung einmal wieder groessere ids zieht.
+ * Jede andere id bleibt fremd (Schutzregel C1, 30.09.2026). Zahl oder
+ * Ziffernfolge; Wahrheitswert, Kommazahl, Liste: fremd.
+ */
+function marstek_rpc_id_passt($antwort, $eigen) {
+    if (is_float($antwort) && is_finite($antwort) && floor($antwort) === $antwort && abs($antwort) < 2147483648) {
+        $antwort = (int) $antwort;
+    }
+    if (is_string($antwort) && preg_match('/\A[0-9]{1,10}\z/', $antwort)) {
+        $antwort = (int) $antwort;
+    }
+    if (!is_int($antwort)) {
+        return false;
+    }
+    $eigen = (int) $eigen;
+    return $antwort === $eigen || $antwort === ($eigen % 65536);
+}
+
 function marstek_rpc($method, $params = null, $dev = 1, $tries = 2, $tmo = 3, $vorher = null) {
     $d = marstek_dev($dev);
     if ($d === null) {
@@ -1821,7 +1866,8 @@ function marstek_rpc($method, $params = null, $dev = 1, $tries = 2, $tmo = 3, $v
     if ($params === null) {
         $params = array('id' => 0);
     }
-    $id = rand(1, 999999);
+    $id = marstek_rpc_neue_id();   // 16 Bit - BERICHTIGT 30.10.2026, bis 1.1.27 rand(1, 999999)
+    $GLOBALS['marstek_last_verworfen'] = 0;
     /*
      * FIRMWARE-EIGENHEIT (live verifiziert an Venus E 3.0, FW 148):
      * Manche Firmwaren antworten NUR auf Pakete an die BROADCAST-Adresse
@@ -1838,6 +1884,7 @@ function marstek_rpc($method, $params = null, $dev = 1, $tries = 2, $tmo = 3, $v
      *    Rundruf als Rueckfall.
      * 2. Eine Antwort zaehlt nur, wenn sie von der eingetragenen Adresse
      *    kommt - nie allein ueber die gespiegelte id. Traegt sie eine id, muss
+     *    (seit 30.10.2026: marstek_rpc_id_passt(), id oder id mod 65536)
      *    es die eigene sein.
      * 3. Der Weg wird NICHT gemerkt: jeder Abruf versucht zuerst Unicast. Bis
      *    1.1.17 stand nach einem einzigen Rundruf-Erfolg dauerhaft
@@ -1890,8 +1937,11 @@ function marstek_rpc($method, $params = null, $dev = 1, $tries = 2, $tmo = 3, $v
                 if (!is_array($j) || $ant['von'] !== $d['ip']) {
                     continue;   // nur die eingetragene Adresse zaehlt (C1)
                 }
-                if (isset($j['id']) && (string) $j['id'] !== (string) $id) {
-                    continue;   // eine fremde Antwort desselben Geraets
+                if (isset($j['id']) && !marstek_rpc_id_passt($j['id'], $id)) {
+                    // eine fremde Antwort desselben Geraets. Gezaehlt (30.10.2026), damit der
+                    // Befund "Antwort verworfen" statt "keine Antwort" sagen kann.
+                    $GLOBALS['marstek_last_verworfen']++;
+                    continue;
                 }
                 if (!isset($j['result']) && !isset($j['error'])) {
                     continue;
@@ -1959,7 +2009,9 @@ function marstek_status($dev = 1, $force = false) {
     }
     $es = marstek_rpc('ES.GetStatus', null, $dev);
     $ms = (int) $GLOBALS['marstek_last_ms'];
+    $mv_verw = (int) $GLOBALS['marstek_last_verworfen'];
     $bat = marstek_rpc('Bat.GetStatus', null, $dev);
+    $mv_verw += (int) $GLOBALS['marstek_last_verworfen'];
     $es_ok = is_array($es) && !isset($es['_error']);
     $bat_ok = is_array($bat) && !isset($bat['_error']);
     $ok = ($es_ok || $bat_ok) ? 1 : 0;
@@ -1980,6 +2032,10 @@ function marstek_status($dev = 1, $force = false) {
         $out = $alt !== null ? $alt : array('model' => '', 'mess' => 0);
         $out['ok'] = 0;
         $out['ts'] = time();
+        // 30.10.2026: verworfene Antworten (id passt nicht) getrennt vom Schweigen - daran
+        // unterscheidet marstek_befund() "Antwort verworfen" von "keine Antwort".
+        $out['verworfen'] = $mv_verw;
+        if ($mv_verw > 0) { $out['verworfen_ts'] = time(); }
         if (!isset($out['mess'])) { $out['mess'] = 0; }
         // In diesem Durchgang wurde nichts gemessen. 'feldzeit' bleibt
         // stehen - daran sieht die Schutzpruefung, wie alt jedes Feld ist.
@@ -1988,7 +2044,7 @@ function marstek_status($dev = 1, $force = false) {
         marstek_write_json($cache, $out);
         marstek_ausfall_zaehlen($dev, true);
         marstek_log_if_changed('status_dev' . $dev,
-            'OK=0 (keine Antwort) - letzte Messung '
+            'OK=0 (' . ($mv_verw > 0 ? 'Antwort verworfen: id passt nicht, ' . $mv_verw . 'x' : 'keine Antwort') . ') - letzte Messung '
             . ($out['mess'] ? date('d.m. H:i:s', $out['mess']) : 'nie'), 'ok=0');
         // M1/M3: im Fehlerzweig geht nur das Signal hinaus (ok, ts, alter,
         // zaehler; mit frueherem Stand dazu sollalter und fbrest), nie ein
@@ -2088,6 +2144,12 @@ function marstek_status($dev = 1, $force = false) {
         ? $alt['feldzeit'] : array();
     foreach ($out['gemessen'] as $feld) { $fz[$feld] = time(); }
     $out['feldzeit'] = $fz;
+    $out['verworfen'] = $mv_verw;   // 30.10.2026, s. Fehlerzweig
+    if ($mv_verw > 0) {
+        $out['verworfen_ts'] = time();
+    } elseif (is_array($alt) && !empty($alt['verworfen_ts'])) {
+        $out['verworfen_ts'] = (int) $alt['verworfen_ts'];
+    }
     marstek_write_json($cache, $out);
     marstek_ausfall_zaehlen($dev, false);
     marstek_log_if_changed('status_dev' . $dev,
@@ -2261,20 +2323,34 @@ function marstek_befund() {
      * letzte ECHTE Messung ist, nicht ob der letzte Versuch geglueckt ist. */
     $stumm = array();
     $wackelig = array();
+    $verworfen = array();   // 30.10.2026: antwortet, aber die id passte nicht
     foreach ($devs as $n => $d) {
         $c = marstek_tmpdir() . '/status_dev' . $n . '.json';
         $st = is_file($c) ? json_decode((string) @file_get_contents($c), true) : null;
         $mess = (is_array($st) && isset($st['mess'])) ? (int) $st['mess'] : 0;
         $alter = $mess > 0 ? time() - $mess : -1;
-        if ($alter < 0 || $alter > MARSTEK_MESS_SCHRANKE) {
+        // Seit der letzten echten Messung kamen Antworten, deren id nicht passte (und das ist hoechstens
+        // MARSTEK_MESS_SCHRANKE her): dann ist es kein Schweigen - "Lokale API? Standby?" waere eine falsche Spur.
+        $mv_vts = (is_array($st) && isset($st['verworfen_ts'])) ? (int) $st['verworfen_ts'] : 0;
+        $mv_verw = ($mv_vts > $mess && time() - $mv_vts <= MARSTEK_MESS_SCHRANKE);
+        if (($alter < 0 || $alter > MARSTEK_MESS_SCHRANKE) && $mv_verw) {
+            $verworfen[] = $d['name'] . ($alter < 0 ? '' : ' (' . sprintf(marstek_t('BEFUND.SEIT_S'), $alter) . ')');
+        } elseif ($alter < 0 || $alter > MARSTEK_MESS_SCHRANKE) {
             $stumm[] = $d['name'] . ($alter < 0 ? '' : ' (' . sprintf(marstek_t('BEFUND.SEIT_S'), $alter) . ')');
         } elseif (!is_array($st) || empty($st['ok'])) {
             $wackelig[] = $d['name'] . ' (' . sprintf(marstek_t('BEFUND.LETZTE_VOR_S'), $alter) . ')';
         }
     }
-    if ($stumm) {
-        return array('schwere' => 3, 'text' => sprintf(marstek_t(count($stumm) === count($devs)
-            ? 'BEFUND.KEINER_ANTWORTET' : 'BEFUND.NICHT_ERREICHBAR'), implode(', ', $stumm)));
+    if ($stumm || $verworfen) {
+        $mv_teile = array();
+        if ($stumm) {
+            $mv_teile[] = sprintf(marstek_t(count($stumm) === count($devs)
+                ? 'BEFUND.KEINER_ANTWORTET' : 'BEFUND.NICHT_ERREICHBAR'), implode(', ', $stumm));
+        }
+        if ($verworfen) {
+            $mv_teile[] = sprintf(marstek_t('BEFUND.VERWORFEN'), implode(', ', $verworfen));
+        }
+        return array('schwere' => 3, 'text' => implode(' ', $mv_teile));
     }
     if ($wackelig) {
         return array('schwere' => 5, 'text' => sprintf(marstek_t('BEFUND.WACKELIG'), count($devs),
@@ -4006,6 +4082,9 @@ function marstek_diag($dev = 1) {
         $out[] = 'UDP-Unicast ES.GetStatus: ANTWORT OK nach ' . (int) $GLOBALS['marstek_last_ms'] . ' ms -> lokale API funktioniert';
     } elseif (is_array($r)) {
         $out[] = 'UDP-Unicast ES.GetStatus: FEHLER: ' . $r['_error'];
+    } elseif ((int) $GLOBALS['marstek_last_verworfen'] > 0) {
+        $out[] = 'UDP-Unicast ES.GetStatus an ' . $d['ip'] . ':' . $d['port'] . ': ANTWORT VERWORFEN (id passt nicht, '
+               . (int) $GLOBALS['marstek_last_verworfen'] . 'x) -> das Geraet antwortet, die Kennung gehoert zu keiner eigenen Anfrage';
     } else {
         $out[] = 'UDP-Unicast ES.GetStatus an ' . $d['ip'] . ':' . $d['port'] . ': KEINE ANTWORT (5 s Timeout)';
     }
@@ -5581,6 +5660,134 @@ function marstek_mqtt_hakenliste()
     return $aus;
 }
 
+/* ---------------- Gateway V2: Selbsttest der Haken (Nachtwelle N4, 1.1.28) ---------------- */
+
+/**
+ * Die Abos des MQTT-Gateways V2 aus config/system/subscriptions.json (Subscriptions[].Id je Thema, Noncached):
+ * array(Thema => Noncached ja/nein), null = nicht lesbar. Form wie MGiSmart 1.1.28 mg_v2_abos() und Govee 0.9.30
+ * gv_mqtt_v2_haken_lage(); die Datei liest marstek_v2_haken_lage().
+ */
+function marstek_v2_abos($daten)
+{
+    if (!is_array($daten)) {
+        return null;
+    }
+    $liste = array();
+    foreach (array('Subscriptions', 'subscriptions') as $s) {
+        if (isset($daten[$s]) && is_array($daten[$s])) {
+            $liste = $daten[$s];
+            break;
+        }
+    }
+    $abo = array();
+    foreach ($liste as $e) {
+        if (!is_array($e)) {
+            continue;
+        }
+        $id = '';
+        foreach (array('Id', 'id', 'Topic', 'topic') as $k) {
+            if (isset($e[$k]) && is_string($e[$k])) {
+                $id = $e[$k];
+                break;
+            }
+        }
+        if ($id === '') {
+            continue;
+        }
+        $nc = false;
+        foreach (array('Noncached', 'noncached') as $k) {
+            if (isset($e[$k])) {
+                $nc = ($e[$k] === true || in_array(strtolower(trim((string) $e[$k])), array('1', 'true', 'yes', 'on'), true));
+            }
+        }
+        $abo[$id] = $nc;
+    }
+    return $abo;
+}
+
+/**
+ * Soll gegen Ist, rein (liest nichts): array(1|0, fehlt[], noncached_fehlt[], noncached_zu_viel[], angehakt, soll).
+ * Soll je Zeile array('thema' => volles Thema, 'name' => Gateway-Name, 'noncached' => bool). Noncached wird in
+ * beide Richtungen verglichen: fehlt es, reicht das Gateway einen gleichen Wert nicht weiter; steht es zu viel, geht
+ * jeder Wert erneut an den Miniserver.
+ */
+function marstek_v2_haken_abgleich(array $soll, array $abo)
+{
+    $fehlt = array();
+    $nc_fehlt = array();
+    $nc_zuviel = array();
+    $da = 0;
+    foreach ($soll as $e) {
+        if (!array_key_exists($e['thema'], $abo)) {
+            $fehlt[] = $e['name'];
+            continue;
+        }
+        $da++;
+        if ($e['noncached'] && !$abo[$e['thema']]) {
+            $nc_fehlt[] = $e['name'];
+        } elseif (!$e['noncached'] && $abo[$e['thema']]) {
+            $nc_zuviel[] = $e['name'];
+        }
+    }
+    return array(($fehlt || $nc_fehlt || $nc_zuviel) ? 0 : 1, $fehlt, $nc_fehlt, $nc_zuviel, $da, count($soll));
+}
+
+/**
+ * Das Soll fuer den Selbsttest: marstek_mqtt_hakenliste() - DIESELBE Funktion wie die Hakenliste im Reiter MQTT
+ * (Regeln/07; bei einem Speicher 38 Haken, alle Zahlen). Noncached: rang_ok, energie_ok, ok, status/befehle.
+ */
+function marstek_v2_haken_soll()
+{
+    $aus = array();
+    foreach (marstek_mqtt_hakenliste() as $z) {
+        $aus[] = array('thema' => $z['thema'], 'name' => $z['name'], 'noncached' => (bool) $z['noncached']);
+    }
+    return $aus;
+}
+
+/**
+ * Selbsttestzeile "Gateway V2: sind alle Datenpunkte der Hakenliste angehakt?" (Nachtwelle N4, Vorschrift Punkt 4):
+ * array(1|0|2, Text ohne Markup). 1 alle Haken da und Noncached wie in der Hakenliste; 0 es fehlt ein Haken oder
+ * Noncached stimmt nicht (mit Namen); 2 trifft nicht zu (MQTT dieses Plugins aus, Gateway V1) oder nicht
+ * feststellbar (Fassung 0, keine Wurzel, subscriptions.json nicht lesbar). Liest nur.
+ */
+function marstek_v2_haken_lage(array $cfg)
+{
+    if (empty($cfg['mqtt_enabled'])) {
+        return array(2, marstek_t('TEST.V2_AUS'));
+    }
+    $g = marstek_mqtt_gateway_info();
+    $fassung = $g === null ? 0 : (int) $g['fassung'];
+    $home = (string) marstek_paths()['lbhome'];
+    if ($fassung === 0 || $home === '') {
+        return array(2, marstek_t('TEST.V2_UNKLAR'));
+    }
+    if ($fassung < 2) {
+        return array(2, marstek_t('TEST.V2_V1'));
+    }
+    $abo = marstek_v2_abos(@json_decode((string) @file_get_contents($home . '/config/system/subscriptions.json'), true));
+    if ($abo === null) {
+        return array(2, marstek_t('TEST.V2_UNKLAR'));
+    }
+    $liste = marstek_v2_haken_soll();
+    if (!$liste) {
+        return array(2, marstek_t('TEST.V2_LEER'));   // leere Hakenliste: kein Urteil (Hausform wie N7)
+    }
+    list($ok, $fehlt, $nc_fehlt, $nc_zuviel, $da, $soll) = marstek_v2_haken_abgleich($liste, $abo);
+    $txt = sprintf(marstek_t('TEST.V2_ZAHL'), $da, $soll);
+    if ($fehlt) {
+        $txt .= ' ' . sprintf(marstek_t('TEST.V2_FEHLT'), implode(', ', array_slice($fehlt, 0, 12))
+            . (count($fehlt) > 12 ? ' …' : ''));
+    }
+    if ($nc_fehlt) {
+        $txt .= ' ' . sprintf(marstek_t('TEST.V2_NC_FEHLT'), implode(', ', $nc_fehlt));
+    }
+    if ($nc_zuviel) {
+        $txt .= ' ' . sprintf(marstek_t('TEST.V2_NC_ZUVIEL'), implode(', ', $nc_zuviel));
+    }
+    return array($ok, $txt);
+}
+
 /**
  * Das Lebenszeichen nach Regeln/07 Abschnitt 3 (Entwurf mv 2.2 a, E9): status/zaehler (Herzschlag nach dem
  * Durchgang, 0..999), status/ts (Ende des Durchgangs) und status/ok (1 = in diesem Durchgang hat jeder eingetragene
@@ -7119,6 +7326,25 @@ function marstek_selbsttest()
     $pruefe('Geraetetest: Leser wartet auch auf frisch gesehene Zaehler', marstek_haus_wartethemen($mv_g22th, array('kalender' => array('seit' => $mv_g22m - 30, 'beginn' => $mv_g22m - 900)), $mv_g22m, true), array('haus/kalender/zaehler'));
     $pruefe('Geraetetest: Leser haelt die Bremse', marstek_haus_wartethemen($mv_g22th, array('kalender' => array('seit' => 0, 'beginn' => $mv_g22m - 700)), $mv_g22m, true), array());
 
+    // Diagnose 30.10.2026: FW 148 gibt die id als id mod 65536 zurueck. Durchgehen muss die gekappte und die
+    // volle id, abgewiesen werden jede andere - und die erzeugte id liegt im 16-Bit-Bereich.
+    $pruefe('RPC-id: FW 148 gibt id mod 65536 zurueck', marstek_rpc_id_passt(8993, 926497), true);
+    $pruefe('RPC-id: volle id', marstek_rpc_id_passt(926497, 926497), true);
+    $pruefe('RPC-id: volle id als Ziffernfolge', marstek_rpc_id_passt('926497', 926497), true);
+    $pruefe('RPC-id: 16-Bit-id unveraendert', marstek_rpc_id_passt(61851, 61851), true);
+    $pruefe('RPC-id: fremde id abgewiesen', marstek_rpc_id_passt(8994, 926497), false);
+    $pruefe('RPC-id: andere id mit gleichem Rest abgewiesen', marstek_rpc_id_passt(926497 + 65536, 926497), false);
+    $pruefe('RPC-id: 0 abgewiesen', marstek_rpc_id_passt(0, 5), false);
+    $pruefe('RPC-id: Wahrheitswert abgewiesen', marstek_rpc_id_passt(true, 1), false);
+    $pruefe('RPC-id: Kommazahl abgewiesen', marstek_rpc_id_passt(8993.5, 926497), false);
+    $pruefe('RPC-id: Liste abgewiesen', marstek_rpc_id_passt(array(8993), 926497), false);
+    $mv_idmin = 65536; $mv_idmax = 0;
+    for ($mv_i = 0; $mv_i < 2000; $mv_i++) {
+        $mv_x = marstek_rpc_neue_id();
+        $mv_idmin = min($mv_idmin, $mv_x); $mv_idmax = max($mv_idmax, $mv_x);
+    }
+    $pruefe('RPC-id: 2000 neue ids im Bereich 1..65535', ($mv_idmin >= 1 && $mv_idmax <= 65535), true);
+
     printf("Rechenkern Marstek Venus E: %d Faelle geprueft, %d Fehlschlaege.\n",
            $faelle, count($fehl));
     foreach ($fehl as $z) {
@@ -7551,7 +7777,11 @@ function marstek_haus_abnehmer(array $cfg, $jetzt = null, $fenster = null)
 {
     $themen = marstek_haus_lesethemen($cfg);
     $datei = marstek_haus_quellen_datei();
-    if (!$themen) {
+    /* Nachzug Anbieterregel (1.1.28): die Quelle 'speicher' (haus/speicher/anbieter + zaehler) fuer die Regel liest
+     * derselbe Leser in DERSELBEN Sitzung mit - nur mit "Speicherstand an andere Plugins geben" und MQTT. Sie wird mit
+     * hanb_merken() abgelegt (Felder gelesen/geprueft der Regel), nicht mit marstek_haus_merken(). */
+    $sp = marstek_haus_speicher_lesen_ein($cfg);
+    if (!$themen && !$sp) {
         if (is_file($datei)) { @unlink($datei); }
         return null;
     }
@@ -7564,8 +7794,19 @@ function marstek_haus_abnehmer(array $cfg, $jetzt = null, $fenster = null)
         foreach ($liste as $t) { $lesen[] = $t; }
     }
     $warten = marstek_haus_wartethemen($themen, $c, $jetzt, $fenster !== null);
+    if ($sp) {
+        $lesen[] = 'haus/speicher/anbieter';
+        $lesen[] = 'haus/speicher/zaehler';
+        if (hanb_warten(marstek_haus_speicher_quelle($c), $jetzt)) { $warten[] = 'haus/speicher/zaehler'; }
+    }
     $erg = marstek_haus_sitzung(array(), $lesen, $warten, $fenster !== null ? (float) $fenster : min(32, 55 - $sek));
     $c = marstek_haus_merken($c, $erg, $themen, time());
+    if ($sp) {
+        $c['speicher'] = hanb_merken(marstek_haus_speicher_quelle($c), $erg, 'haus/speicher/zaehler',
+            array('anbieter' => 'haus/speicher/anbieter'), time(), in_array('haus/speicher/zaehler', $warten, true));
+    } else {
+        unset($c['speicher']);
+    }
     $c['sitzung'] = array('zeit' => time(), 'lage' => $erg['lage'], 'gewartet' => count($warten));
     foreach (array_keys(marstek_haus_lesethemen(array('haus_preis_ein' => 1, 'haus_urlaub_ein' => 1))) as $q) {
         if (!isset($themen[$q])) { unset($c[$q]); }
@@ -7603,7 +7844,8 @@ function marstek_haus_leser_sperre()
  */
 function marstek_haus_abnehmer_starten(array $cfg, $skript)
 {
-    if (!marstek_haus_lesethemen($cfg)) {
+    // Nachzug Anbieterregel (1.1.28): der Leser startet auch fuer die Quelle 'speicher' allein.
+    if (!marstek_haus_lesethemen($cfg) && !marstek_haus_speicher_lesen_ein($cfg)) {
         $datei = marstek_haus_quellen_datei();
         if (is_file($datei)) { @unlink($datei); }
         return 'aus';
@@ -7940,14 +8182,25 @@ function marstek_haus_speicher_werte($s = null)
                  'richtung' => $b > 20 ? 1 : ($b < -20 ? 2 : 0));
 }
 
-/** Die vier retained Themen von haus/speicher (zaehler ist nicht retained). */
+/** Die vier WERT-Themen von haus/speicher (zaehler ist nicht retained). Seit dem Nachzug Anbieterregel (1.1.28) kommt
+ *  haus/speicher/anbieter dazu - die Abraeumliste ist marstek_haus_speicher_retained(); diese Liste bleibt die der
+ *  Werte (Selbsttest "V5: Themen = Werte"). */
 function marstek_haus_speicher_themen()
 {
     return array('haus/speicher/soc', 'haus/speicher/kwh', 'haus/speicher/leistung', 'haus/speicher/richtung');
 }
 
+/** Die fuenf retained Themen von haus/speicher (Nachzug Anbieterregel 1.1.28: die vier Werte + anbieter) - EINE Liste
+ *  fuer Abraeumen und Deinstallation. */
+function marstek_haus_speicher_retained()
+{
+    return array_merge(marstek_haus_speicher_themen(), array('haus/speicher/anbieter'));
+}
+
 /**
- * Anbieterteil im Minutenlauf (NACH marstek_herzschlag(); Entwurf 2.6): nur mit haus_speicher_ein UND mqtt_enabled.
+ * Anbieterteil im Minutenlauf (NACH marstek_herzschlag(); Entwurf 2.6): nur mit haus_speicher_ein UND mqtt_enabled,
+ * seit dem Nachzug Anbieterregel (1.1.28) nur als Rolle "anbieter" (hanb_lage(), Name marstekvenus in
+ * haus/speicher/anbieter).
  * Nur geaenderte Themen (Merker haus_letzte.json, geschrieben NUR nach einer Sitzung mit Lage ok), zaehler (=
  * status/zaehler) in jeder Sitzung, Vollversand ohne Merker (Neustart, Update), nach dem Einschalten (Speichern
  * loescht den Merker) und alle 30 Minuten. Nach der ersten erfolgreichen Sitzung liegt die Merkdatei
@@ -7955,13 +8208,44 @@ function marstek_haus_speicher_themen()
  */
 function marstek_haus_anbieter(array $cfg, $zaehler)
 {
-    if (empty($cfg['haus_speicher_ein']) || empty($cfg['mqtt_enabled'])) { return null; }
+    if (empty($cfg['haus_speicher_ein']) || empty($cfg['mqtt_enabled'])) {
+        /* Nachzug Anbieterregel (1.1.28): die Rolle wird "aus" (ein "abgeloest" bleibt stehen - es verbietet das
+         * Abraeumen weiter). Abgeraeumt wird hier wie bisher nicht (das tun Speichern, Zurueckspielen, Deinstallation). */
+        $z_aus = marstek_haus_regel_zustand($cfg);
+        if ($z_aus['rolle'] !== 'aus') {
+            marstek_haus_regel_setzen(array('rolle' => 'aus', 'grund' => $z_aus['grund'] === 'abgeloest' ? 'abgeloest' : '',
+                                            'fremd' => '', 'seit' => time()));
+        }
+        return null;
+    }
     $tmp = marstek_tmpdir();
+    /* Nachzug Anbieterregel (1.1.28): die Regel (hanb_lage()) entscheidet nach dem Stand des Lesers (Quelle
+     * 'speicher' in haus_quellen.json), ob diese Installation sendet. Wartet sie, geht NICHTS hinaus (auch kein
+     * Zaehler); wurde sie abgeloest, faellt die Merkdatei "war Anbieter" - die Themen gehoeren dem neuen, beim
+     * Ausschalten und bei der Deinstallation bleibt alles stehen. */
+    $jetzt = time();
+    $z = hanb_lage(MARSTEK_HAUS_NAME, marstek_haus_speicher_quelle(), marstek_haus_regel_zustand($cfg), $jetzt);
+    marstek_haus_regel_setzen($z);
+    if ($z['rolle'] !== 'anbieter') {
+        @unlink($tmp . '/haus_letzte.json');
+        $p = marstek_paths();
+        if ($z['grund'] === 'abgeloest' && $p['haus_frueher'] !== '' && is_file($p['haus_frueher'])) {
+            @unlink($p['haus_frueher']);
+            marstek_log('Haus-Thema haus/speicher: abgeloest durch ' . $z['fremd']
+                . ' - Merkdatei "war Anbieter" entfernt; abgeraeumt wird nichts.');
+        }
+        marstek_write_atomic($tmp . '/haus_anbieter.json', json_encode(array('zeit' => $jetzt, 'lage' => 'wartet',
+            'werte' => array(), 'gesendet' => 0)), 0600);
+        return null;
+    }
     $w = marstek_haus_speicher_werte();
     $fmt = array('soc' => sprintf('%.1F', $w['soc']), 'kwh' => sprintf('%.2F', $w['kwh']),
                  'leistung' => (string) (int) $w['leistung'], 'richtung' => (string) (int) $w['richtung']);
     if ((float) $w['soc'] < 0) { $fmt['soc'] = '-1'; }
     if ((float) $w['kwh'] < 0) { $fmt['kwh'] = '-1'; }
+    // Nachzug Anbieterregel (1.1.28): der eigene Name, retained, IMMER (auch ohne Werte) - im Vollversand und nach
+    // einem Wechsel (der Merker haus_letzte.json kennt ihn bis 1.1.27 nicht -> der erste Lauf sendet ihn).
+    $fmt['anbieter'] = MARSTEK_HAUS_NAME;
     $mf = $tmp . '/haus_letzte.json';
     $m = is_file($mf) ? json_decode((string) @file_get_contents($mf), true) : null;
     $voll = !is_array($m) || !isset($m['voll']) || (int) $m['voll'] > time() || time() - (int) $m['voll'] >= 1800;
@@ -7991,21 +8275,34 @@ function marstek_haus_anbieter(array $cfg, $zaehler)
 
 /**
  * haus/speicher abraeumen (Haken aus, MQTT aus, Zurueckspielen mit Haken oder MQTT aus, Deinstallation; Abschrift
- * fer_haus_leeren() Ferien 1.2.28): leere retained Nutzlast fuer die vier retained Themen ueber die Haus-Sitzung,
- * danach Ruecklesen der genauen Namen (marstek_mqtt_behalten_liste()), hoechstens $runden Runden. NUR, wenn diese
- * Installation Anbieter ist (haus_speicher_ein = 1) oder war (Merkdatei) - eine Zweitinstallation raeumt fremde
- * Themen nicht ab (Nr. 15). Rueckgabe: nie_anbieter | nichts | geleert | rest | nicht_nachgelesen | kein_broker.
- * Nach nichts/geleert faellt die Merkdatei.
+ * fer_haus_leeren() Ferien 1.2.28): leere retained Nutzlast fuer die fuenf retained Themen (seit 1.1.28 mit
+ * anbieter, marstek_haus_speicher_retained()) ueber die Haus-Sitzung, danach Ruecklesen der genauen Namen
+ * (marstek_mqtt_behalten_liste()), hoechstens $runden Runden. NUR, wenn diese Installation abraeumen darf
+ * (hanb_darf_abraeumen(): Anbieter, oder Rolle aus mit Merkdatei - nie abgeloest, nie wartend). $cfg ist der Stand
+ * VOR einem Wechsel (fuer den Bestand ohne Zustandsdatei). Rueckgabe: nie_anbieter | nichts | geleert | rest |
+ * nicht_nachgelesen | kein_broker. Nach nichts/geleert faellt die Merkdatei; die Rolle ist danach "aus".
  */
 function marstek_haus_speicher_abraeumen($cfg = null, $runden = 3)
 {
     if ($cfg === null) { $cfg = marstek_config(false); }
     $p = marstek_paths();
     $frueher = $p['haus_frueher'] !== '' && is_file($p['haus_frueher']);
-    if (empty($cfg['haus_speicher_ein']) && !$frueher) {
+    /* Nachzug Anbieterregel (1.1.28) - KERNBEFUND: bis 1.1.27 genuegte "Haken an ODER Merkdatei"; eine Installation,
+     * die laengst nicht mehr sendete (ein anderer Speicher war Anbieter), raeumte beim Ausschalten oder Deinstallieren
+     * dessen Themen ab. Jetzt entscheidet hanb_darf_abraeumen() nach der Rolle. */
+    $z = marstek_haus_regel_zustand($cfg);
+    if (!hanb_darf_abraeumen($z, $frueher)) {
+        if ($z['rolle'] !== 'aus') {
+            marstek_haus_regel_setzen(array('rolle' => 'aus', 'grund' => $z['grund'] === 'abgeloest' ? 'abgeloest' : '',
+                                            'fremd' => '', 'seit' => time()));
+        }
+        if ($frueher && $z['grund'] === 'abgeloest') { @unlink($p['haus_frueher']); }
+        marstek_log('Haus-Thema haus/speicher abraeumen: nicht Anbieter (' . $z['rolle']
+            . ($z['grund'] !== '' ? '/' . $z['grund'] : '') . ') - die Themen bleiben stehen.');
         return 'nie_anbieter';
     }
-    $offen = marstek_haus_speicher_themen();
+    marstek_haus_regel_setzen(array('rolle' => 'aus', 'grund' => '', 'fremd' => '', 'seit' => time()));
+    $offen = marstek_haus_speicher_retained();
     $f = marstek_mqtt_behalten_liste($offen);
     $zustand = 'kein_broker';
     if ($f['lage'] === 'ok' && !$f['belegt']) {
@@ -8047,15 +8344,140 @@ function marstek_haus_deinstallation()
 {
     $z = marstek_haus_speicher_abraeumen(marstek_config(false));
     if ($z === 'nie_anbieter') {
-        echo '<INFO> haus/speicher: diese Installation war nie Anbieter - fremde Themen bleiben unberuehrt.' . "\n";
+        echo '<INFO> haus/speicher: diese Installation ist nicht Anbieter (oder wurde abgeloest) - fremde Themen bleiben unberuehrt.' . "\n";
     } elseif ($z === 'geleert' || $z === 'nichts') {
-        echo '<OK> haus/speicher: ' . ($z === 'geleert' ? 'vier Themen geleert' : 'nichts zurueckbehalten')
+        echo '<OK> haus/speicher: ' . ($z === 'geleert' ? 'fuenf Themen geleert' : 'nichts zurueckbehalten')
            . ' (Ruecklesen leer).' . "\n";
     } else {
         echo '<WARNING> haus/speicher: ' . $z . ' - was stehen bleibt, laesst sich mit mosquitto_pub -r -n -t '
            . '<thema> von Hand loeschen.' . "\n";
     }
     return $z;
+}
+
+/* ---------- Nachzug Anbieterregel (1.1.28, 29.10.2026; Regeln/07 Nr. 15, Stueck haus_anbieter.php) ----------
+ * Muster: zd_haus_*() aus Zendure SolarFlow 0.9.38, spot_haus_*() aus Spotpreis aWATTar 1.2.40. Nur EIN Speicher-Plugin
+ * im Haus sendet haus/speicher: diese Installation beginnt von selbst nur, wenn niemand Anspruch erhebt und kein
+ * Zaehler lebt; der Knopf "Diese Installation soll Anbieter sein" uebernimmt; abgeloest hoert sie selbst auf und
+ * raeumt nichts ab. Bis 1.1.27 sendete Marstek ohne Namen (Zendure 0.9.38 sah es als "bestand" und wich). */
+
+/** Der eigene Name in haus/speicher/anbieter (der Ordnername der Linie; Zendure nennt sich 'zendure'). */
+if (!defined('MARSTEK_HAUS_NAME')) {
+    define('MARSTEK_HAUS_NAME', 'marstekvenus');
+}
+
+/**
+ * Der Zustand der Anbieterregel: data/plugins/<ordner>/haus_anbieterregel.json. ACHTUNG Namensnaehe: die Datei
+ * tmp/haus_anbieter.json (/tmp/marstekvenus) ist seit 1.1.27 die SITZUNGSABLAGE des Anbieterteils (Reiter Test) und
+ * bleibt es - deshalb heisst der Zustand anders. Der Datenordner faellt bei jedem Update (purge_installation):
+ * preupgrade.sh sichert die Datei in die Update-Sicherung, postupgrade.sh holt sie zurueck. '' ohne Wurzel.
+ */
+function marstek_haus_regel_datei()
+{
+    $p = marstek_paths();
+    return $p['data_alt'] !== '' ? $p['data_alt'] . '/haus_anbieterregel.json' : '';
+}
+
+/**
+ * Der Zustand (hanb_zustand()). Bestand: ohne Zustandsdatei, mit der Merkdatei "war Anbieter" (.haus_frueher) und mit
+ * Haken und MQTT an (in $cfg, sonst der gespeicherten Konfiguration) bleibt eine Installation, die bis 1.1.27 Anbieter
+ * war, Anbieter (Rolle anbieter, Grund eigen) - sie sendete bis dahin OHNE Namen, und ihr eigener lebender Zaehler
+ * saehe sonst aus wie ein fremder Bestandsanbieter ("bestand"): sie hoerte auf. Der erste Lauf schreibt die Datei.
+ */
+function marstek_haus_regel_zustand($cfg = null)
+{
+    $f = marstek_haus_regel_datei();
+    $d = ($f !== '' && is_file($f)) ? json_decode((string) @file_get_contents($f), true) : null;
+    if (!is_array($d)) {
+        if (!is_array($cfg)) { $cfg = marstek_config(false); }
+        $p = marstek_paths();
+        if ($p['haus_frueher'] !== '' && is_file($p['haus_frueher'])
+                && !empty($cfg['haus_speicher_ein']) && !empty($cfg['mqtt_enabled'])) {
+            return hanb_zustand(array('rolle' => 'anbieter', 'grund' => 'eigen'));
+        }
+        $d = array();
+    }
+    return hanb_zustand($d);
+}
+
+/** Den Zustand ablegen (0600); ein Wechsel von Rolle, Grund oder fremdem Namen geht einmal ins Protokoll. */
+function marstek_haus_regel_setzen(array $z)
+{
+    $f = marstek_haus_regel_datei();
+    if ($f === '') { return false; }
+    $alt = marstek_haus_regel_zustand();
+    $z = hanb_zustand($z);
+    if ($alt['rolle'] !== $z['rolle'] || $alt['grund'] !== $z['grund'] || $alt['fremd'] !== $z['fremd']) {
+        marstek_log('Haus-Thema haus/speicher: Rolle ' . $z['rolle'] . ($z['grund'] !== '' ? ' (' . $z['grund'] . ')' : '')
+            . ($z['fremd'] !== '' ? ', Anbieter ' . $z['fremd'] : '') . '.');
+    }
+    if (!is_dir(dirname($f))) { @mkdir(dirname($f), 0775, true); }
+    return marstek_write_atomic($f, json_encode($z), 0600);
+}
+
+/** Liest der Leser die Quelle 'speicher' (haus/speicher/anbieter + zaehler)? Nur mit dem Haken "Speicherstand an andere
+ *  Plugins geben" UND MQTT - fuer haus/speicher ist Marstek nur Anbieter, kein Abnehmer. */
+function marstek_haus_speicher_lesen_ein(array $cfg)
+{
+    return !empty($cfg['haus_speicher_ein']) && !empty($cfg['mqtt_enabled']);
+}
+
+/** Der Eintrag der Quelle 'speicher' aus dem Stand des Lesers (hanb_merken()) oder array(). */
+function marstek_haus_speicher_quelle($c = null)
+{
+    if (!is_array($c)) { $c = marstek_haus_quellen(); }
+    return (isset($c['speicher']) && is_array($c['speicher'])) ? $c['speicher'] : array();
+}
+
+/**
+ * Der Knopf "Diese Installation soll Anbieter sein": schreibt EINMAL haus/speicher/anbieter = marstekvenus (retained)
+ * und setzt die Rolle anbieter/gewaehlt; der naechste Minutenlauf sendet den vollen Satz. Der bisherige Anbieter hoert
+ * mit seinem naechsten Lauf selbst auf, wenn er die Regel kennt (Zendure SolarFlow ab 0.9.38) - eine zweite
+ * Marstek-Installation bis 1.1.27 kennt sie nicht: dort den Haken ausschalten. Rueckgabe array(Meldung, ok|warn).
+ */
+function marstek_haus_waehlen(array $cfg)
+{
+    if (!marstek_haus_speicher_lesen_ein($cfg)) {
+        return array(marstek_t('HAUS.W_ERST_HAKEN'), 'warn');
+    }
+    list($z, $hinweis) = hanb_waehlen(MARSTEK_HAUS_NAME, marstek_haus_speicher_quelle(), time());
+    $r = marstek_haus_sitzung(array('haus/speicher/anbieter' => array(MARSTEK_HAUS_NAME, true)), array(), array(), 0);
+    if ($r['lage'] !== 'ok' || $r['gesendet'] < 1) {
+        return array(sprintf(marstek_t('HAUS.W_BROKER'), $r['lage']), 'warn');
+    }
+    marstek_haus_regel_setzen($z);
+    @unlink(marstek_tmpdir() . '/haus_letzte.json');
+    $m = sprintf(marstek_t('HAUS.W_OK'), $z['fremd'] !== '' ? $z['fremd'] : '-');
+    if ($hinweis === 'fremd_lebt') { return array($m . ' ' . sprintf(marstek_t('HAUS.W_FREMD_LEBT'), $z['fremd']), 'warn'); }
+    if ($hinweis === 'bestand') { return array($m . ' ' . marstek_t('HAUS.W_BESTAND'), 'warn'); }
+    return array($m, 'ok');
+}
+
+/**
+ * Die Lage der Regel als Satz mit Ampel in der Form von mv_pruefzeile(): array(true|false|null, Text). Gruen nur als
+ * Anbieter mit Grund frei/eigen/gewaehlt; wartet die Installation bewusst, ist das ein Punkt (null), kein Kreuz - rot
+ * nur "fremd_schweigt" und "veraltet" (dort muss jemand hinsehen). Die Schluessel stehen woertlich (Pruefwerkzeuge).
+ */
+function marstek_haus_rolle_zeile(array $z)
+{
+    $z = hanb_zustand($z);
+    $f = $z['fremd'] !== '' ? $z['fremd'] : '-';
+    $g = $z['grund'] !== '' ? $z['grund'] : ($z['rolle'] === 'anbieter' ? 'frei' : 'pruefe');
+    if ($g === 'fremd_lebt') {
+        $t = sprintf(marstek_t('HAUS.A_FREMD_LEBT'), $f);
+    } elseif ($g === 'fremd_schweigt') {
+        $t = sprintf(marstek_t('HAUS.A_FREMD_SCHWEIGT'), $f);
+    } elseif ($g === 'abgeloest') {
+        $t = sprintf(marstek_t('HAUS.A_ABGELOEST'), $f);
+    } else {
+        $k = array('frei' => 'HAUS.A_FREI', 'eigen' => 'HAUS.A_EIGEN', 'gewaehlt' => 'HAUS.A_GEWAEHLT',
+                   'pruefe' => 'HAUS.A_PRUEFE', 'bestand' => 'HAUS.A_BESTAND', 'veraltet' => 'HAUS.A_VERALTET');
+        $t = marstek_t(isset($k[$g]) ? $k[$g] : 'HAUS.A_PRUEFE');
+    }
+    if ($z['rolle'] === 'anbieter') {
+        return array(hanb_ampel($z) === 1, $t);
+    }
+    return array(in_array($g, array('fremd_schweigt', 'veraltet'), true) ? false : null, $t);
 }
 
 /** Ein Alter fuer die Zeilen des Reiters Test. */
@@ -8100,7 +8522,9 @@ function marstek_nach_konfigwechsel(array $alt, array $neu, $bruecke_immer = fal
     $h_alt = !empty($alt['haus_speicher_ein']) && $alt_mq;
     $h_neu = !empty($neu['haus_speicher_ein']) && $neu_mq;
     if ($h_alt && !$h_neu) {
-        $texte[] = marstek_haus_abraeumen_text(marstek_haus_speicher_abraeumen(array('haus_speicher_ein' => 1)));
+        // Nachzug Anbieterregel (1.1.28): der Stand VOR dem Wechsel - abgeraeumt wird nur, wenn diese Installation
+        // abraeumen darf (hanb_darf_abraeumen() in marstek_haus_speicher_abraeumen()).
+        $texte[] = marstek_haus_abraeumen_text(marstek_haus_speicher_abraeumen($alt));
     } elseif (!$h_alt && $h_neu) {
         @unlink(marstek_tmpdir() . '/haus_letzte.json');
     }

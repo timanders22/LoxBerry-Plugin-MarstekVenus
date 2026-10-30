@@ -230,6 +230,19 @@ if [ -f "$SICHER/marstek.json.kaputt" ]; then
     fi
 fi
 
+# Nachzug Anbieterregel (1.1.28, 29.10.2026): den Zustand der Anbieterregel (haus/speicher) aus der Update-Sicherung
+# zurueckholen - nur, wenn im neuen Datenordner noch keiner liegt. Der Minutentakt ruht bis zum Ende dieses Skripts
+# (Marke oben), es schreibt also niemand dazwischen.
+MV_HREGEL="$BASE/data/plugins/$PFOLDER/haus_anbieterregel.json"
+if [ -f "$SICHER/haus_anbieterregel.json" ] && [ ! -e "$MV_HREGEL" ]; then
+    mkdir -p "$BASE/data/plugins/$PFOLDER" 2>/dev/null
+    if cp -p "$SICHER/haus_anbieterregel.json" "$MV_HREGEL" 2>/dev/null && chmod 600 "$MV_HREGEL" 2>/dev/null; then
+        echo "<OK> Zustand der Anbieterregel (haus/speicher) aus der Update-Sicherung zurueckgeholt."
+    else
+        echo "<WARNING> Der Zustand der Anbieterregel (haus/speicher) liess sich nicht zurueckholen - die Rolle beginnt neu."
+    fi
+fi
+
 # Der Nachbar hat seinen Zweck erfuellt. Was neben dem Ordner liegt,
 # raeumt niemand sonst weg - und er traegt die Zugangsdaten mit.
 #

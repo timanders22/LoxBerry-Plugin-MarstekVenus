@@ -176,6 +176,14 @@ fi
 if [ -f "$BASE/log/plugins/$PFOLDER/marstek.log" ]; then
     cp -p "$BASE/log/plugins/$PFOLDER/marstek.log" "$NEU/marstek.log" 2>/dev/null
 fi
+# Nachzug Anbieterregel (1.1.28, 29.10.2026): der Zustand der Anbieterregel fuer haus/speicher liegt IM Datenordner
+# (data/plugins/<ordner>/haus_anbieterregel.json - nicht zu verwechseln mit /tmp/marstekvenus/haus_anbieter.json, der
+# Sitzungsablage), und den leert der Installer beim Update. Ohne Sicherung begaenne die Rolle neu: ein gewaehlter
+# Anbieter vergaesse seine Wahl, ein abgeloester seinen Grund. postupgrade.sh holt sie zurueck.
+if [ -f "$BASE/data/plugins/$PFOLDER/haus_anbieterregel.json" ]; then
+    cp -p "$BASE/data/plugins/$PFOLDER/haus_anbieterregel.json" "$NEU/haus_anbieterregel.json" 2>/dev/null
+    chmod 600 "$NEU/haus_anbieterregel.json" 2>/dev/null
+fi
 if mv -f "$NEU" "$SICHER" 2>/dev/null; then
     :
 else
