@@ -13,6 +13,10 @@ den Auto-Modus des Geräts zurück.
 
 Kompatibel mit LoxBerry 3.x und **LoxBerry 4** (reines PHP, läuft mit PHP 7.4 und 8.x).
 
+## Neu in 1.1.29
+
+Bilder der Einbindung erneuert: Das Bild der Seite „Marstek Venus E Steuerung“ zeigt die neu angeordnete Seite. Sonst keine Änderung gegen 1.1.28.
+
 ## Neu in 1.1.28
 
 Pflegefassung der Nachtwelle (29.10.2026) mit dem Nachzug der Anbieterregel für `haus/speicher`:
