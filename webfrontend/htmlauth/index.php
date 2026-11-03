@@ -329,9 +329,10 @@ if ($mv_post && isset($_POST['clearlog'])) {
 
 /* ---------- Neues Aktionstoken erzeugen ---------- */
 if ($mv_post && isset($_POST['token_neu'])) {
-    $cfg = marstek_config();
-    $cfg['aktionstoken'] = marstek_token_erzeugen();
-    if (marstek_cfg_schreiben($cfg)) {
+    /* bis 1.1.29 hiess dieses Feld $cfg: das LoxBerry-SDK ueberschreibt ein globales $cfg beim ersten Lesen von general.json (Ausfall MGiSmart 01.11.2026). */
+    $mv_lauf_cfg = marstek_config();
+    $mv_lauf_cfg['aktionstoken'] = marstek_token_erzeugen();
+    if (marstek_cfg_schreiben($mv_lauf_cfg)) {
         marstek_log('Neues Aktionstoken erzeugt (Oberflaeche).');
         mv_weiter('tab-loxone', array('meldung' => marstek_t('MELD.TOKEN_NEU')));
     }
@@ -354,10 +355,10 @@ if ($mv_post && isset($_POST['uebernehmen']) && is_string($_POST['uebernehmen'])
     if (!marstek_ip_gueltig($ip)) {
         mv_weiter('tab-test', array('fehler' => sprintf(marstek_t('MELD.IP_UNGUELTIG_SUCHE'), $ip)));
     }
-    $cfg = marstek_config();
+    $mv_lauf_cfg = marstek_config();
     // C13: die vergebenen Nummern bleiben; ein Eintrag ohne Nummer bekommt
     // jetzt die, unter der er bisher lief - die neue Zeile verschiebt nichts.
-    $mv_nrn = marstek_geraete_nummern(isset($cfg['devices']) ? $cfg['devices'] : array());
+    $mv_nrn = marstek_geraete_nummern(isset($mv_lauf_cfg['devices']) ? $mv_lauf_cfg['devices'] : array());
     foreach ($mv_nrn as $d) {
         if (isset($d['ip']) && is_scalar($d['ip']) && trim((string) $d['ip']) === $ip) {
             mv_weiter('tab-test', array('meldung' => sprintf(marstek_t('MELD.SCHON_EINGETRAGEN'), $ip)));
@@ -380,8 +381,8 @@ if ($mv_post && isset($_POST['uebernehmen']) && is_string($_POST['uebernehmen'])
         $mv_ueb['modell'] = marstek_modell_erkennen($mv_modell);
     }
     $mv_neu[] = $mv_ueb;
-    $cfg['devices'] = $mv_neu;
-    if (!marstek_cfg_schreiben($cfg)) {
+    $mv_lauf_cfg['devices'] = $mv_neu;
+    if (!marstek_cfg_schreiben($mv_lauf_cfg)) {
         mv_weiter('tab-test', array('fehler' => marstek_t('MELD.SPEICHERN_FEHLGESCHLAGEN')));
     }
     $mv_t = sprintf(marstek_t('MELD.UEBERNOMMEN'), $ip);
@@ -468,6 +469,16 @@ if ($mv_post && isset($_POST['verlauf_csv'])) {
  * Eigenes Formular im Reiter MQTT, eigener Handler (Abschrift zd_haus_waehlen()/spot_haus_waehlen()): schreibt einmal
  * haus/speicher/anbieter = marstekvenus; der bisherige Anbieter hoert selbst auf, wenn er die Regel kennt (Zendure
  * SolarFlow ab 0.9.38) - sonst sagt die Meldung, wo der Haken auszuschalten ist. */
+/* 1.1.30: Sprachansagen, eigenes Formular, eigene Datei. Die Testansage spricht immer. */
+if ($mv_post && isset($_POST['ansage_test'])) {
+    list($mv_at, $mv_ag) = marstek_ansage_test();
+    mv_weiter('tab-settings', $mv_at ? array('meldung' => marstek_t('ANSAGEPLUGIN.M_TEST_OK')) : array('fehler' => marstek_t('ANSAGEPLUGIN.M_TEST_FEHL') . ' ' . $mv_ag));
+}
+if ($mv_post && isset($_POST['ansage_speichern'])) {
+    list($mv_ao, $mv_af, $mv_ah) = marstek_ansage_post($_POST);
+    if ($mv_af) { mv_weiter('tab-settings', array('fehler' => implode(' ', $mv_af))); }
+    mv_weiter('tab-settings', $mv_ao ? array('meldung' => trim(marstek_t('ANSAGEPLUGIN.M_OK') . ' ' . implode(' ', $mv_ah))) : array('fehler' => marstek_t('ANSAGEPLUGIN.M_FEHL')));
+}
 if ($mv_post && isset($_POST['haus_anbieter_waehlen'])) {
     list($mv_wm, $mv_wa) = marstek_haus_waehlen(marstek_config());
     marstek_log('Oberflaeche: Knopf "Diese Installation soll Anbieter sein" (haus/speicher): ' . $mv_wa . '.');
@@ -485,8 +496,8 @@ if ($mv_post && isset($_POST['haus_anbieter_waehlen'])) {
  * seine retained Themen einmal ab.
  */
 if ($mv_post && isset($_POST['mqtt_save'])) {
-    $cfg = marstek_config();
-    $mv_alt_cfg = $cfg;   // Gruppe 22 (M3): Vergleich in marstek_nach_konfigwechsel()
+    $mv_lauf_cfg = marstek_config();
+    $mv_alt_cfg = $mv_lauf_cfg;   // Gruppe 22 (M3): Vergleich in marstek_nach_konfigwechsel()
     $topic = (isset($_POST['mqtt_topic']) && is_string($_POST['mqtt_topic'])) ? trim($_POST['mqtt_topic']) : '';
     $mv_g = marstek_wert_pruefen('mqtt_topic', $topic);
     if ($mv_g !== '') {
@@ -496,17 +507,17 @@ if ($mv_post && isset($_POST['mqtt_save'])) {
             'eingaben' => array('mqtt_topic' => $topic, 'mqtt_enabled' => isset($_POST['mqtt_enabled']) ? 1 : 0,
                                  'haus_speicher_ein' => isset($_POST['haus_speicher_ein']) ? 1 : 0)));
     }
-    $cfg['mqtt_enabled'] = isset($_POST['mqtt_enabled']) ? 1 : 0;
-    $cfg['mqtt_topic'] = $topic;
+    $mv_lauf_cfg['mqtt_enabled'] = isset($_POST['mqtt_enabled']) ? 1 : 0;
+    $mv_lauf_cfg['mqtt_topic'] = $topic;
     // Gruppe 22 (1.1.27, V5/E-E12): Speicherstand an andere Plugins geben (haus/speicher), nur mit MQTT.
-    $cfg['haus_speicher_ein'] = isset($_POST['haus_speicher_ein']) ? 1 : 0;
-    if (!marstek_cfg_schreiben($cfg)) {
+    $mv_lauf_cfg['haus_speicher_ein'] = isset($_POST['haus_speicher_ein']) ? 1 : 0;
+    if (!marstek_cfg_schreiben($mv_lauf_cfg)) {
         mv_weiter('tab-mqtt', array('fehler' => marstek_t('MELD.SPEICHERN_FEHLGESCHLAGEN')));
     }
     /* Gruppe 22 (1.1.27, M3): EINE Stelle fuer MQTT-Formular, Befehlsformular und Zurueckspielen - Abo-Datei,
      * Praefixwechsel (Merker loeschen, alten Praefix abraeumen), Merker beim Einschalten, Befehlsbruecke nach
      * ihrem Soll, haus/speicher abraeumen (Haken oder MQTT aus) bzw. Vollversand vormerken (beide an). */
-    list($mv_texte) = marstek_nach_konfigwechsel($mv_alt_cfg, $cfg);
+    list($mv_texte) = marstek_nach_konfigwechsel($mv_alt_cfg, $mv_lauf_cfg);
     mv_weiter('tab-mqtt', array('saved' => 1, 'meldung' => implode(' ', $mv_texte)));
 }
 
@@ -518,17 +529,17 @@ if ($mv_post && isset($_POST['mqtt_save'])) {
  * den Direktstart liefe sie nach dem Einschalten bis zu zehn Minuten nicht. Die uebrigen Einstellungen bleiben
  * unberuehrt. */
 if ($mv_post && isset($_POST['befehle_save'])) {
-    $cfg = marstek_config();
-    $mv_alt_cfg = $cfg;   // Gruppe 22 (M3)
-    $cfg['befehle_mqtt_ein'] = isset($_POST['befehle_mqtt_ein']) ? 1 : 0;
-    if (!marstek_cfg_schreiben($cfg)) {
+    $mv_lauf_cfg = marstek_config();
+    $mv_alt_cfg = $mv_lauf_cfg;   // Gruppe 22 (M3)
+    $mv_lauf_cfg['befehle_mqtt_ein'] = isset($_POST['befehle_mqtt_ein']) ? 1 : 0;
+    if (!marstek_cfg_schreiben($mv_lauf_cfg)) {
         mv_weiter('tab-mqtt', array('fehler' => marstek_t('MELD.SPEICHERN_FEHLGESCHLAGEN')));
     }
-    $mv_ban = !empty($cfg['befehle_mqtt_ein']) && !empty($cfg['mqtt_enabled']);
+    $mv_ban = !empty($mv_lauf_cfg['befehle_mqtt_ein']) && !empty($mv_lauf_cfg['mqtt_enabled']);
     // Gruppe 22 (1.1.27, M3): die Bruecke ueber die gemeinsame Stelle - hier wie bisher immer geschaltet.
-    list(, $mv_bkw) = marstek_nach_konfigwechsel($mv_alt_cfg, $cfg, true);
+    list(, $mv_bkw) = marstek_nach_konfigwechsel($mv_alt_cfg, $mv_lauf_cfg, true);
     list($mv_brc, $mv_baus) = $mv_bkw;
-    $mv_bmeld = marstek_t($cfg['befehle_mqtt_ein'] ? 'BEFEHL.MELD_AN' : 'BEFEHL.MELD_AUS');
+    $mv_bmeld = marstek_t($mv_lauf_cfg['befehle_mqtt_ein'] ? 'BEFEHL.MELD_AN' : 'BEFEHL.MELD_AUS');
     if ($mv_ban && $mv_brc !== 0) {
         $mv_bmeld = sprintf(marstek_t('BEFEHL.MELD_START_FEHL'), marstek_mqtt_wert_saeubern(substr((string) $mv_baus, 0, 160)));
     }
@@ -539,14 +550,14 @@ if ($mv_post && isset($_POST['befehle_save'])) {
  * Eigenes Formular, ab Werk aus (Neuinstallation), bei einem Update an (Lese-Regel und postupgrade.sh). Der
  * Sollwert ueber HTTP (?p= mit Token) wirkt unabhaengig davon. */
 if ($mv_post && isset($_POST['endpunkt_save'])) {
-    $cfg = marstek_config();
-    $cfg['endpunkt_ein'] = isset($_POST['endpunkt_ein']) ? 1 : 0;
-    if (!marstek_cfg_schreiben($cfg)) {
+    $mv_lauf_cfg = marstek_config();
+    $mv_lauf_cfg['endpunkt_ein'] = isset($_POST['endpunkt_ein']) ? 1 : 0;
+    if (!marstek_cfg_schreiben($mv_lauf_cfg)) {
         mv_weiter('tab-loxone', array('fehler' => marstek_t('MELD.SPEICHERN_FEHLGESCHLAGEN')));
     }
-    marstek_log('Oberflaeche: HTTP-Lesezweig ' . ($cfg['endpunkt_ein'] ? 'eingeschaltet' : 'ausgeschaltet') . '.');
+    marstek_log('Oberflaeche: HTTP-Lesezweig ' . ($mv_lauf_cfg['endpunkt_ein'] ? 'eingeschaltet' : 'ausgeschaltet') . '.');
     mv_weiter('tab-loxone', array('saved' => 1,
-        'meldung' => marstek_t($cfg['endpunkt_ein'] ? 'LOX.EP_MELD_AN' : 'LOX.EP_MELD_AUS')));
+        'meldung' => marstek_t($mv_lauf_cfg['endpunkt_ein'] ? 'LOX.EP_MELD_AN' : 'LOX.EP_MELD_AUS')));
 }
 
 /* ---------- Einstellungen speichern ----------
@@ -718,13 +729,13 @@ if ($mv_post && isset($_POST['save'])) {
                                  $e['pmax_charge'], $e['pmax_discharge']);
         }
     }
-    $cfg = $alt;                       // Bestand uebernehmen, dann ueberschreiben.
-    foreach ($mv_neu as $mv_k => $v) { $cfg[$mv_k] = $v; }
-    $cfg['devices'] = $mv_norm;
+    $mv_lauf_cfg = $alt;                       // Bestand uebernehmen, dann ueberschreiben.
+    foreach ($mv_neu as $mv_k => $v) { $mv_lauf_cfg[$mv_k] = $v; }
+    $mv_lauf_cfg['devices'] = $mv_norm;
     // MQTT und Aktionstoken kommen aus dem Bestand und werden hier nicht
     // angefasst. Bis 1.0.10 fehlte das fuer aktionstoken: jedes Speichern
     // warf es still weg, und alle Loxone-Adressen liefen danach auf 403.
-    if (!marstek_cfg_schreiben($cfg)) {
+    if (!marstek_cfg_schreiben($mv_lauf_cfg)) {
         mv_weiter('tab-settings', array('fehler' => marstek_t('MELD.SPEICHERN_FEHLGESCHLAGEN'),
             'formular' => 'einstellungen', 'eingaben' => $mv_rueck, 'falsch' => array()));
     }
@@ -1273,6 +1284,7 @@ for ($i = 0; $i < 4; $i++) {
 <button data-role="none" class="sm-btn sm-b-aktion" type="submit" style="margin-top:18px;"><?= marstek_e(marstek_t('EINST.K_SPEICHERN')) ?></button>
 </form>
 
+<?= marstek_ansage_form_html('<input data-role="none" type="hidden" name="formtoken" value="' . $mv_ft . '"><input data-role="none" type="hidden" name="activetab" value="tab-settings">') ?>
 <h2><?= marstek_e(marstek_t('EINST.H_SICHERUNG')) ?></h2>
 <div class="sm-hinweis"><?= marstek_t('EINST.SICHERUNG_ERKLAERUNG') ?></div>
 <?php
