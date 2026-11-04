@@ -2048,7 +2048,7 @@ function marstek_status($dev = 1, $force = false) {
         marstek_write_json($cache, $out);
         marstek_ausfall_zaehlen($dev, true);
         marstek_log_if_changed('status_dev' . $dev,
-            'OK=0 (' . ($mv_verw > 0 ? 'Antwort verworfen: id passt nicht, ' . $mv_verw . 'x' : 'keine Antwort') . ') - letzte Messung '
+            'OK=0 (' . ($mv_verw > 0 ? 'Antwort verworfen: id passt nicht, ' . $mv_verw . 'x' : marstek_t('TEST.E_KEINE_ANTWORT')) . ') - letzte Messung '
             . ($out['mess'] ? date('d.m. H:i:s', $out['mess']) : 'nie'), 'ok=0');
         // M1/M3: im Fehlerzweig geht nur das Signal hinaus (ok, ts, alter,
         // zaehler; mit frueherem Stand dazu sollalter und fbrest), nie ein
@@ -2483,7 +2483,7 @@ function marstek_ansage_token_pflegen($cfg = null)
 function marstek_ansage_vor_ort($cfg = null)
 {
     if ($cfg === null) { $cfg = marstek_ansage_cfg(); }
-    return ansage_token_fuer_lauf(marstek_tts($cfg), isset($cfg['ansage_token_herkunft']) ? $cfg['ansage_token_herkunft'] : array(), marstek_ansage_k());
+    return ansage_tafel_einreihen(ansage_token_fuer_lauf(marstek_tts($cfg), isset($cfg['ansage_token_herkunft']) ? $cfg['ansage_token_herkunft'] : array(), marstek_ansage_k()), marstek_ansage_regeln($cfg), marstek_ansage_k(), true);     // Stamm 1.4.0: die Tafel, wenn sie bereitsteht
 }
 
 /** Der Block fuer die Pruefzeile: nur die eingerichteten Ziele; ist keines eingerichtet, sagt die Zeile "aus" statt eines Kreuzes. */
