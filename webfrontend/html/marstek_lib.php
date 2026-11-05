@@ -2357,6 +2357,8 @@ function marstek_ansage_post(array $post)
         return array(false, $t, array());
     }
     $cfg['tts'] = $neu;
+    // 1.1.32: ein eingetipptes oder geloeschtes Sprechtoken ist nicht mehr vom Nachbarn; bis 1.1.31 ueberschrieb es der naechste Abgleich.
+    $cfg['ansage_token_herkunft'] = ansage_token_herkunft_formular($post, isset($cfg['ansage_token_herkunft']) ? $cfg['ansage_token_herkunft'] : array());
     $cfg['ansage_regeln'] = $r;
     $cfg['ansage_haken'] = $hk;
     $t = array();
@@ -3559,7 +3561,11 @@ function marstek_bremse_urteil(array $m, $art, $wert, $t, $jetzt, $abstand = tru
     if ((string) $m['art'] === (string) $art) {
         if ($art === 'p') {
             $mt = max(30, min(3600, (int) (isset($m['t']) ? $m['t'] : 0)));
-            $gleich = abs((int) $m['wert'] - (int) $wert) <= 1 && $mt === max(30, min(3600, (int) $t));
+            /* 1.1.32 (K7): auch der tatsaechlich gesetzte Wert zaehlt. Nach ?p=5000 (gekappt auf 2500) galt ?p=2500
+             * als anderer Sollwert: zweiter Schreibbefehl oder 429, bei gleicher Wirkung. */
+            $gleich = (abs((int) $m['wert'] - (int) $wert) <= 1
+                       || (isset($m['p_ist']) && abs((int) $m['p_ist'] - (int) $wert) <= 1))
+                      && $mt === max(30, min(3600, (int) $t));
             $fenster = min(MARSTEK_BREMSE_GLEICH_S, intdiv($mt, 2)) - MARSTEK_BREMSE_TOLERANZ_S;
         } else {
             $gleich = ((string) $m['wert'] === (string) $wert);
@@ -4308,7 +4314,39 @@ function marstek_energy_ermitteln($dev = 1, $force = false) {
  * Nullzeile: eine 0 hiesse "nichts geladen", und das ist etwas anderes als
  * "nicht gemessen".
  */
-function marstek_bilanz_fortschreiben($dev, array $e) {
+/**
+ * 1.1.32 (MV-1): Welchem Tag gehoert dieser Zaehlerstand? Rein, ohne Datei (Selbsttest).
+ *
+ * Bis 1.1.31 ging jeder Wert auf den Kalendertag des Aufrufs. Nach Mitternacht liefert der erste Lauf aber
+ * noch den Zwischenspeicher (300 s) von gestern, oder das Geraet hat seine Tageszaehler noch nicht
+ * zurueckgesetzt. Die Zeile von heute begann dann mit dem Vortageswert, und der Hoechststand hielt ihn den
+ * ganzen Tag (gemessen: 7,5 kWh geladen an einem Tag mit 0,4 kWh, Gesamtsumme doppelt).
+ * Jetzt zaehlt der Zeitpunkt der Messung. Fehlt die Zeile von heute, und der Wert ist derselbe wie der
+ * Abschluss von gestern oder in der ersten Stunde nicht kleiner, gehoert er ebenfalls zu gestern: echte
+ * Tageszaehler stehen um diese Zeit nicht ueber einem ganzen Vortag. Zaehlt das Geraet mit einer um mehr als
+ * eine Stunde falschen Uhr, greift das nicht - das ist nicht gemessen.
+ */
+function marstek_bilanz_tag(array $e, array $zeilen, $jetzt) {
+    $heute = date('Y-m-d', $jetzt);
+    $mess = !empty($e['mess']) ? date('Y-m-d', (int) $e['mess']) : $heute;
+    if ($mess < $heute) {
+        return $mess;
+    }
+    $gestern = date('Y-m-d', strtotime('yesterday', $jetzt));
+    if (isset($zeilen[$heute]) || !isset($zeilen[$gestern])) {
+        return $heute;
+    }
+    $chg = round((float) $e['chgd'], 2);
+    $dis = round((float) $e['disd'], 2);
+    $ab = $zeilen[$gestern];
+    if ($chg + $dis <= 0 || $ab[0] + $ab[1] <= 0 || $chg < $ab[0] || $dis < $ab[1]) {
+        return $heute;
+    }
+    $gleich = $chg == $ab[0] && $dis == $ab[1];
+    return ($gleich || $jetzt - strtotime('today', $jetzt) < 3600) ? $gestern : $heute;
+}
+
+function marstek_bilanz_fortschreiben($dev, array $e, $jetzt = null) {
     if (empty($e['ok'])) {
         return;
     }
@@ -4326,17 +4364,17 @@ function marstek_bilanz_fortschreiben($dev, array $e) {
         return;
     }
     $f = marstek_datadir() . '/bilanz_dev' . (int) $dev . '.csv';
-    $heute = date('Y-m-d');
     $zeilen = marstek_bilanz_lesen($dev);
+    $tag = marstek_bilanz_tag($e, $zeilen, $jetzt === null ? time() : (int) $jetzt);   // 1.1.32 (MV-1)
     $chg = (float) $e['chgd'];
     $dis = (float) $e['disd'];
-    if (isset($zeilen[$heute])) {
+    if (isset($zeilen[$tag])) {
         // Hoechststand halten. Ein kleinerer Wert heisst Tageswechsel im
         // Geraet oder ein Neustart - beides darf den Abschluss nicht kuerzen.
-        $chg = max($chg, $zeilen[$heute][0]);
-        $dis = max($dis, $zeilen[$heute][1]);
+        $chg = max($chg, $zeilen[$tag][0]);
+        $dis = max($dis, $zeilen[$tag][1]);
     }
-    $zeilen[$heute] = array(round($chg, 2), round($dis, 2));
+    $zeilen[$tag] = array(round($chg, 2), round($dis, 2));
     ksort($zeilen);
     if (count($zeilen) > 800) {
         $zeilen = array_slice($zeilen, -800, null, true);
@@ -4560,17 +4598,45 @@ function marstek_diag($dev = 1) {
  * aWATTar aus, bleibt der letzte Stand stehen und ?ranks antwortet weiter in
  * Millisekunden - mit aelteren, aber brauchbaren Zahlen.
  */
+/**
+ * 1.1.32 (MV-2): Muss dieser Tag jetzt geholt werden? Rein, ohne Datei (Selbsttest).
+ *
+ * Bis 1.1.31 ging ohne Datei fuer morgen jede Minute ein Abruf hinaus, dazu heute alle 15 Minuten: rund
+ * 980 am Tag (gerechnet), obwohl sich ein vollstaendiger Tag der Boerse nicht mehr aendert. Jetzt: ein
+ * vollstaendiger Tag nie wieder, morgen erst ab 13 Uhr, und zwischen zwei Versuchen 15 Minuten - auch nach
+ * einem Fehlversuch. $eintraege: Preise in der Datei (0 = keine), $versuch_alter: Sekunden seit dem
+ * letzten Versuch fuer diesen Platz, -1 = keiner.
+ */
+function marstek_spot_faellig($startTs, $jetzt, $eintraege, $versuch_alter) {
+    $stunden = (int) round((strtotime('+1 day', $startTs) - $startTs) / 3600);
+    if ($eintraege >= $stunden) {
+        return false;
+    }
+    if ($startTs > $jetzt && (int) date('G', $jetzt) < 13) {
+        return false;
+    }
+    return !($versuch_alter >= 0 && $versuch_alter < 900);
+}
+
 function marstek_spot_fetch() {
     $cfg = marstek_config();
     $tld = $cfg['awattar'] === 'at' ? 'at' : 'de';
     $geholt = 0;
-    foreach (array(strtotime('today 00:00'), strtotime('tomorrow 00:00')) as $startTs) {
+    foreach (array('heute' => strtotime('today 00:00'), 'morgen' => strtotime('tomorrow 00:00')) as $mv_platz => $startTs) {
         $cache = marstek_tmpdir() . '/spot_' . date('Ymd', $startTs) . '.cache';
-        if (is_file($cache) && time() - filemtime($cache) < 900) {
+        // 1.1.32 (MV-2): siehe marstek_spot_faellig(). Der Merker traegt die Zeit, auch die eines Fehlversuchs.
+        $mv_merker = marstek_tmpdir() . '/spot_versuch_' . $mv_platz;
+        $mv_zuletzt = is_file($mv_merker) ? (int) @file_get_contents($mv_merker) : 0;
+        $mv_jetzt = time();
+        if (!marstek_spot_faellig($startTs, $mv_jetzt,
+                is_file($cache) ? substr_count((string) @file_get_contents($cache), 'marketprice') : 0,
+                ($mv_zuletzt > 0 && $mv_zuletzt <= $mv_jetzt) ? $mv_jetzt - $mv_zuletzt : -1)) {
             continue;
         }
+        @file_put_contents($mv_merker, (string) $mv_jetzt);
         $start = $startTs * 1000;
-        $end = $start + 24 * 3600 * 1000;
+        // 1.1.32 (MV-3): Tagesende aus dem Kalender - am 25-Stunden-Tag fehlte sonst 23:00 (wie spot_lib.php).
+        $end = strtotime('+1 day', $startTs) * 1000;
         $url = 'https://api.awattar.' . $tld . '/v1/marketdata?start=' . $start . '&end=' . $end;
         $ctx = stream_context_create(array('http' => array(
             'timeout' => 10, 'user_agent' => 'LoxBerry Marstek')));
@@ -7441,6 +7507,22 @@ function marstek_selbsttest()
     /* --- a1: Befehlsbremse (Urteil, ohne Datei) --- */
     $mv_bm = array('art' => 'p', 'wert' => 800, 't' => 240, 'ts' => 1000);
     $pruefe('Bremse: ohne Merker frei', marstek_bremse_urteil(array(), 'p', 800, 240, 1000), array('', 0));
+    $mv_gk = array('art' => 'p', 'wert' => 5000, 'p_ist' => 2500, 't' => 240, 'ts' => 1000);
+    $pruefe('Bremse (K7): gekappter Wert gilt als gleich', marstek_bremse_urteil($mv_gk, 'p', 2500, 240, 1005), array('UNVERAENDERT', 0));
+    $pruefe('Bremse (K7): bestellter Wert bleibt gleich', marstek_bremse_urteil($mv_gk, 'p', 5000, 240, 1005), array('UNVERAENDERT', 0));
+    $pruefe('Bremse (K7): dritter Wert ist ein anderer', marstek_bremse_urteil($mv_gk, 'p', 2000, 240, 1005), array('WARTEN', 5));
+    $mv_nt = strtotime('2026-11-05 00:03:00');
+    $mv_vt = array('2026-11-04' => array(7.5, 6.2));
+    $pruefe('Bilanz (MV-1): Messung von gestern bleibt gestern', marstek_bilanz_tag(array('chgd' => 7.6, 'disd' => 6.2, 'mess' => $mv_nt - 300), $mv_vt, $mv_nt), '2026-11-04');
+    $pruefe('Bilanz (MV-1): nicht zurueckgesetzter Zaehler bleibt gestern', marstek_bilanz_tag(array('chgd' => 7.5, 'disd' => 6.2, 'mess' => $mv_nt), $mv_vt, $mv_nt), '2026-11-04');
+    $pruefe('Bilanz (MV-1): frischer Tageswert gehoert heute', marstek_bilanz_tag(array('chgd' => 0.4, 'disd' => 0.1, 'mess' => $mv_nt), $mv_vt, $mv_nt), '2026-11-05');
+    $pruefe('Bilanz (MV-1): spaeter am Tag darf er ueber gestern liegen', marstek_bilanz_tag(array('chgd' => 8.0, 'disd' => 7.0, 'mess' => $mv_nt + 36000), $mv_vt, $mv_nt + 36000), '2026-11-05');
+    $mv_h = strtotime('2026-11-05 10:00:00');
+    $pruefe('Abruf (MV-2): vollstaendiger Tag wird nicht wieder geholt', marstek_spot_faellig(strtotime('today', $mv_h), $mv_h, 24, -1), false);
+    $pruefe('Abruf (MV-2): morgen vor 13 Uhr nicht', marstek_spot_faellig(strtotime('tomorrow', $mv_h), $mv_h, 0, -1), false);
+    $pruefe('Abruf (MV-2): morgen ab 13 Uhr', marstek_spot_faellig(strtotime('tomorrow', $mv_h), $mv_h + 3 * 3600, 0, -1), true);
+    $pruefe('Abruf (MV-2): nach Fehlversuch 15 Minuten Ruhe', marstek_spot_faellig(strtotime('tomorrow', $mv_h), $mv_h + 3 * 3600, 0, 840), false);
+    $pruefe('Abruf (MV-2): fehlender Tag von heute sofort', marstek_spot_faellig(strtotime('today', $mv_h), $mv_h, 0, -1), true);
     $pruefe('Bremse: gleicher Wert nach 5 s unveraendert', marstek_bremse_urteil($mv_bm, 'p', 800, 240, 1005), array('UNVERAENDERT', 0));
     $pruefe('Bremse: Dither +1 nach 30 s unveraendert', marstek_bremse_urteil($mv_bm, 'p', 801, 240, 1030), array('UNVERAENDERT', 0));
     $pruefe('Bremse: Dither +1 nach 60 s frei (Watchdog)', marstek_bremse_urteil($mv_bm, 'p', 801, 240, 1060), array('', 0));

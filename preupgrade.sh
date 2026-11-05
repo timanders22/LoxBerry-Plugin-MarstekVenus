@@ -7,6 +7,10 @@ ARGV5=$5
 # Das fuenfte Argument ist das Wurzelverzeichnis und traegt immer.
 LBHOMEDIR="${LBHOMEDIR:-$5}"
 PFOLDER="${ARGV3:-marstekvenus}"
+# 05.11.2026: ein Ordnername mit "/" oder "." waere ein Pfad hinaus (dieselbe Formel wie MGiSmart und Govee).
+case "$PFOLDER" in
+    ''|.|..|*/*) echo "<FAIL> Unbrauchbarer Ordnername '$PFOLDER' - nichts angefasst."; exit 2 ;;
+esac
 BASE="${ARGV5:-$LBHOMEDIR}"
 # Die Wurzel: $5 (vom Installer) oder $LBHOMEDIR, wenn dort config/plugins
 # und data/plugins liegen - sonst vom eigenen Ablageort AUFWAERTS SUCHEN, bis
@@ -41,7 +45,7 @@ if [ -z "$BASE" ]; then
     echo "<WARNING> $(dirname "$(readlink -f "$0")") traegt kein Verzeichnis"
     echo "<WARNING> config/plugins, data/plugins und config/system/general.json."
     echo "<WARNING> Es wurde nichts gesichert."
-    exit 1
+    exit 2
 fi
 # ---------------------------------------------------------------------------
 # ZUERST die Marke "Aktualisierung laeuft" (I1, Durchgang 30.09.2026).
@@ -67,6 +71,30 @@ else
     echo "<FAIL> Einstellungen beiseite. Das Upgrade wird abgebrochen."
     exit 2
 fi
+# ---------- Update-Schutz (05.11.2026, Bauart Govee 0.9.34) ----------
+# plugininstall.pl bricht nur bei Rueckgabewert >1 vor purge_installation ab. Die Kopie entsteht als <Ziel>.neu.<pid>, traegt 0600,
+# BEVOR Inhalt hineinkommt, wird mit cmp verglichen und erst dann per mv an ihren Platz gestellt: eine heile Sicherung bleibt heil.
+ZS_FEHL=""
+zs_hinlegen() {   # $1 Quelle, $2 Ziel
+    [ -d "$2" ] && return 1
+    zs_neu="$2.neu.$$"
+    rm -f "$zs_neu" 2>/dev/null
+    if { : > "$zs_neu"; } 2>/dev/null && chmod 600 "$zs_neu" 2>/dev/null \
+       && cp "$1" "$zs_neu" 2>/dev/null && cmp -s "$1" "$zs_neu" \
+       && mv -f "$zs_neu" "$2" 2>/dev/null; then
+        return 0
+    fi
+    rm -f "$zs_neu" 2>/dev/null
+    return 1
+}
+zs_schluss() {   # Fehlschlag gesammelt: Marke weg, Abbruch vor purge_installation
+    [ -n "$ZS_FEHL" ] || return 0
+    echo "<FAIL> Nicht gesichert:$ZS_FEHL - die Aktualisierung wird abgebrochen, damit der Purge die Originale nicht loescht."
+    echo "<FAIL> Die bisherige Fassung bleibt installiert. Bitte Platz und Rechte unter config/plugins und data/plugins pruefen."
+    rm -f "$MARKE" 2>/dev/null
+    rm -rf "${NEU:?}" 2>/dev/null
+    exit 2
+}
 
 # Gruppe 1 (1.1.25): die Befehlsbruecke anhalten, bevor der Installer bin/ und data/ austauscht (Regeln/06,
 # vb_g1_bruecke_bericht.md Abschnitt 6). Nach der Marke: der Minutentakt startet sie in der Luecke nicht neu.
@@ -108,6 +136,7 @@ if [ -e "$SICHER" ] || [ -L "$SICHER" ]; then
         if [ -e "$SICHER" ]; then
             echo "<FAIL> Die alte Update-Sicherung $SICHER liess sich weder beiseitelegen noch entfernen."
             echo "<FAIL> Sie wuerde nach dem Upgrade eingespielt. Das Upgrade wird abgebrochen."
+            rm -f "$MARKE" 2>/dev/null
             exit 2
         fi
         echo "<WARNING> Eine Update-Sicherung aus einem frueheren Vorgang lag noch und wurde entfernt."
@@ -116,6 +145,7 @@ fi
 rm -rf "${NEU:?}" 2>/dev/null
 if ! mkdir -p "$NEU" 2>/dev/null || ! chmod 0700 "$NEU" 2>/dev/null; then
     echo "<FAIL> Der Ordner $NEU liess sich nicht anlegen - es wurde nichts gesichert. Das Upgrade wird abgebrochen."
+    rm -f "$MARKE" 2>/dev/null
     exit 2
 fi
 
@@ -162,6 +192,8 @@ if [ -f "$CF" ]; then
             echo "<OK> Konfiguration gesichert (als lesbar geprueft)."
         else
             echo "<WARNING> Die Konfiguration liess sich nicht sichern."
+            rm -f "$NEU/marstek.json" 2>/dev/null
+            ZS_FEHL="$ZS_FEHL marstek.json"
         fi
     else
         cp -p "$CF" "$NEU/marstek.json.kaputt" 2>/dev/null
@@ -181,13 +213,17 @@ fi
 # Sitzungsablage), und den leert der Installer beim Update. Ohne Sicherung begaenne die Rolle neu: ein gewaehlter
 # Anbieter vergaesse seine Wahl, ein abgeloester seinen Grund. postupgrade.sh holt sie zurueck.
 if [ -f "$BASE/data/plugins/$PFOLDER/haus_anbieterregel.json" ]; then
-    cp -p "$BASE/data/plugins/$PFOLDER/haus_anbieterregel.json" "$NEU/haus_anbieterregel.json" 2>/dev/null
-    chmod 600 "$NEU/haus_anbieterregel.json" 2>/dev/null
+    if ! zs_hinlegen "$BASE/data/plugins/$PFOLDER/haus_anbieterregel.json" "$NEU/haus_anbieterregel.json"; then
+        echo "<WARNING> haus_anbieterregel.json liess sich nicht sichern."
+        ZS_FEHL="$ZS_FEHL haus_anbieterregel.json"
+    fi
 fi
+zs_schluss
 if mv -f "$NEU" "$SICHER" 2>/dev/null; then
     :
 else
     echo "<FAIL> Die Update-Sicherung liess sich nicht von $NEU nach $SICHER umbenennen. Das Upgrade wird abgebrochen."
+    rm -f "$MARKE" 2>/dev/null
     exit 2
 fi
 exit 0

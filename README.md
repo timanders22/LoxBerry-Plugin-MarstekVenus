@@ -13,6 +13,15 @@ den Auto-Modus des Geräts zurück.
 
 Kompatibel mit LoxBerry 3.x und **LoxBerry 4** (reines PHP, läuft mit PHP 7.4 und 8.x).
 
+## Neu in 1.1.32
+
+- **Update:** Scheitert die Sicherung oder die Marke, bricht das Update ab und die bisherige Fassung bleibt.
+- **Sprechtoken:** Ein von Hand eingetragenes Alexa- oder Google-Token wird nicht mehr vom Token des Nachbar-Plugins überschrieben.
+- **Tagesbilanz:** Der erste Lauf nach Mitternacht trägt den Vortageswert nicht mehr in den neuen Tag; Wochen-, Monats- und Gesamtsummen stimmen ab jetzt. Bereits falsch gespeicherte Tage bleiben, wie sie sind.
+- **Preisabruf:** Der eigene aWATTar-Abruf fragt einen vollständigen Tag nicht erneut, morgen erst ab 13 Uhr und dann höchstens alle 15 Minuten; am 25-Stunden-Tag fehlt die letzte Stunde nicht mehr.
+- **Befehlsbremse:** Nach einem gekappten Sollwert gilt der tatsächlich gesetzte Wert als derselbe Befehl.
+- **Formular:** Ein beanstandeter Tafel- oder HomePod-Name bleibt zur Korrektur im Feld stehen.
+
 ## Neu in 1.1.31
 
 * **Ansagen auch auf den offenen Dashboard-Tafeln, ab Werk an.** Mit Dashboard ab 0.9.40 und einer offenen Tafel kommt jede Ansage dieses Plugins auch dort an: Gong, Sprache und der Text groß. Ohne Dashboard oder ohne offene Tafel wird das Ziel ohne Fehler übergangen. Ausschalten: Reiter *Einstellungen*, Haken „Auch auf offenen Dashboard-Tafeln ansagen“; ein gespeichertes Aus bleibt. Es gelten dieselben Regeln wie für die Lautsprecher.
