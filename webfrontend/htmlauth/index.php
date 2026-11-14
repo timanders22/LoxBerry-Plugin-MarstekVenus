@@ -242,77 +242,93 @@ if ($mv_post && isset($_POST['vorlage'])) {
  * Miniserver ungueltig wuerden.
  */
 if ($mv_post && isset($_POST['mv_sichern'])) {
+    /* 1.1.35: Kopf (_hinweis, _plugin, _fassung, _stand) und Inhalt baut das gemeinsame Sicherungsmodul
+     * (marstek_sicherung_schreiben() -> sicherung_bauen()); die Fassung kommt aus der Plugin-Datenbank bzw. der
+     * plugin.cfg. json_encode kann scheitern - dann eine Meldung statt einer leeren Datei, die wie eine Sicherung
+     * aussaehe. */
+    $mv_sjs = sicherung_json(marstek_sicherung_schreiben());
+    if ($mv_sjs === '') {
+        mv_weiter('tab-settings', array('fehler' => marstek_t('SICHERUNG.K_SCHREIBFEHLER')));
+    }
     while (ob_get_level() > 0) { ob_end_clean(); }   // Gruppe 22 (1.1.27, M2): nichts vor dem Download
-    // Mit lesbarem Kopf (_hinweis, _stand, _fassung).
     header('Content-Type: application/x-download');
     header('Content-Disposition: attachment; filename="marstekvenus_' . date('Ymd_His') . '.json"');
-    echo json_encode(marstek_sicherung_schreiben(),
-        JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    echo $mv_sjs;
     exit;
 }
 if ($mv_post && isset($_POST['mv_zurueck'])) {
-    // Abgewiesen wird, was nicht passt - nie zurechtgebogen.
-    if (!isset($_FILES['konfigdatei']) || !is_uploaded_file($_FILES['konfigdatei']['tmp_name'])) {
-        mv_weiter('tab-settings', array('fehler' => marstek_t('MELD.IMPORT_KEINE_DATEI')));
+    /* 1.1.35: den Eingang prueft das gemeinsame Sicherungsmodul (sicherung_eingang(), Modul 1.1.0) - in jeder
+     * Linie gleich: zuerst der Haken zurueck_ok (ohne ihn wird nichts gelesen und nichts geaendert), dann
+     * is_uploaded_file() und die Groessengrenze des Moduls (256 KB, wie bisher hier). Lesen, Pruefen, Speichern
+     * samt Zweitschrift, das Nachmessen der Zweitschrift und die Protokollzeile macht sicherung_zurueckspielen();
+     * die Schritte dieser Linie davor und danach stehen in den Rueckrufen - dieselben wie bis 1.1.34. */
+    $mv_b = marstek_sicherung_beschreibung();
+    list($mv_roh, $mv_ab) = sicherung_eingang($mv_b, $_POST, $_FILES, 'konfigdatei');
+    if ($mv_ab !== null) {
+        $mv_m = sicherung_meldungen($mv_b, $mv_ab);
+        mv_weiter('tab-settings', array('fehler' => implode(' ', $mv_m['fehler'])));
     }
-    if ((int) $_FILES['konfigdatei']['size'] > 262144) {
-        /* Eine Sicherung dieses Plugins ist wenige Kilobyte gross.
-         * Alles darueber wird gar nicht erst gelesen. */
-        mv_weiter('tab-settings', array('fehler' => marstek_t('MELD.IMPORT_ZU_GROSS')));
-    }
-    /* Gelesen wird in der BIBLIOTHEK, nicht hier (siehe marstek_sicherung_lesen()).
-     * C10 (30.09.2026): die Meldung sagt, was mit dem Aktionstoken und mit
-     * fehlenden Schluesseln geschah; C13: weggefallene Geraetenummern werden
-     * abgemeldet wie beim Speichern des Formulars. */
     $mv_vorher = array_keys(marstek_devices());
-    $mv_alt_cfg = marstek_config();   // Gruppe 22 (M3): fuer marstek_nach_konfigwechsel()
-    $roh = (string) @file_get_contents($_FILES['konfigdatei']['tmp_name']);
-    $mv_imp = marstek_sicherung_lesen($roh);
-    $mv_imp_cfg = $mv_imp[0];
-    $mv_imp_meld = $mv_imp[1];
-    if ($mv_imp_cfg === null) {
-        $mv_erste = isset($mv_imp_meld[0]) ? (string) $mv_imp_meld[0] : '';
-        if ($mv_erste === 'KEIN_JSON') {
-            $mv_f = marstek_t('MELD.IMPORT_KEIN_JSON');
-        } elseif ($mv_erste === 'FREMD') {
-            $mv_f = marstek_t('MELD.IMPORT_FREMD');
-        } elseif (strncmp($mv_erste, 'UNBEKANNT:', 10) === 0) {
-            $mv_f = sprintf(marstek_t('MELD.IMPORT_UNBEKANNT'), substr($mv_erste, 10));
-        } elseif ($mv_erste === 'SCHREIBEN') {
-            $mv_f = marstek_t('MELD.SPEICHERN_FEHLGESCHLAGEN');
-        } else {
-            // Alle Beanstandungen, nicht die erste.
-            $mv_liste = array();
-            foreach ($mv_imp_meld as $mv_z) {
-                $mv_liste[] = strncmp($mv_z, 'WERT:', 5) === 0 ? substr($mv_z, 5) : $mv_z;
-            }
-            $mv_f = sprintf(marstek_t('MELD.IMPORT_WERTE'), implode(' | ', $mv_liste));
+    $mv_tok_lage = 'datei';
+    $mv_b['vorbereiten'] = function ($neu, $jetzt, $r) use (&$mv_tok_lage) {
+        /* C10 (30.09.2026): ein leeres Aktionstoken in der Datei laesst das laufende stehen (Regel 3 des Moduls,
+         * genannt); gab es noch keines, entsteht eines wie bei einer neuen Anlage, und die Meldung sagt es. */
+        if (trim((string) $neu['aktionstoken']) === '') {
+            $neu['aktionstoken'] = marstek_token_erzeugen();
+            $mv_tok_lage = 'neu';
+        } elseif (in_array('aktionstoken', $r['leer_behalten'], true)) {
+            $mv_tok_lage = 'behalten';
         }
-        mv_weiter('tab-settings', array('fehler' => $mv_f));
-    }
-    $mv_texte = array(marstek_t('MELD.IMPORT_OK'));
-    foreach ((isset($mv_imp[3]) && is_array($mv_imp[3])) ? $mv_imp[3] : array() as $mv_h) {
-        if ($mv_h === 'TOKEN_BEHALTEN') {
-            $mv_texte[] = marstek_t('MELD.IMPORT_TOKEN_BEHALTEN');
-        } elseif ($mv_h === 'TOKEN_NEU') {
-            $mv_texte[] = marstek_t('MELD.IMPORT_TOKEN_NEU');
-        } elseif (strncmp($mv_h, 'BEHALTEN:', 9) === 0) {
-            $mv_texte[] = sprintf(marstek_t('MELD.IMPORT_BEHALTEN'), substr($mv_h, 9));
+        /* Wie bis 1.1.34: nach dem Zurueckspielen gilt eine ansage.json aus der Probe vom 01.11. als uebernommen
+         * (Vermerk ansage_aus_datei) - sie ueberschreibt die zurueckgespielten Ansagen nicht. */
+        $neu['ansage_aus_datei'] = 1;
+        return $neu;
+    };
+    $mv_b['speichern'] = function ($neu) { return marstek_cfg_schreiben($neu); };
+    $mv_b['zweitschrift'] = function () { $p = marstek_paths(); return array($p['config'], $p['backup']); };
+    $mv_b['nachziehen'] = function ($neu, $jetzt, $r) use (&$mv_tok_lage, $mv_vorher) {
+        $h = array();
+        if ($mv_tok_lage === 'neu') {
+            $h[] = marstek_t('MELD.IMPORT_TOKEN_NEU');
+        } elseif ($mv_tok_lage === 'behalten') {
+            $h[] = marstek_t('MELD.IMPORT_TOKEN_BEHALTEN');
+        } elseif (!isset($jetzt['aktionstoken']) || (string) $neu['aktionstoken'] !== (string) $jetzt['aktionstoken']) {
+            $h[] = marstek_t('MELD.IMPORT_OK');
         }
+        /* Gruppe 22 (1.1.27, M3): wie beim Speichern - alter Praefix abgeraeumt, Merker geloescht, Abo-Datei,
+         * Befehlsbruecke nach ihrem Soll, haus/speicher abgeraeumt, wenn Haken oder MQTT durch die Sicherung
+         * ausgehen. 1.1.35: was mit der Befehlsbruecke geschah, steht jetzt in der Meldung. */
+        list($kw, $bruecke) = marstek_nach_konfigwechsel($jetzt, marstek_config());
+        foreach ($kw as $z) { $h[] = $z; }
+        if (is_array($bruecke)) {
+            $b_an = !empty($neu['befehle_mqtt_ein']) && !empty($neu['mqtt_enabled']);
+            $h[] = ($b_an && (int) $bruecke[0] !== 0)
+                ? sprintf(marstek_t('BEFEHL.MELD_START_FEHL'), marstek_mqtt_wert_saeubern(substr((string) $bruecke[1], 0, 160)))
+                : marstek_t($b_an ? 'BEFEHL.MELD_AN' : 'BEFEHL.MELD_AUS');
+        }
+        /* C13: weggefallene Geraetenummern werden abgemeldet wie beim Speichern des Formulars. */
+        foreach (array_diff($mv_vorher, array_keys(marstek_devices())) as $n) {
+            $a = marstek_geraet_abmelden($n);
+            $h[] = sprintf(marstek_t('MELD.GERAET_AUSGETRAGEN'), $n,
+                $a['mqtt'] >= 0 ? sprintf(marstek_t('MELD.AUSGETRAGEN_MQTT'), $a['mqtt'])
+                                : marstek_t('MELD.AUSGETRAGEN_OHNE_MQTT'), $a['alt']);
+        }
+        // Den Dienst nachziehen und sagen, was mit ihm geschah (Regeln/05): der Minutentakt liest die Datei neu.
+        $h[] = marstek_t('MELD.SICH_DIENST');
+        marstek_log('Einstellungen zurueckgespielt, Aktionstoken: ' . $mv_tok_lage . '.');
+        return $h;
+    };
+    $mv_b['log'] = 'marstek_log';
+    $mv_r = sicherung_zurueckspielen($mv_b, $mv_roh);
+    $mv_m = sicherung_meldungen($mv_b, $mv_r);
+    if (!$mv_r['ok'] || !$mv_r['gespeichert']) {
+        mv_weiter('tab-settings', array('fehler' => implode(' ', $mv_m['fehler'])));
     }
-    /* Gruppe 22 (1.1.27, M3): wie beim Speichern - alter Praefix abgeraeumt, Merker geloescht, Abo-Datei,
-     * Befehlsbruecke nach ihrem Soll, haus/speicher abgeraeumt, wenn Haken oder MQTT durch die Sicherung ausgehen. */
-    list($mv_kw) = marstek_nach_konfigwechsel($mv_alt_cfg, marstek_config());
-    foreach ($mv_kw as $mv_z) {
-        $mv_texte[] = $mv_z;
+    $mv_aus = array('saved' => 1, 'meldung' => implode(' ', $mv_m['hinweise']));
+    if ($mv_m['fehler']) {
+        $mv_aus['fehler'] = implode(' ', $mv_m['fehler']);     // die Zweitschrift ist nicht mitgezogen (K_ZWEITSCHRIFT)
     }
-    foreach (array_diff($mv_vorher, array_keys(marstek_devices())) as $mv_n) {
-        $mv_a = marstek_geraet_abmelden($mv_n);
-        $mv_texte[] = sprintf(marstek_t('MELD.GERAET_AUSGETRAGEN'), $mv_n,
-            $mv_a['mqtt'] >= 0 ? sprintf(marstek_t('MELD.AUSGETRAGEN_MQTT'), $mv_a['mqtt'])
-                               : marstek_t('MELD.AUSGETRAGEN_OHNE_MQTT'), $mv_a['alt']);
-    }
-    mv_weiter('tab-settings', array('saved' => 1, 'meldung' => implode(' ', $mv_texte)));
+    mv_weiter('tab-settings', $mv_aus);
 }
 
 /* ---------- Log leeren ----------
@@ -870,6 +886,10 @@ $mv_verlauf_tag = isset($_GET['vtag']) && is_string($_GET['vtag']) ? preg_replac
 .sm-wrap input[type=checkbox] { width: 17px; height: 17px; margin: 0; vertical-align: middle; }
 .sm-row { display: flex; gap: 12px; flex-wrap: wrap; }
 .sm-row > div { flex: 1 1 200px; }
+.sm-feld { margin: 14px 0; }
+.sm-feld > label { display: block; font-weight: 600; font-size: 0.9em; color: #555; margin: 0 0 4px; }
+.sm-feld .ui-input-text, .sm-feld .ui-select, .sm-feld .ui-textinput { max-width: 520px; }
+.sm-feld .ui-input-text input, .sm-feld .ui-input-text textarea { font-size: 0.95em; }
 .sm-alert { border-radius: 8px; padding: 10px 14px; margin: 12px 0; }
 .sm-ok { background: #e8f5e9; border: 1px solid #a5d6a7; }
 .sm-err { background: #ffebee; border: 1px solid #ef9a9a; }
@@ -1290,17 +1310,11 @@ for ($i = 0; $i < 4; $i++) {
 <?php
 /* X-3 (Verbesserungsbau 30.09.2026): bestuende die eigene Sicherung das
  * Zurueckspielen nicht, steht es hier - dieselbe Pruefung wie beim
- * Zurueckspielen (marstek_sicherung_pruefen()). Gesichert wird trotzdem. */
-$mv_sich_gruende = array();
-foreach (marstek_sicherung_eigene_maengel() as $mv_z) {
-    if (strncmp($mv_z, 'UNBEKANNT:', 10) === 0) {
-        $mv_sich_gruende[] = sprintf(marstek_t('EINST.SICHERUNG_UNBEKANNT'), substr($mv_z, 10));
-    } else {
-        $mv_sich_gruende[] = strncmp($mv_z, 'WERT:', 5) === 0 ? substr($mv_z, 5) : $mv_z;
-    }
-}
+ * Zurueckspielen (1.1.35: sicherung_selbstpruefung() des gemeinsamen Moduls,
+ * nur Namen). Gesichert wird trotzdem. */
+$mv_sich_gruende = marstek_sicherung_eigene_maengel();
 if ($mv_sich_gruende) { ?>
-<div class="sm-alert sm-warn"><?= marstek_e(sprintf(marstek_t('EINST.SICHERUNG_WARNUNG'), implode(' | ', $mv_sich_gruende))) ?></div>
+<div class="sm-alert sm-warn"><?= marstek_e(sprintf(marstek_t('EINST.SICHERUNG_WARNUNG'), implode(', ', $mv_sich_gruende))) ?></div>
 <?php } ?>
 <div class="sm-knopfreihe">
   <form action="index.php" method="post">
@@ -1314,6 +1328,7 @@ if ($mv_sich_gruende) { ?>
   <input data-role="none" type="hidden" name="activetab" value="tab-settings">
   <label><?= marstek_e(marstek_t('EINST.L_IMPORT')) ?></label>
   <input data-role="none" type="file" name="konfigdatei" accept=".json,application/json" style="max-width:420px;">
+  <?= sicherung_haken_zeile(marstek_sicherung_beschreibung()) ?>
   <div class="sm-knopfreihe" style="margin-top:8px;">
     <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="mv_zurueck" value="1"><?= marstek_e(marstek_t('EINST.K_IMPORT')) ?></button>
   </div>

@@ -1,5 +1,6 @@
 <?php
 require_once __DIR__ . '/sprachausgabe.php';     // Stamm, fuer die Vorgaben der Sprachansagen schon beim ersten Lesen der Konfiguration
+require_once __DIR__ . '/sicherung.php';         // 1.1.35: gemeinsames Sicherungsmodul (Abschrift von Werkzeuge/gemeinsam/sicherung.php)
 /**
  * Marstek Venus E - gemeinsame Bibliothek
  *
@@ -1034,197 +1035,150 @@ function marstek_ip_gueltig($ip)
 }
 
 /**
- * Der lesbare Kopf der Sicherungsdatei.
+ * Der Anfang des lesbaren Kopfes (_hinweis), den "Einstellungen sichern" seit 1.1.5 schreibt. Bis 1.1.34 trug
+ * die Datei kein Kennzeichen _plugin; an diesem Satz erkennt marstek_sicherung_uebersetzen() eine aeltere
+ * Sicherung dieser Linie (gemessen 14.11.2026 an den Sicherungen, die der Knopf von 1.1.5 bis 1.1.34 liefert:
+ * 30 von 30 beginnen damit). Den Satz schreibt kein anderes Plugin.
+ */
+define('MARSTEK_SICHERUNG_MERKMAL', 'Sicherung der Einstellungen des LoxBerry-Plugins Marstek Venus E.');
+
+/**
+ * 1.1.35: Die Beschreibung dieser Linie fuer das gemeinsame Sicherungsmodul (webfrontend/html/sicherung.php,
+ * Abschrift von Werkzeuge/gemeinsam/sicherung.php; Auftrag des Hausherrn 12.11.2026, Welle 1, Gruppe 2b).
  *
- * NEU in 1.1.5. Bis 1.1.4 hatte die Datei keinen, und eine Datei MIT einem
- * solchen Kopf wurde beim Zurueckspielen abgewiesen - gemessen:
- * "Abgelehnt: die Datei enthaelt unbekannte Schluessel (_hinweis, _stand)".
+ * Bis 1.1.34 stand hier eine eigene Pruefung (marstek_sicherung_lesen(), marstek_sicherung_pruefen(),
+ * marstek_ansage_sicherung_vor()). Gemessen 14.11.2026 an 1.1.34 mit Werkzeuge/sicherung_pruefstand.py: ein
+ * unbekannter Schluessel oben oder in einem Block (tts, ansage_regeln, ansage_haken, ein Geraet) wies die ganze
+ * Datei ab, und eine Datei mit fremdem oder ohne Kennzeichen wurde angenommen. Seither gilt, was das Modul fuer
+ * alle Linien festschreibt: Kennzeichen _plugin; Unbekanntes wird verworfen und mit Namen genannt; ein leerer
+ * Wert ueberschreibt keinen bestehenden; eine halb gueltige Datei aendert nichts.
+ *
+ * Wie bisher in dieser Linie: jeder Wert geht durch marstek_wert_pruefen() (dieselbe Positivliste wie das
+ * Formular), die Grenzen ueber zwei Werte durch marstek_cfg_kreuzmaengel(); die Sprechtoken und die beiden
+ * Vermerke (ansage_token_herkunft, ansage_aus_datei) stehen nie in der Datei.
+ *
+ * Was fehlen darf: die Schluessel, die eine Fassung mit Kopf (1.1.5 bis 1.1.34) noch nicht schrieb, behalten den
+ * geltenden Wert und werden genannt (Regeln/05, Entscheidung 6; marstek_sicherung_spaet()). Die uebrigen schrieb
+ * jede Fassung mit Kopf; fehlen sie, wird die Datei abgewiesen.
+ *
+ * Die Geraeteliste hat keinen Zuordnungsschluessel: 'nr' darf in einem Eintrag fehlen (dann zaehlt die Stelle,
+ * marstek_geraete_maengel()), das Gegenstueck am Ziel ist also nicht sicher bestimmbar; die Leer-Regel greift
+ * deshalb in der Liste nicht (Regeln/05 Regel 3, wie die Octopus-Regeln).
+ */
+function marstek_sicherung_beschreibung()
+{
+    $tts = array_merge(array_keys(ansage_werk_block()), ansage_geheim());
+    $schluessel = array(
+        'devices' => sicherung_liste(marstek_geraet_schluessel()),
+        'tts' => sicherung_block($tts, array('ziele' => sicherung_liste(array('art', 'wo', 'laut', 'sprache', 'ein'))))
+                 + array('fehlt' => 'behalten', 'sichern' => 'ansage_sicherung_bereinigen'),
+        'ansage_regeln' => sicherung_block(array_keys(ansage_regeln_vorgaben())) + array('fehlt' => 'behalten'),
+        'ansage_haken' => sicherung_block(array('ausfall', 'sollwert')) + array('fehlt' => 'behalten'),
+    );
+    foreach (marstek_sicherung_spaet() as $k) {
+        if (!isset($schluessel[$k])) { $schluessel[$k] = array('fehlt' => 'behalten'); }
+    }
+    $p = marstek_paths();
+    return array(
+        'kennzeichen' => 'LoxBerry-Plugin-MarstekVenus',
+        'hinweis' => MARSTEK_SICHERUNG_MERKMAL . ' Diese Datei enthaelt das Aktionstoken und die Geraeteadressen - '
+                   . 'sie ist wie ein Passwort zu behandeln.',
+        'home' => (string) $p['lbhome'], 'ordner' => (string) $p['plugin'],
+        'plugin_cfg' => dirname(dirname(__DIR__)) . '/plugin.cfg',
+        'vorgaben' => marstek_vorgaben(),
+        'schluessel' => $schluessel,
+        'nie_aus_datei' => array('ansage_token_herkunft', 'ansage_aus_datei'),
+        'uebersetzer' => 'marstek_sicherung_uebersetzen',
+        'vorbehandeln' => 'marstek_sicherung_vorbehandeln',
+        'pruefen' => function ($k, $w) {
+            $g = marstek_wert_pruefen($k, $w);
+            return $g === '' ? '' : $k . ': ' . $g;
+        },
+        'quer' => function ($neu, $r) {
+            // Wie bis 1.1.34: erst, wenn jeder Wert fuer sich taugt.
+            if ($r['beanstandet']) { return array(); }
+            $aus = array();
+            foreach (marstek_cfg_kreuzmaengel($neu) as $z) { $aus[] = array('-', $z); }
+            return $aus;
+        },
+        'jetzt' => function () { return marstek_config(); },
+        't' => 'marstek_t',
+        'e' => 'marstek_e',
+    );
+}
+
+/**
+ * Die Schluessel, die eine Sicherung mit Kopf (1.1.5 bis 1.1.34) noch nicht trug - gemessen 14.11.2026 an den
+ * Dateien, die der Knopf jeder dieser Fassungen liefert: bremse_abstand_ein seit 1.1.18, die fuenf wache_* seit
+ * 1.1.19, befehle_mqtt_ein seit 1.1.25, endpunkt_ein, haus_preis_ein, haus_urlaub_ein, urlaub_soc_min,
+ * urlaub_soc_max und haus_speicher_ein seit 1.1.27, tts, ansage_regeln und ansage_haken seit 1.1.30. Fehlen sie,
+ * behalten sie den geltenden Wert - wie bis 1.1.34, als jeder fehlende Schluessel den laufenden Wert behielt.
+ */
+function marstek_sicherung_spaet()
+{
+    return array('bremse_abstand_ein', 'wache_ein', 'wache_fenster_min', 'wache_lb_melden', 'wache_sperren_ein',
+                 'wache_erlaubt', 'befehle_mqtt_ein', 'endpunkt_ein', 'haus_preis_ein', 'haus_urlaub_ein',
+                 'urlaub_soc_min', 'urlaub_soc_max', 'haus_speicher_ein', 'tts', 'ansage_regeln', 'ansage_haken');
+}
+
+/**
+ * Eine Sicherung ohne Kennzeichen _plugin: eine aeltere dieser Linie (1.1.5 bis 1.1.34) beginnt ihren Kopf
+ * _hinweis mit MARSTEK_SICHERUNG_MERKMAL und traegt die Geraeteliste - das schreibt nur der eigene Knopf.
+ * Eine Datei ganz ohne Kopf (1.1.4 und frueher) ist von einer fremden nicht sicher zu unterscheiden und wird
+ * abgewiesen (Entscheidung des Hausherrn 12.11.2026). Rueckgabe fuer das Modul: die Daten oder null.
+ */
+function marstek_sicherung_uebersetzen($daten)
+{
+    $h = (is_array($daten) && isset($daten['_hinweis']) && is_string($daten['_hinweis'])) ? $daten['_hinweis'] : '';
+    if (strpos($h, MARSTEK_SICHERUNG_MERKMAL) !== 0 || !array_key_exists('devices', $daten)) {
+        return null;
+    }
+    return $daten;
+}
+
+/**
+ * Der Block tts vor der Pruefung - was bis 1.1.34 marstek_ansage_sicherung_vor() an der rohen Datei tat, jetzt
+ * nach dem Verwerfen unbekannter Unterschluessel (Bauart Beschattung_Fensterbilanz 0.12.32): ein Block mit
+ * Sprechtoken oder mit einem unzulaessigen Wert wird unbrauchbar gemacht (die Wertpruefung nennt ihn), sonst
+ * vervollstaendigt, und die geltenden Sprechtoken bleiben. Fehlt der Block, behaelt das Modul den geltenden
+ * ('fehlt' => 'behalten').
+ */
+function marstek_sicherung_vorbehandeln($bereit, $jetzt)
+{
+    if (!array_key_exists('tts', $bereit)) { return $bereit; }
+    $j = marstek_ansage_cfg();
+    $jt = isset($j['tts']) && is_array($j['tts']) ? $j['tts'] : array();
+    $g = '';
+    $p = is_array($bereit['tts']) ? ansage_wert_pruefen($bereit['tts'], $g, marstek_ansage_modi()) : null;
+    if (!is_array($bereit['tts']) || ansage_sicherung_mangel($bereit['tts']) || $p === null) {
+        $bereit['tts'] = 'ABGEWIESEN';
+    } else {
+        list($tv) = ansage_vervollstaendigen($p, 'aus');
+        $bereit['tts'] = ansage_sicherung_tokens_behalten($tv, $jt);
+    }
+    return $bereit;
+}
+
+/**
+ * Die Sicherung als Feld: lesbarer Kopf (_hinweis, _plugin, _fassung, _stand; _warnung, wenn das eigene
+ * Zurueckspielen die Datei abwiese - nur Namen) und alle Schluessel der Vorgaben aus der geltenden
+ * Konfiguration, samt Aktionstoken; ohne Sprechtoken und ohne die beiden Vermerke. Geliefert wird sie auch mit
+ * _warnung: sie ist die einzige Kopie des Aktionstokens.
  */
 function marstek_sicherung_schreiben()
 {
-    $cfg = marstek_config();
-    $kopf = array(
-        '_hinweis' => 'Sicherung der Einstellungen des LoxBerry-Plugins Marstek Venus E. '
-                    . 'Diese Datei enthaelt das Aktionstoken und die Geraeteadressen - '
-                    . 'sie ist wie ein Passwort zu behandeln.',
-        '_stand'   => date('Y-m-d H:i'),
-        '_fassung' => marstek_fassung(),
-    );
-    /* X-3: bestuende diese Sicherung das eigene Zurueckspielen nicht, sagt es
-     * der Kopf. Geliefert wird sie trotzdem - sie ist die einzige Kopie des
-     * Aktionstokens, und der Wert laesst sich nach dem Zurueckspielen in der
-     * Oberflaeche berichtigen. */
-    list(, $mv_m) = marstek_sicherung_pruefen($cfg, $cfg);
-    if ($mv_m) {
-        $mv_mt = array();
-        foreach ($mv_m as $mv_z) {
-            $mv_mt[] = strncmp($mv_z, 'WERT:', 5) === 0 ? substr($mv_z, 5) : $mv_z;
-        }
-        $kopf['_warnung'] = 'Diese Sicherung wuerde beim Zurueckspielen abgewiesen: ' . implode(' | ', $mv_mt)
-                          . '. Bitte den Wert in der Oberflaeche berichtigen und neu sichern.';
-    }
-    return $kopf + marstek_ansage_fuer_sicherung($cfg);     // 1.1.30: nie ein Sprechtoken
+    return sicherung_bauen(marstek_sicherung_beschreibung(), marstek_config());
 }
 
-/**
- * Eine hochgeladene Sicherung einlesen.
- *
- * Rueckgabe in der Hausform: array(Konfiguration|null, Maengel, Anzahl).
- * null heisst abgelehnt, und dann wird GAR NICHTS geschrieben - alle
- * Beanstandungen werden gesammelt, nicht die erste gemeldet.
- *
- * Die Form ist nicht beliebig: sicherung_wirkung.py stellt sie fest, bevor
- * es urteilt, und meldet fuer eine andere "andere Bauart - von Hand
- * ansehen". Genau das war der Grund, warum die drei Hauswerkzeuge diese
- * Linie bis 1.1.4 ueberhaupt nicht gemessen haben.
- */
-function marstek_sicherung_lesen($roh)
-{
-    $roh = marstek_ansage_sicherung_vor($roh);     // 1.1.30: Token und Vermerk bleiben die geltenden
-    $hinweise = array();
-    $neu = json_decode((string) $roh, true);
-    if (!is_array($neu)) {
-        return array(null, array('KEIN_JSON'), 0, array());
-    }
-    /* X-3 (Verbesserungsbau 30.09.2026): die Pruefung steht in
-     * marstek_sicherung_pruefen() - dieselbe, mit der "Einstellungen sichern"
-     * die eigene Sicherung vorher ansieht. */
-    $laufend = marstek_config();
-    list($neu, $meldungen) = marstek_sicherung_pruefen($neu, $laufend);
-    if ($meldungen) {
-        return array(null, $meldungen, $meldungen[0] === 'FREMD' ? 0 : count($neu), array());   // fail closed
-    }
-    $vorgaben = marstek_vorgaben();
-    /* C10 (Durchgang 30.09.2026): ein leeres oder fehlendes Aktionstoken heisst
-     * "kein Token gesichert" (Regeln/05) - das laufende bleibt.
-     *
-     * Bis 1.1.17 wurde es als '' geschrieben. Gemessen: "zurueckgespielt"
-     * gemeldet, der Endpunkt antwortete jedem Token mit 403, und beim naechsten
-     * Seitenaufbau stellte die Selbstheilung die ALTE Konfiguration aus der
-     * Zweitschrift her - das Zurueckgespielte lag danach als .kaputt daneben.
-     * Gibt es gar kein laufendes Token, entsteht eines wie bei einer neuen
-     * Anlage, und die Meldung sagt es. */
-    if (!isset($neu['aktionstoken']) || trim((string) $neu['aktionstoken']) === '') {
-        $lt = isset($laufend['aktionstoken']) ? trim((string) $laufend['aktionstoken']) : '';
-        if ($lt !== '') {
-            $neu['aktionstoken'] = $lt;
-            $hinweise[] = 'TOKEN_BEHALTEN';
-        } else {
-            $neu['aktionstoken'] = marstek_token_erzeugen();
-            $hinweise[] = 'TOKEN_NEU';
-        }
-    }
-    /* Fehlende Schluessel behalten den LAUFENDEN Wert, nicht die
-     * Werkseinstellung (Oberflaeche Nr. 3): bis 1.1.17 schaltete eine Datei
-     * mit nur devices und aktionstoken MQTT und die Schutzschwellen still ab. */
-    $fehlend = array_values(array_diff(array_keys($vorgaben), array_keys($neu)));
-    $vollstaendig = array_intersect_key($neu + $laufend + $vorgaben, $vorgaben);
-    if ($fehlend) {
-        $hinweise[] = 'BEHALTEN:' . implode(', ', $fehlend);
-    }
-    if (!marstek_cfg_schreiben($vollstaendig)) {
-        return array(null, array('SCHREIBEN'), count($neu), array());
-    }
-    marstek_log('Konfiguration aus einer hochgeladenen Datei zurueckgespielt'
-        . ($hinweise ? ' (' . implode('; ', $hinweise) . ')' : '') . '.');
-    return array($vollstaendig, array(), count($neu), $hinweise);
-}
-
-/**
- * X-3 (Verbesserungsbau 30.09.2026): die Pruefung einer Sicherung, ohne etwas
- * zu schreiben. Bis 1.1.18 stand sie nur in marstek_sicherung_lesen(); jetzt
- * ruft sie auch die Warnung am Knopf "Einstellungen sichern", damit beide
- * dasselbe sagen. $laufend fuellt fehlende Schluessel fuer die Kreuzpruefung
- * (wie beim Zurueckspielen). Rueckgabe: array(Datei ohne Kopf, Gruende) -
- * Gruende leer = die Datei bestuende das Zurueckspielen.
- */
-function marstek_sicherung_pruefen(array $neu, array $laufend)
-{
-    // Der lesbare Kopf wird UEBERGANGEN, nicht beanstandet.
-    foreach (array_keys($neu) as $k) {
-        if ($k !== '' && is_string($k) && $k[0] === '_') {
-            unset($neu[$k]);
-        }
-    }
-    if (!array_key_exists('devices', $neu)) {
-        return array($neu, array('FREMD'));
-    }
-    $vorgaben = marstek_vorgaben();
-    $fremd = array_diff(array_map('strval', array_keys($neu)), array_keys($vorgaben));
-    if ($fremd) {
-        return array($neu, array('UNBEKANNT:' . implode(', ', array_slice($fremd, 0, 8))));
-    }
-    $meldungen = array();
-    foreach ($neu as $k => $v) {
-        $grund = marstek_wert_pruefen($k, $v);
-        if ($grund !== '') {
-            $meldungen[] = 'WERT:' . $k . ': ' . $grund;
-        }
-    }
-    if ($meldungen) {
-        return array($neu, $meldungen);
-    }
-    foreach (marstek_cfg_kreuzmaengel(array_intersect_key($neu + $laufend + $vorgaben, $vorgaben)) as $z) {
-        $meldungen[] = 'WERT:' . $z;
-    }
-    return array($neu, $meldungen);
-}
-
-/** X-3: Wuerde die EIGENE Sicherung beim Zurueckspielen abgewiesen?
- *  Dieselbe Pruefung ueber das, was "Einstellungen sichern" liefert.
- *  Rueckgabe: die Gruende (leer = besteht). */
+/** X-3: Wuerde die EIGENE Sicherung beim Zurueckspielen abgewiesen? Dieselbe Pruefung wie beim Zurueckspielen
+ *  (sicherung_selbstpruefung() des Moduls) ueber das, was "Einstellungen sichern" liefert. Rueckgabe: die Namen
+ *  der beanstandeten Schluessel, nie Werte (leer = besteht). */
 function marstek_sicherung_eigene_maengel()
 {
-    list(, $m) = marstek_sicherung_pruefen(marstek_sicherung_schreiben(), marstek_config());
-    return $m;
-}
-
-/** Die Fassung aus der plugin.cfg - eine Quelle, kein zweiter Ort. */
-function marstek_fassung()
-{
-    /* NEU: zuerst LoxBerry selbst fragen.
-     *
-     * Am Geraet gemessen (07.09.2026): plugininstall.pl liest die
-     * plugin.cfg aus dem Auspackordner und loescht sie danach -
-     * installiert wird sie NIRGENDWOHIN. Eine Fassungsfunktion, die nur
-     * Dateien kennt, gibt auf jeder Installation eine leere Zeichenkette
-     * zurueck; im Arbeitsordner faellt das nie auf, weil dort der
-     * Archivfall der Kandidatenliste immer trifft.
-     *
-     * LBSystem::pluginversion() (loxberry_system.php:403) liest die
-     * plugindatabase.json und ist die Auskunft von LoxBerry selbst.
-     * Die Dateikandidaten darunter bleiben stehen - sie tragen den
-     * Auspackordner, und der ist der Pruefstand. */
-    if (class_exists('LBSystem', false)
-        && method_exists('LBSystem', 'pluginversion')) {
-        /* Ueber den Ordnernamen fragen (Regeln/03): ohne Argument haengt die
-         * Antwort am ersten eingebundenen Skript - am Geraet gemessen
-         * 17.09.2026: aus einem fremden Einstieg (php -r) NULL, mit dem
-         * Ordnernamen die installierte Fassung. Installiert liegt diese Datei
-         * unter webfrontend/html(auth)/plugins/<ordner>/. */
-        $aus = @LBSystem::pluginversion(basename(__DIR__));
-        if ($aus !== null && trim((string) $aus) !== '') {
-            return trim((string) $aus);
-        }
-    }
-    /* BERICHTIGT 25.09.2026: der erste Kandidat entsteht nur mit Wurzel. Bis
-     * 1.1.15 stand er auch ohne da - aus '' . '/config/plugins/...' wurde ein
-     * Pfad ab der Laufwerkswurzel, und eine plugin.cfg dort bestimmte die
-     * Fassung (in WSL gemessen, Pruefung-MarstekVenus-1.1.16, Fall C6). */
-    $p = marstek_paths();
-    $kandidaten = array();
-    if ($p['lbhome'] !== '') {
-        $kandidaten[] = $p['lbhome'] . '/config/plugins/' . $p['plugin'] . '/plugin.cfg';
-    }
-    $kandidaten[] = dirname(dirname(dirname(__DIR__))) . '/plugin.cfg';
-    $kandidaten[] = dirname(dirname(__DIR__)) . '/plugin.cfg';
-    foreach ($kandidaten as $k) {
-        if (is_file($k) && preg_match('/^VERSION\s*=\s*(\S+)/m',
-                                      (string) @file_get_contents($k), $m)) {
-            return trim($m[1]);
-        }
-    }
-    return '';
+    $cfg = marstek_config();
+    $daten = sicherung_bauen(marstek_sicherung_beschreibung(), $cfg);
+    unset($daten['_warnung']);
+    return sicherung_selbstpruefung(marstek_sicherung_beschreibung(), $daten, $cfg);
 }
 
 /**
@@ -2206,48 +2160,6 @@ function marstek_ansage_wert($k, $w)
             return in_array($w, array(0, 1, '0', '1'), true);
     }
     return false;
-}
-
-/** Fuer die Sicherung: nie ein Sprechtoken, nie der Herkunftsvermerk. Ausgabeart, Ziele, Regeln und Haken reisen mit. */
-function marstek_ansage_fuer_sicherung(array $c)
-{
-    unset($c['ansage_token_herkunft'], $c['ansage_aus_datei']);
-    if (isset($c['tts']) && is_array($c['tts'])) { $c['tts'] = ansage_sicherung_bereinigen($c['tts']); }
-    return $c;
-}
-
-/**
- * Vor dem Zurueckspielen. Eine Datei mit Sprechtoken wird abgewiesen (der Block wird unbrauchbar gemacht, die Wertpruefung nennt ihn). Die geltenden Token und der Vermerk bleiben.
- * Fehlt ein Schluessel (Sicherung einer aelteren Fassung), gilt der geltende Wert: Ein bewusstes AUS geht beim Zurueckspielen nicht verloren.
- */
-function marstek_ansage_sicherung_vor($roh)
-{
-    $d = json_decode((string) $roh, true);
-    if (!is_array($d)) { return $roh; }
-    $inhalt = false;
-    foreach (array_keys($d) as $k) { if ((string) $k !== '' && ((string) $k)[0] !== '_') { $inhalt = true; } }
-    if (!$inhalt) { return $roh; }
-    $j = marstek_ansage_cfg();
-    unset($d['ansage_token_herkunft'], $d['ansage_aus_datei']);
-    $jt = isset($j['tts']) && is_array($j['tts']) ? $j['tts'] : array();
-    if (array_key_exists('tts', $d)) {
-        $g = '';
-        $p = is_array($d['tts']) ? ansage_wert_pruefen($d['tts'], $g, marstek_ansage_modi()) : null;
-        if (ansage_sicherung_mangel($d['tts']) || $p === null) {
-            $d['tts'] = 'ABGEWIESEN';
-        } else {
-            list($tv) = ansage_vervollstaendigen($p, 'aus');
-            $d['tts'] = ansage_sicherung_tokens_behalten($tv, $jt);
-        }
-    } else {
-        $d['tts'] = marstek_tts($j);
-    }
-    foreach (array_diff(marstek_ansage_schluessel(), array('tts', 'ansage_token_herkunft', 'ansage_aus_datei')) as $k) {
-        if (!array_key_exists($k, $d) && array_key_exists($k, $j)) { $d[$k] = $j[$k]; }
-    }
-    $d['ansage_token_herkunft'] = isset($j['ansage_token_herkunft']) && is_array($j['ansage_token_herkunft']) ? $j['ansage_token_herkunft'] : array();
-    $d['ansage_aus_datei'] = 1;
-    return (string) json_encode($d);
 }
 
 /**
@@ -5894,8 +5806,9 @@ function marstek_vorlage($satz = 'status', $dev = 1) {
             // Befehlserkennung ('check' weiter unten), der Titel ist davon
             // unabhaengig. Der Zwang, den technischen Namen zu fuehren, gilt
             // ausdruecklich nur fuer GATEWAY-Eingaenge; dort benennt das
-            // Gateway nach dem Thema, und wer den Titel verschoenert, bekommt
-            // beim naechsten Empfang einen zweiten Eingang.
+            // Gateway die Werte nach dem Thema und ordnet nur ueber den Namen
+            // zu: der Virtuelle Eingang wird in Loxone Config mit genau diesem
+            // Titel angelegt (Regeln/07, berichtigt 1.1.35).
             //
             // 'kurz' ist ueber alle vier Saetze eindeutig (43 Felder, 43
             // verschiedene Werte, laengster 28 Zeichen - nachgemessen). Das
@@ -7036,7 +6949,15 @@ function marstek_mqtt_praefix_abraeumen($praefix, $runden = 3)
  * Lesen entfernt und gilt zwei Minuten. */
 function marstek_einmalmeldung_datei()
 {
-    return marstek_datadir() . '/einmalmeldung.json';
+    /* 1.1.35: am Ort der Hausregel (Regeln/04, Nachtrag zur Umleitung): data/plugins/<ordner>/einmalmeldung.json.
+     * Bis 1.1.34 lag sie im Verlaufsordner <ordner>.verlauf neben dem Datenordner; die Meldung lebt 120 s und
+     * muss kein Update ueberstehen. Ohne LoxBerry-Wurzel (Archiv, Pruefstand ohne Wurzel) wie bisher. */
+    $p = marstek_paths();
+    if ((string) $p['data_alt'] === '') {
+        return marstek_datadir() . '/einmalmeldung.json';
+    }
+    if (!is_dir($p['data_alt'])) { @mkdir($p['data_alt'], 0775, true); }
+    return $p['data_alt'] . '/einmalmeldung.json';
 }
 
 function marstek_einmalmeldung_schreiben(array $d)
@@ -7475,25 +7396,46 @@ function marstek_selbsttest()
         strpos($mv_ep, dirname($mv_pf['log'])) === 0, false);
     $pruefe('Taktschranke definiert', defined('MARSTEK_TAKT_SCHRANKE'), true);
 
-    /* --- X-3: dieselbe Pruefung fuer Sichern und Zurueckspielen --- */
+    /* --- X-3: dieselbe Pruefung fuer Sichern und Zurueckspielen ---
+     * 1.1.35: ueber das gemeinsame Sicherungsmodul (sicherung_lesen() mit der Beschreibung dieser Linie). Bis
+     * 1.1.34 wies ein unbekannter Schluessel die Datei ab; seither wird er verworfen und genannt (Regel 2). */
+    $mv_sb = marstek_sicherung_beschreibung();
     $mv_sv = marstek_vorgaben();
     $mv_sv['devices'] = array(array('ip' => '192.168.1.2', 'nr' => 1));
-    list(, $mv_sm) = marstek_sicherung_pruefen($mv_sv, $mv_sv);
-    $pruefe('X-3: Vorgaben bestehen das Zurueckspielen', $mv_sm, array());
-    $mv_sv['cache_sec'] = 400;
-    list(, $mv_sm) = marstek_sicherung_pruefen($mv_sv, $mv_sv);
-    $pruefe('X-3: cache_sec 400 wird beanstandet', count($mv_sm) === 1 && strpos($mv_sm[0], 'WERT:cache_sec') === 0, true);
-    $mv_sv['cache_sec'] = 40;
-    $mv_sv['soc_min'] = 50;
-    $mv_sv['soc_max'] = 50;
-    list(, $mv_sm) = marstek_sicherung_pruefen($mv_sv, $mv_sv);
-    $pruefe('X-3: Kreuzpruefung soc_min = soc_max', count($mv_sm), 1);
-    $mv_sv['soc_min'] = 5;
-    $mv_sv['soc_max'] = 98;
-    $mv_sv['_warnung'] = 'Kopf';
-    $mv_sv['altschluessel'] = 1;
-    list(, $mv_sm) = marstek_sicherung_pruefen($mv_sv, $mv_sv);
-    $pruefe('X-3: Kopf uebergangen, fremder Schluessel beanstandet', $mv_sm, array('UNBEKANNT:altschluessel'));
+    $mv_sd = sicherung_bauen($mv_sb, $mv_sv);
+    $mv_lies = function ($d) use ($mv_sb, $mv_sv) {
+        return sicherung_lesen($mv_sb, (string) json_encode($d), $mv_sv);
+    };
+    $mv_sr = $mv_lies($mv_sd);
+    $pruefe('X-3: Vorgaben bestehen das Zurueckspielen', array($mv_sr['ok'], $mv_sr['beanstandet']), array(true, array()));
+    $pruefe('X-3: Kennzeichen im Kopf', isset($mv_sd['_plugin']) ? $mv_sd['_plugin'] : '', 'LoxBerry-Plugin-MarstekVenus');
+    $mv_x = $mv_sd;
+    $mv_x['cache_sec'] = 400;
+    $mv_sr = $mv_lies($mv_x);
+    $pruefe('X-3: cache_sec 400 wird beanstandet', !$mv_sr['ok'] && count($mv_sr['beanstandet']) === 1
+        && $mv_sr['beanstandet'][0]['name'] === 'cache_sec', true);
+    $mv_x = $mv_sd;
+    $mv_x['soc_min'] = 50;
+    $mv_x['soc_max'] = 50;
+    $mv_sr = $mv_lies($mv_x);
+    $pruefe('X-3: Kreuzpruefung soc_min = soc_max', count($mv_sr['beanstandet']), 1);
+    $mv_x = $mv_sd;
+    $mv_x['_warnung'] = 'Kopf';
+    $mv_x['altschluessel'] = 1;
+    $mv_sr = $mv_lies($mv_x);
+    $pruefe('X-3: Kopf uebergangen, fremder Schluessel verworfen und genannt', array($mv_sr['ok'], $mv_sr['verworfen']),
+        array(true, array('altschluessel')));
+    $mv_x = $mv_sd;
+    $mv_x['_plugin'] = 'LoxBerry-Plugin-Fremd';
+    $pruefe('X-3: fremdes Kennzeichen abgewiesen', $mv_lies($mv_x)['fremd'], 'kennzeichen');
+    $mv_x = $mv_sd;
+    unset($mv_x['_plugin'], $mv_x['befehle_mqtt_ein']);
+    $mv_sr = $mv_lies($mv_x);
+    $pruefe('X-3: aeltere Sicherung am Kopf erkannt, Spaetschluessel behalten', array($mv_sr['eigen'], $mv_sr['fehlt_behalten']),
+        array('uebersetzt', array('befehle_mqtt_ein')));
+    $mv_x = $mv_sd;
+    unset($mv_x['_plugin'], $mv_x['_hinweis']);
+    $pruefe('X-3: Sicherung ohne Kennzeichen und ohne den eigenen Kopf abgewiesen', $mv_lies($mv_x)['fremd'], 'ohne');
 
     /* --- b1: Modell je Geraet --- */
     $pruefe('Modell: Mini erkannt', marstek_modell_erkennen('VenusE Mini 2.0'), 'venus_e_mini');
