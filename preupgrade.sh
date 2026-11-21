@@ -164,7 +164,13 @@ fi
 # unter ihm legt der Installer die Cron-Datei ab.
 PNAME="${2:-marstekvenus}"
 CRONALT="$BASE/system/cron/cron.01min/$PNAME"
-if [ -d "$CRONALT" ]; then
+# 1.1.39 (fremder Pruefer M1): der Plugin-Name aus $2 bildet den Pfad, den rm -r trifft - dieselbe Formel wie beim
+# Ordnernamen. Ein unbrauchbarer Name laesst das Cron-Verzeichnis unangesehen (gemeldet, nicht zurechtgebogen).
+MV_PNAME_OK=1
+case "$PNAME" in
+    ''|.|..|*/*) MV_PNAME_OK=0; echo "<WARNING> Unbrauchbarer Plugin-Name '$PNAME' - das Cron-Verzeichnis wurde nicht angesehen." ;;
+esac
+if [ "$MV_PNAME_OK" = 1 ] && [ -d "$CRONALT" ]; then
     if rm -r "$CRONALT" 2>/dev/null; then
         echo "<OK> Altes Cron-Verzeichnis entfernt (Altlast aus 1.0.4 und frueher); der minuetliche Cron laeuft nach diesem Update wieder."
     else

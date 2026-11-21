@@ -52,6 +52,12 @@ fi
 
 PDIR=$3
 [ -n "$PDIR" ] || PDIR="marstekvenus"
+# 1.1.39 (fremder Pruefer M2/M3): der Ordnername wird VOR dem ersten rm geprueft - bis 1.1.38 stand die Pruefung erst
+# am Ende, nach rm -rf auf befehle/, .verlauf, .upgrade_sicherung und rm -f auf .backup.json. Form wie Fensterbilanz
+# 0.12.37 und Alexa-NG 1.0.22, dazu "system" (Regeln/06).
+case "$PDIR" in
+    ''|.|..|*/*|system) echo "<WARNING> Unbrauchbarer Ordnername '$PDIR' - nichts geloescht."; exit 1 ;;
+esac
 BASE="${5:-$LBHOMEDIR}"
 # Die Wurzel: $5 (vom Installer) oder $LBHOMEDIR, wenn dort config/plugins und
 # data/plugins liegen - sonst vom eigenen Ablageort AUFWAERTS SUCHEN, bis ein
@@ -263,9 +269,7 @@ fi
 # Installation nach .alt, preupgrade.sh eine alte Update-Sicherung ebenso;
 # die Marke entsteht in preupgrade.sh. Alles liegt NEBEN den Ordnern, die
 # LoxBerry wegraeumt - die .alt der Zweitschrift traegt das Aktionstoken.
-case "$PDIR" in
-    ''|*/*|*..*) echo "<WARNING> Unzulaessiger Ordnername '$PDIR' - .alt nicht abgeraeumt."; exit 0 ;;
-esac
+# (Der Ordnername ist seit 1.1.39 oben vor dem ersten rm geprueft.)
 for ALT in "$BASE/config/plugins/$PDIR.backup.json.alt" \
            "$BASE/data/plugins/$PDIR.verlauf.alt" \
            "$BASE/data/plugins/$PDIR.upgrade_sicherung.alt" \

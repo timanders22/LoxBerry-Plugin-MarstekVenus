@@ -307,6 +307,12 @@ function mv_namenstabelle_pruefen()
 function mv_vorlagen_pruefen()
 {
     $gut = 0; $gesamt = 0; $fehler = array();
+    /* 1.1.39 (fremder Pruefer M5): SimpleXML liegt auf Debian im Paket php-xml, das dpkg/apt nicht nachzieht. Ohne die
+     * Erweiterung brach hier der ganze Reiter Test mit "Call to undefined function" ab (gemessen in WSL mit PHP ohne
+     * xml-Erweiterungen). Jetzt der dritte Ausgang "nicht feststellbar" (gesamt -1) - Wache wie Raumklima 0.11.40. */
+    if (!function_exists('simplexml_load_string')) {
+        return array(0, -1, array());
+    }
     $alt = libxml_use_internal_errors(true);
     foreach (marstek_vorlagen_alle() as $name => $inhalt) {
         $gesamt++;
@@ -484,10 +490,14 @@ function mv_test_seite($ft, $plugindir, array $cfg, array $devices, $suchergebni
 
     // --- Vorlagen
     list($v_gut, $v_ges, $v_fehler) = mv_vorlagen_pruefen();
+    if ($v_ges < 0) {
+        mv_pruefzeile(marstek_t('TEST.Z_VORLAGEN'), null, marstek_t('TEST.VORLAGEN_KEIN_XML'));   // 1.1.39 (M5)
+    } else {
     mv_pruefzeile(marstek_t('TEST.Z_VORLAGEN'), $v_ges > 0 && $v_gut === $v_ges,
         $v_ges === 0 ? marstek_t('TEST.VORLAGEN_KEINE')
                      : sprintf(marstek_t('TEST.VORLAGEN_TEXT'), $v_gut, $v_ges)
                        . ($v_fehler ? ' - ' . implode(', ', $v_fehler) : ''));
+    }
 
     // --- Die eigene Oberflaeche
     list($leiste, $bereiche, $liste, $formulare, $mit_token) = mv_oberflaeche_zaehlen();
@@ -572,7 +582,7 @@ function mv_test_seite($ft, $plugindir, array $cfg, array $devices, $suchergebni
             sprintf(marstek_t('TEST.PREISQUELLE_EIGEN'), $mv_pgt)
             . ($mv_ps > 0 && $mv_ps < 3600 ? ' ' . sprintf(marstek_t('TEST.PREISQUELLE_SCHRITT'), $mv_ps) : ''));
     }
-    $mv_ul = marstek_urlaub_lage($mv_hc, $mv_hq);
+    $mv_ul = marstek_urlaub_lage_kalender($mv_hc, $mv_hq);   // 1.1.39 (E3): die Zeile zeigt den Kalender, die Abwesenheit hat ihre eigene
     if ($mv_ul === 'aus') {
         mv_pruefzeile(marstek_t('TEST.Z_URLAUB'), true, marstek_t('TEST.URLAUB_AUS'));
     } elseif ($mv_ul === 'urlaub') {
@@ -592,6 +602,52 @@ function mv_test_seite($ft, $plugindir, array $cfg, array $devices, $suchergebni
         mv_pruefzeile(marstek_t('TEST.Z_URLAUB_LETZTE'), null, sprintf(marstek_t('TEST.URLAUB_LETZTE'),
             date('d.m. H:i:s', (int) $mv_ub['zeit']), (int) $mv_ub['dev'], (int) $mv_ub['p'],
             preg_replace('/[^A-Z_]/', '', (string) $mv_ub['grund'])));
+    }
+    // 1.1.39 (E1): PV-Prognose aus haus/pv fuer die aWATTar-Kopplung
+    $mv_pvl = marstek_pv_lage($mv_hc, $mv_hq);
+    if ($mv_pvl['lage'] === 'aus') {
+        mv_pruefzeile(marstek_t('TEST.Z_PV'), true, marstek_t('TEST.PV_AUS'));
+    } elseif ($mv_pvl['lage'] === 'genug' || $mv_pvl['lage'] === 'zu_wenig') {
+        mv_pruefzeile(marstek_t('TEST.Z_PV'), true, sprintf(marstek_t($mv_pvl['lage'] === 'genug' ? 'TEST.PV_GENUG' : 'TEST.PV_ZU_WENIG'),
+            $mv_pvl['wert'], number_format((float) $mv_pvl['kwh'], 2, '.', ''), (int) $mv_pvl['schwelle']));
+    } else {
+        mv_pruefzeile(marstek_t('TEST.Z_PV'), null, marstek_t('TEST.PV_' . strtoupper($mv_pvl['lage'])));
+    }
+    // 1.1.39 (E2): Entladesperre beim E-Auto-Laden (haus/fahrzeug)
+    $mv_fzl = marstek_fahrzeug_lage($mv_hc, $mv_hq);
+    if ($mv_fzl['lage'] === 'aus') {
+        mv_pruefzeile(marstek_t('TEST.Z_FAHRZEUG'), true, marstek_t('TEST.FAHRZEUG_AUS'));
+    } elseif ($mv_fzl['lage'] === 'kein_fahrzeug') {
+        mv_pruefzeile(marstek_t('TEST.Z_FAHRZEUG'), null, marstek_t('TEST.FAHRZEUG_KEINES'));
+    } else {
+        $mv_fzt = array();
+        foreach ($mv_fzl['fahrzeuge'] as $mv_fzn => $mv_fzs) {
+            $mv_fzt[] = $mv_fzn . ': ' . marstek_t('TEST.FAHRZEUG_' . strtoupper($mv_fzs));
+        }
+        mv_pruefzeile(marstek_t('TEST.Z_FAHRZEUG'), $mv_fzl['lage'] === 'schweigt' ? null : true,
+            sprintf(marstek_t('TEST.FAHRZEUG_LAGE_' . strtoupper($mv_fzl['lage'])), implode(', ', $mv_fzt)));
+    }
+    $mv_fzb = is_file(marstek_tmpdir() . '/fahrzeug_letzte.json')
+        ? json_decode((string) @file_get_contents(marstek_tmpdir() . '/fahrzeug_letzte.json'), true) : null;
+    if ($mv_fzl['lage'] !== 'aus' && is_array($mv_fzb) && isset($mv_fzb['zeit'])) {
+        mv_pruefzeile(marstek_t('TEST.Z_FAHRZEUG_LETZTE'), null, sprintf(marstek_t('TEST.FAHRZEUG_LETZTE'),
+            date('d.m. H:i:s', (int) $mv_fzb['zeit']), (int) $mv_fzb['dev'], (int) $mv_fzb['p'],
+            preg_replace('/[^A-Z_]/', '', (string) $mv_fzb['grund'])));
+    }
+    // 1.1.39 (E3): lange Abwesenheit wie Urlaub (haus/anwesenheit)
+    $mv_abl = marstek_abwesend_lage($mv_hc, $mv_hq);
+    $mv_abs = $mv_abl['seit'] > 0 ? date('d.m. H:i', (int) $mv_abl['seit']) : '-';
+    if ($mv_abl['lage'] === 'aus') {
+        mv_pruefzeile(marstek_t('TEST.Z_ABWESEND'), true, marstek_t('TEST.ABWESEND_AUS'));
+    } elseif ($mv_abl['lage'] === 'da') {
+        mv_pruefzeile(marstek_t('TEST.Z_ABWESEND'), true, marstek_t('TEST.ABWESEND_DA'));
+    } elseif ($mv_abl['lage'] === 'weg_kurz') {
+        mv_pruefzeile(marstek_t('TEST.Z_ABWESEND'), true, sprintf(marstek_t('TEST.ABWESEND_KURZ'), $mv_abs, (int) $mv_abl['stunden']));
+    } elseif ($mv_abl['lage'] === 'abwesend') {
+        mv_pruefzeile(marstek_t('TEST.Z_ABWESEND'), true, sprintf(marstek_t('TEST.ABWESEND_JA'), $mv_abs, (int) $mv_abl['stunden'],
+            (int) $mv_hc['urlaub_soc_min'], (int) $mv_hc['urlaub_soc_max']));
+    } else {
+        mv_pruefzeile(marstek_t('TEST.Z_ABWESEND'), null, marstek_t('TEST.ABWESEND_SCHWEIGT'));
     }
     if (empty($mv_hc['haus_speicher_ein'])) {
         mv_pruefzeile(marstek_t('TEST.Z_HAUS_SPEICHER'), true, marstek_t('TEST.HAUS_SPEICHER_AUS'));

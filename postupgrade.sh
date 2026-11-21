@@ -7,6 +7,11 @@ ARGV5=$5
 # Das fuenfte Argument ist das Wurzelverzeichnis und traegt immer.
 LBHOMEDIR="${LBHOMEDIR:-$5}"
 PFOLDER="${ARGV3:-marstekvenus}"
+# 1.1.39 (fremder Pruefer M1/M3): ein Ordnername mit "/" oder "." waere ein Pfad hinaus - dieselbe Formel wie
+# preupgrade.sh, Hausstandard in allen Hakenskripten (Fensterbilanz 0.12.37, Alexa-NG 1.0.22). Vor jedem mkdir, cp und rm.
+case "$PFOLDER" in
+    ''|.|..|*/*) echo "<WARNING> Unbrauchbarer Ordnername '$PFOLDER' - nichts nachgesehen, nichts zurueckgespielt."; exit 1 ;;
+esac
 BASE="${ARGV5:-$LBHOMEDIR}"
 # Die Wurzel: $5 (vom Installer) oder $LBHOMEDIR, wenn dort config/plugins
 # und data/plugins liegen - sonst vom eigenen Ablageort AUFWAERTS SUCHEN, bis
@@ -121,6 +126,21 @@ fi
 # nichts wiederhergestellt wurde. Deshalb antwortet PHP - es liegt auf jedem
 # LoxBerry, und genau dieser Leser entscheidet spaeter auch im Plugin.
 # (mv_hat_token steht seit 1.1.27 weiter oben.)
+# 1.1.39 (fremder Pruefer M4): die Zweitschrift kommt ueber eine Nebendatei zurueck - zs_hinlegen() wortgleich wie in
+# preupgrade.sh (0600 vor dem Inhalt, cmp, dann mv -f). Bis 1.1.38 kopierte "cp -p" direkt an den Platz; brach die
+# Kopie ab (Platte voll), lag dort eine halbe Datei.
+zs_hinlegen() {   # $1 Quelle, $2 Ziel
+    [ -d "$2" ] && return 1
+    zs_neu="$2.neu.$$"
+    rm -f "$zs_neu" 2>/dev/null
+    if { : > "$zs_neu"; } 2>/dev/null && chmod 600 "$zs_neu" 2>/dev/null \
+       && cp "$1" "$zs_neu" 2>/dev/null && cmp -s "$1" "$zs_neu" \
+       && mv -f "$zs_neu" "$2" 2>/dev/null; then
+        return 0
+    fi
+    rm -f "$zs_neu" 2>/dev/null
+    return 1
+}
 if mv_hat_token "$BK" && ! mv_hat_token "$CF"; then
     # Der verdraengte Stand bleibt lesbar - es kann etwas darin stehen, das
     # nur der Bediener wiederherstellen kann.
@@ -129,9 +149,12 @@ if mv_hat_token "$BK" && ! mv_hat_token "$CF"; then
         chmod 600 "$CF.kaputt" 2>/dev/null
         echo "<INFO> Der vorherige Inhalt der Konfiguration liegt unter $CF.kaputt."
     fi
-    cp -p "$BK" "$CF"
-    chmod 600 "$CF" 2>/dev/null
-    echo "<OK> Die Konfiguration trug kein lesbares Aktionstoken und wurde aus der Zweitschrift wiederhergestellt."
+    if zs_hinlegen "$BK" "$CF"; then
+        chmod 600 "$CF" 2>/dev/null
+        echo "<OK> Die Konfiguration trug kein lesbares Aktionstoken und wurde aus der Zweitschrift wiederhergestellt."
+    else
+        echo "<WARNING> Die Konfiguration liess sich nicht aus der Zweitschrift $BK zurueckholen - die Zweitschrift bleibt unveraendert liegen."
+    fi
 fi
 # Gruppe 22 (1.1.27, Entwurf 3.2, E-E10): bestehende Anlage -> der HTTP-Lesezweig bleibt erreichbar
 # (endpunkt_ein=1), in Datei und Zweitschrift, nur wenn sie Inhalt tragen und der Schluessel fehlt. Nebendatei .neu

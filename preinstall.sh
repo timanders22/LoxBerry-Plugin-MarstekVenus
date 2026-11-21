@@ -39,7 +39,7 @@ if [ -z "$BASE" ] || [ ! -d "$BASE/config/plugins" ] || [ ! -d "$BASE/data/plugi
     exit 0
 fi
 case "$PFOLDER" in
-    ''|*/*|*..*) echo "<WARNING> Unzulaessiger Ordnername '$PFOLDER' - nichts beiseitegelegt."; exit 0 ;;
+    ''|.|..|*/*) echo "<WARNING> Unbrauchbarer Ordnername '$PFOLDER' - nichts beiseitegelegt."; exit 0 ;;   # 1.1.39 (M3): Hausform
 esac
 MARKE="$BASE/data/plugins/$PFOLDER.upgrade_laeuft"
 MV_PHP="$(command -v php 2>/dev/null)"

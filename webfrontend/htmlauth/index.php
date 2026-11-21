@@ -202,9 +202,30 @@ if ($mv_post && isset($_POST['vorlage_paket'])) {
     }
     mv_weiter('tab-loxone', array('fehler' => marstek_t('MELD.KEIN_ZIP')));
 }
+/**
+ * 1.1.39 (fremder Pruefer M7): die Geraetenummer einer Vorlage aus dem Formular. Fehlt das Feld, gilt wie bisher 1.
+ * Sonst muss es eine eingetragene Nummer sein (ohne eingetragenen Speicher nur 1, wie die Knoepfe sie anbieten). Bis
+ * 1.1.38 wurde (int) genommen und begrenzt: "abc" und 0 ergaben still die Vorlage fuer Speicher 1, 12 die fuer 9, und
+ * eine nicht eingetragene Nummer bekam eine Vorlage fuer einen Speicher, den es nicht gibt. Rueckgabe die Nummer oder
+ * null; abgewiesen wird mit Meldung (CLAUDE.md 4), nie zurechtgebogen.
+ */
+function mv_vorlage_dev()
+{
+    if (!isset($_POST['vorlage_dev'])) { return 1; }
+    $roh = $_POST['vorlage_dev'];
+    $devs = marstek_devices();
+    $gilt = $devs ? array_keys($devs) : array(1);
+    if (is_string($roh) && preg_match('/^[1-9][0-9]?\z/', $roh) && in_array((int) $roh, $gilt, true)) {
+        return (int) $roh;
+    }
+    $zeige = is_string($roh) ? substr(preg_replace('/[^A-Za-z0-9_-]/', '?', $roh), 0, 12) : '?';
+    mv_weiter('tab-loxone', array('fehler' => sprintf(marstek_t('MELD.VORLAGE_GERAET'), $zeige)));
+    return null;
+}
 if ($mv_post && isset($_POST['vorlage_vo'])) {
+    $mv_vdev = mv_vorlage_dev();   // 1.1.39 (M7): vor dem Leeren der Ausgabe - eine Abweisung leitet weiter
     while (ob_get_level() > 0) { ob_end_clean(); }   // Gruppe 22 (1.1.27, M2): nichts vor dem Download
-    list($mv_vname, $mv_vinhalt) = marstek_vo_vorlage(isset($_POST['vorlage_dev']) && is_string($_POST['vorlage_dev']) ? (int) $_POST['vorlage_dev'] : 1);
+    list($mv_vname, $mv_vinhalt) = marstek_vo_vorlage($mv_vdev);
     header('Content-Type: application/x-download');
     header('Content-Disposition: attachment; filename="' . $mv_vname . '"');
     echo $mv_vinhalt;
@@ -225,10 +246,10 @@ if ($mv_post && isset($_POST['vorlage_befehle'])) {
     exit;
 }
 if ($mv_post && isset($_POST['vorlage'])) {
+    $mv_vdev = mv_vorlage_dev();   // 1.1.39 (M7)
     while (ob_get_level() > 0) { ob_end_clean(); }   // Gruppe 22 (1.1.27, M2): nichts vor dem Download
     list($mv_vname, $mv_vinhalt) = marstek_vorlage(
-        is_string($_POST['vorlage']) ? $_POST['vorlage'] : 'status',
-        isset($_POST['vorlage_dev']) && is_string($_POST['vorlage_dev']) ? (int) $_POST['vorlage_dev'] : 1);
+        is_string($_POST['vorlage']) ? $_POST['vorlage'] : 'status', $mv_vdev);
     header('Content-Type: application/x-download');
     header('Content-Disposition: attachment; filename="' . $mv_vname . '"');
     echo $mv_vinhalt;
@@ -335,6 +356,12 @@ if ($mv_post && isset($_POST['mv_zurueck'])) {
  * O7 (30.09.2026): die Meldung folgt dem Rueckgabewert. Bis 1.1.17 kam bei
  * schreibgeschuetztem Protokoll gar keine Meldung, und die Zeile blieb. */
 if ($mv_post && isset($_POST['clearlog'])) {
+    /* 1.1.39 (fremder Pruefer M6): ein loeschender Knopf braucht einen Bestaetigungshaken (Regeln/04) - Form wie
+     * Fensterbilanz 0.12.37 und Raumklima 0.11.40 (log_bestaetigt, LOG.BESTAETIGEN, LOG.NICHT_BESTAETIGT). Ohne ihn
+     * geschieht nichts. */
+    if (empty($_POST['log_bestaetigt'])) {
+        mv_weiter('tab-log', array('fehler' => marstek_t('LOG.NICHT_BESTAETIGT')));
+    }
     if (!is_dir(dirname($mv_log_file))) { @mkdir(dirname($mv_log_file), 0775, true); }
     $mv_z = '[' . date('Y-m-d H:i:s') . '] ' . marstek_t('LOG.GELEERT') . "\n";
     if (@file_put_contents($mv_log_file, $mv_z) === strlen($mv_z)) {
@@ -665,6 +692,9 @@ if ($mv_post && isset($_POST['save'])) {
                        'vat' => 'EINST.L_UST', 'aufschlag_ct' => 'EINST.L_AUFSCHLAG', 'awattar' => 'EINST.L_MARKT',
                        // Energie-1 C1: die Schreiber-Wache (Nr. 16/19: abweisen, nichts speichern, Eingabe zurueck)
                        'wache_fenster_min' => 'EINST.L_WACHE_FENSTER', 'wache_erlaubt' => 'EINST.L_WACHE_ERLAUBT',
+                       'pv_schwelle_kwh' => 'EINST.L_PV_SCHWELLE',   // 1.1.39 E1
+                       'fahrzeug_namen' => 'EINST.L_FAHRZEUG_NAMEN',   // 1.1.39 E2
+                       'abwesend_stunden' => 'EINST.L_ABWESEND_STUNDEN',   // 1.1.39 E3
                        // Gruppe 22 (1.1.27, V2): das Urlaubsfenster
                        'urlaub_soc_min' => 'EINST.L_URLAUB_SOC_MIN', 'urlaub_soc_max' => 'EINST.L_URLAUB_SOC_MAX');
     $mv_neu = array();
@@ -689,6 +719,8 @@ if ($mv_post && isset($_POST['save'])) {
             $mv_neu[$mv_k] = (float) $v;
         } elseif ($mv_k === 'aufschlag_ct') {
             $mv_neu[$mv_k] = round((float) $v, 3);
+        } elseif ($mv_k === 'fahrzeug_namen') {
+            $mv_neu[$mv_k] = implode(',', (array) marstek_fahrzeug_liste_pruefen($v));   // 1.1.39 E2: Normalform "a,b"
         } elseif ($mv_k === 'awattar' || $mv_k === 'wache_erlaubt') {
             $mv_neu[$mv_k] = $v;
         } else {
@@ -700,6 +732,12 @@ if ($mv_post && isset($_POST['save'])) {
         $mv_neu[$mv_k] = isset($_POST[$mv_k]) ? 1 : 0;
         $mv_rueck[$mv_k] = $mv_neu[$mv_k];
     }
+    $mv_neu['pv_haus_ein'] = isset($_POST['pv_haus_ein']) ? 1 : 0;   // 1.1.39 E1
+    $mv_rueck['pv_haus_ein'] = $mv_neu['pv_haus_ein'];
+    $mv_neu['fahrzeug_sperre_ein'] = isset($_POST['fahrzeug_sperre_ein']) ? 1 : 0;   // 1.1.39 E2
+    $mv_rueck['fahrzeug_sperre_ein'] = $mv_neu['fahrzeug_sperre_ein'];
+    $mv_neu['haus_abwesend_ein'] = isset($_POST['haus_abwesend_ein']) ? 1 : 0;   // 1.1.39 E3
+    $mv_rueck['haus_abwesend_ein'] = $mv_neu['haus_abwesend_ein'];
     foreach (marstek_cfg_kreuzmaengel($mv_neu + $alt) as $mv_g) {
         $mv_maengel[] = $mv_g;
     }
@@ -803,7 +841,7 @@ if (is_array($mv_form_rueck)) {
                    'soc_min', 'soc_max', 'vat', 'aufschlag_ct', 'awattar',
                    'steuerung_ein', 'verteilen_ein', 'melden_ein', 'schutz_ein', 'bremse_abstand_ein',
                    'wache_ein', 'wache_fenster_min', 'wache_lb_melden', 'wache_sperren_ein', 'wache_erlaubt',
-                   'haus_preis_ein', 'haus_urlaub_ein', 'urlaub_soc_min', 'urlaub_soc_max') as $mv_k) {
+                   'pv_haus_ein', 'pv_schwelle_kwh', 'fahrzeug_sperre_ein', 'fahrzeug_namen', 'haus_abwesend_ein', 'abwesend_stunden', 'haus_preis_ein', 'haus_urlaub_ein', 'urlaub_soc_min', 'urlaub_soc_max') as $mv_k) {
         if (array_key_exists($mv_k, $mv_form_rueck) && is_scalar($mv_form_rueck[$mv_k])) {
             $mv_cfg[$mv_k] = $mv_form_rueck[$mv_k];
         }
@@ -852,7 +890,8 @@ $mv_err_lines = array_reverse(marstek_log_ende($mv_err_file, 50));
 $mv_use_frame = class_exists('LBWeb', false);
 if ($mv_use_frame) {
     // Gruppe 22 (1.1.27, E3): die eigene Plugin-Seite im Wiki (am 25.10.2026 mit curl: HTTP 200).
-    LBWeb::lbheader('Marstek Venus E', 'https://wiki.loxberry.de/plugins/marstekvenus/start', 'help.html');
+    require_once __DIR__ . '/fassung.php';   // Fassung im Titel: gemeinsames Stueck fassung.php (21.11.2026)
+    LBWeb::lbheader(plugin_kopftitel('Marstek Venus E', __DIR__), 'https://wiki.loxberry.de/plugins/marstekvenus/start', 'help.html');
 }
 $mv_host = marstek_e(isset($_SERVER['HTTP_HOST']) ? $_SERVER['HTTP_HOST'] : '<loxberry-ip>');
 $mv_ft = marstek_e(marstek_formtoken());
@@ -1261,6 +1300,26 @@ for ($i = 0; $i < 4; $i++) {
 </div>
 <div class="sm-hilfe"><?= marstek_e(marstek_t('EINST.H_HAUS_URLAUB')) ?></div>
 <div class="sm-hilfe"><?= marstek_e(marstek_t('EINST.H_URLAUB_AUTO')) ?></div>
+<?php /* 1.1.39 (E2): Entladesperre beim E-Auto-Laden (haus/fahrzeug), ab Werk aus. */ ?>
+<label style="display:inline-flex;align-items:center;gap:6px;margin-top:14px;">
+    <input data-role="none" type="checkbox" name="fahrzeug_sperre_ein" <?= !empty($mv_cfg['fahrzeug_sperre_ein']) ? 'checked' : '' ?>>
+    <?= marstek_e(marstek_t('EINST.L_FAHRZEUG_SPERRE')) ?>
+</label>
+<div class="sm-row" style="margin-top:6px;">
+    <div><label><?= marstek_e(marstek_t('EINST.L_FAHRZEUG_NAMEN')) ?></label>
+        <input<?= mv_fa('fahrzeug_namen') ?> data-role="none" type="text" name="fahrzeug_namen" value="<?= mv_wert($mv_cfg['fahrzeug_namen']) ?>" maxlength="200"></div>
+</div>
+<div class="sm-hilfe"><?= marstek_e(marstek_t('EINST.H_FAHRZEUG')) ?></div>
+<?php /* 1.1.39 (E3): lange Abwesenheit (haus/anwesenheit, Plugin BLE-Scanner NG) wie Urlaub, ab Werk aus. */ ?>
+<label style="display:inline-flex;align-items:center;gap:6px;margin-top:14px;">
+    <input data-role="none" type="checkbox" name="haus_abwesend_ein" <?= !empty($mv_cfg['haus_abwesend_ein']) ? 'checked' : '' ?>>
+    <?= marstek_e(marstek_t('EINST.L_ABWESEND')) ?>
+</label>
+<div class="sm-row" style="margin-top:6px;">
+    <div style="max-width:240px;"><label><?= marstek_e(marstek_t('EINST.L_ABWESEND_STUNDEN')) ?></label>
+        <input<?= mv_fa('abwesend_stunden') ?> data-role="none" type="number" name="abwesend_stunden" value="<?= mv_wert($mv_cfg['abwesend_stunden']) ?>" min="1" max="720"></div>
+</div>
+<div class="sm-hilfe"><?= marstek_e(marstek_t('EINST.H_ABWESEND')) ?></div>
 
 <h2><?= marstek_e(marstek_t('EINST.H_MELDEN')) ?></h2>
 <label style="display:inline-flex;align-items:center;gap:6px;">
@@ -1300,6 +1359,16 @@ for ($i = 0; $i < 4; $i++) {
     <?= marstek_e(marstek_t('EINST.L_HAUS_PREIS')) ?>
 </label>
 <div class="sm-hilfe"><?= marstek_e(marstek_t('EINST.H_HAUS_PREIS')) ?></div>
+<?php /* 1.1.39 (E1): PV-Prognose (haus/pv, Plugin Weatherdata) fuer die aWATTar-Kopplung, ab Werk aus. */ ?>
+<label style="display:inline-flex;align-items:center;gap:6px;margin-top:14px;">
+    <input data-role="none" type="checkbox" name="pv_haus_ein" <?= !empty($mv_cfg['pv_haus_ein']) ? 'checked' : '' ?>>
+    <?= marstek_e(marstek_t('EINST.L_PV_HAUS')) ?>
+</label>
+<div class="sm-row" style="margin-top:6px;">
+    <div style="max-width:240px;"><label><?= marstek_e(marstek_t('EINST.L_PV_SCHWELLE')) ?></label>
+        <input<?= mv_fa('pv_schwelle_kwh') ?> data-role="none" type="number" name="pv_schwelle_kwh" value="<?= mv_wert($mv_cfg['pv_schwelle_kwh']) ?>" min="1" max="200"></div>
+</div>
+<div class="sm-hilfe"><?= marstek_e(marstek_t('EINST.H_PV_HAUS')) ?></div>
 
 <button data-role="none" class="sm-btn sm-b-aktion" type="submit" style="margin-top:18px;"><?= marstek_e(marstek_t('EINST.K_SPEICHERN')) ?></button>
 </form>
@@ -1539,7 +1608,7 @@ if ($mv_gwf >= 2) { ?>
   <form action="index.php" method="post">
     <input data-role="none" type="hidden" name="formtoken" value="<?= $mv_ft ?>">
     <input data-role="none" type="hidden" name="activetab" value="tab-loxone">
-    <input data-role="none" type="hidden" name="vorlage_dev" value="1">
+    <input data-role="none" type="hidden" name="vorlage_dev" value="<?= (int) ($mv_devices ? min(array_keys($mv_devices)) : 1) ?>"><?php /* 1.1.39 (M7): der erste eingetragene Speicher, nicht fest 1 */ ?>
     <button data-role="none" class="sm-btn sm-b-technik" type="submit" name="vorlage_vo" value="1" style="min-width:200px;"><?= marstek_e(marstek_t('LOX.SATZ_STEUERN_HTTP')) ?></button>
   </form>
 </div>
@@ -1821,6 +1890,7 @@ if (function_exists('mv_test_seite')) {
     <input data-role="none" type="hidden" name="formtoken" value="<?= $mv_ft ?>">
     <input data-role="none" type="hidden" name="clearlog" value="1">
     <input data-role="none" type="hidden" name="activetab" value="tab-log">
+    <label><input data-role="none" type="checkbox" name="log_bestaetigt" value="1"> <?= marstek_e(marstek_t('LOG.BESTAETIGEN')) ?></label>
     <button data-role="none" class="sm-btn sm-b-aktion" type="submit"><?= marstek_e(marstek_t('LOG.K_LEEREN')) ?></button>
   </form>
 </div>

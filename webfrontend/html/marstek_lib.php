@@ -336,6 +336,12 @@ function marstek_vorgaben() {
         'haus_urlaub_ein'   => 0,   // V2: Urlaubsregel aus dem Kalender (haus/kalender)
         'urlaub_soc_min'    => 20,  // V2: Urlaubsfenster unten (%)
         'urlaub_soc_max'    => 80,  // V2: Urlaubsfenster oben (%)
+        'pv_haus_ein'       => 0,   // 1.1.39 E1: Netzladen der aWATTar-Kopplung aussetzen, wenn haus/pv genug erwartet
+        'pv_schwelle_kwh'   => 10,  // 1.1.39 E1: Schwelle Ertrag des kommenden Tages (kWh)
+        'fahrzeug_sperre_ein' => 0, // 1.1.39 E2: nicht entladen, solange ein E-Auto laedt (haus/fahrzeug)
+        'fahrzeug_namen'    => '',  // 1.1.39 E2: Fahrzeugnamen wie unter haus/fahrzeug/<name>/, kommagetrennt, hoechstens 4
+        'haus_abwesend_ein' => 0,   // 1.1.39 E3: lange Abwesenheit (haus/anwesenheit/jemand = 0) wie Urlaub behandeln
+        'abwesend_stunden'  => 24,  // 1.1.39 E3: Mindestdauer der Abwesenheit (Stunden)
         'haus_speicher_ein' => 0,   // V5: Speicherstand an andere Plugins geben (haus/speicher), nur mit MQTT
         'fallback_min'   => 30,     // Standard 30 min; 0 = Auto-Fallback aus
         'aktionstoken'   => '',     // schuetzt ?p= und ?mode= (unangemeldeter Endpunkt)
@@ -984,6 +990,9 @@ function marstek_wert_pruefen($schluessel, $wert)
                   // Sicherung mit urlaub_soc_max "x" ungeprueft durch.
                   'endpunkt_ein' => array(0, 1), 'haus_preis_ein' => array(0, 1), 'haus_urlaub_ein' => array(0, 1),
                   'urlaub_soc_min' => array(5, 50), 'urlaub_soc_max' => array(50, 100),
+                  'pv_haus_ein' => array(0, 1), 'pv_schwelle_kwh' => array(1, 200),   // 1.1.39 E1
+                  'fahrzeug_sperre_ein' => array(0, 1),   // 1.1.39 E2
+                  'haus_abwesend_ein' => array(0, 1), 'abwesend_stunden' => array(1, 720),   // 1.1.39 E3
                   'haus_speicher_ein' => array(0, 1));
     if (isset($ganz[$schluessel])) {
         $g = $ganz[$schluessel];
@@ -1009,6 +1018,15 @@ function marstek_wert_pruefen($schluessel, $wert)
             }
             list(, $mv_wf) = marstek_wache_liste((string) $wert);
             return $mv_wf ? sprintf(marstek_t('PRUEF.WACHE_LISTE'), implode(', ', array_slice($mv_wf, 0, 4))) : '';
+        case 'fahrzeug_namen':
+            // 1.1.39 E2: Bauart Abfahrts-Assistent 1.6.45 - der Grund nennt die Stelle, nie die Eingabe.
+            if (!is_string($wert) || strlen($wert) > 200) { return marstek_t('PRUEF.GESTALT'); }
+            $mv_fg = '';
+            if (marstek_fahrzeug_liste_pruefen($wert, $mv_fg) === null) {
+                $mv_ft = explode('|', $mv_fg);
+                return sprintf(marstek_t('PRUEF.' . $mv_ft[0]), isset($mv_ft[1]) ? $mv_ft[1] : '');
+            }
+            return '';
         case 'awattar':
             return in_array((string) $wert, array('de', 'at'), true)
                 ? '' : marstek_t('PRUEF.MARKT');
@@ -1118,7 +1136,7 @@ function marstek_sicherung_spaet()
 {
     return array('bremse_abstand_ein', 'wache_ein', 'wache_fenster_min', 'wache_lb_melden', 'wache_sperren_ein',
                  'wache_erlaubt', 'befehle_mqtt_ein', 'endpunkt_ein', 'haus_preis_ein', 'haus_urlaub_ein',
-                 'urlaub_soc_min', 'urlaub_soc_max', 'haus_speicher_ein', 'tts', 'ansage_regeln', 'ansage_haken');
+                 'urlaub_soc_min', 'urlaub_soc_max', 'haus_speicher_ein', 'pv_haus_ein', 'pv_schwelle_kwh', 'fahrzeug_sperre_ein', 'fahrzeug_namen', 'haus_abwesend_ein', 'abwesend_stunden', 'tts', 'ansage_regeln', 'ansage_haken');
 }
 
 /**
@@ -3158,6 +3176,20 @@ function marstek_set_passive($p, $t, $dev = 1, $trocken = false, $nachhol = null
             }
             $p = 0;
             $begrenzt = 1;
+        }
+    }
+    /* 1.1.39 (E2, ab Werk aus): solange ein eingetragenes E-Auto frisch "laedt" meldet und nicht "nicht zu Hause",
+     * wird ein Entladesollwert auf 0 W BEGRENZT - an derselben Stelle und auf dieselbe Weise wie das Urlaubsfenster
+     * (angenommen, nicht abgelehnt; HINWEIS=FAHRZEUG_LAEDT). Schweigt die Quelle, wird nicht begrenzt. */
+    if ($sperre === '' && $mv_urlaub === '') {
+        $mv_fz = marstek_fahrzeug_grenze($p, $cfg);
+        if ($mv_fz !== '') {
+            if (!$trocken) {
+                marstek_fahrzeug_begrenzung_merken($dev, $p, $mv_fz);
+            }
+            $p = 0;
+            $begrenzt = 1;
+            $mv_urlaub = $mv_fz;
         }
     }
     if ($trocken) {
@@ -6453,6 +6485,17 @@ function marstek_befehl_ausfuehren($art, array $par, $quelle = 'http')
             return $raus(200, 'SET;OK=0;ERR=URLAUB_NETZ;DEV=' . ($alle ? 'alle' : $dev) . "\n", '', $trocken ? array()
                 : array(array('urlaub_netz', 'p=' . $p . ' von=awattar abgelehnt - Urlaubsregel (kein Netzladen der aWATTar-Kopplung)')));
         }
+        /* 1.1.39 (E1, ab Werk aus): erwartet die PV-Prognose (haus/pv) fuer den kommenden Tag mindestens die Schwelle,
+         * nimmt das Plugin keine Ladesollwerte der aWATTar-Kopplung an - abgelehnt wie bei der Urlaubsregel (HTTP 200,
+         * nie nachgeholt). Schweigt die Quelle oder fehlt eine gueltige Prognose, gilt das bisherige Verhalten. */
+        if ((int) $p > 0 && $von === 'awattar') {
+            $mv_pv = marstek_pv_lage();
+            if ($mv_pv['lage'] === 'genug') {
+                return $raus(200, 'SET;OK=0;ERR=PV_PROGNOSE;DEV=' . ($alle ? 'alle' : $dev) . "\n", '', $trocken ? array()
+                    : array(array('pv_netz', 'p=' . $p . ' von=awattar abgelehnt - PV-Prognose ' . $mv_pv['wert'] . '='
+                    . $mv_pv['kwh'] . ' kWh, Schwelle ' . $mv_pv['schwelle'] . ' kWh (kein Netzladen der aWATTar-Kopplung)')));
+            }
+        }
         $wz = '';
         if ($alle) {
             $cfg_v = marstek_config(false);
@@ -7744,6 +7787,62 @@ function marstek_selbsttest()
     $pruefe('V2: Themenwert 1/0/-1', array(marstek_urlaub_wert('urlaub'), marstek_urlaub_wert('kein_urlaub'),
         marstek_urlaub_wert('schweigt'), marstek_urlaub_wert('aus')), array(1, 0, -1, -1));
     $pruefe('Retain JA: urlaub', marstek_mqtt_retain('urlaub'), true);
+    // 1.1.39 E3: Abwesenheit wie Urlaub (haus/anwesenheit)
+    $mv_e3c = array('haus_abwesend_ein' => 1, 'abwesend_stunden' => 24, 'haus_urlaub_ein' => 0);
+    $mv_e3j = mktime(12, 0, 0, 11, 21, 2026);
+    $mv_e3q = function ($j, $seit, $weg) {
+        $e = array('werte' => array('jemand' => $j), 'zaehler' => '3', 'seit' => $seit);
+        if ($weg !== null) { $e['weg_seit'] = $weg; }
+        return array('anwesenheit' => $e);
+    };
+    $pruefe('E3: 25 h weg', marstek_abwesend_lage($mv_e3c, $mv_e3q('0', $mv_e3j - 20, $mv_e3j - 25 * 3600), $mv_e3j)['lage'], 'abwesend');
+    $pruefe('E3: 2 h weg', marstek_abwesend_lage($mv_e3c, $mv_e3q('0', $mv_e3j - 20, $mv_e3j - 7200), $mv_e3j)['lage'], 'weg_kurz');
+    $pruefe('E3: jemand da', marstek_abwesend_lage($mv_e3c, $mv_e3q('1', $mv_e3j - 20, null), $mv_e3j)['lage'], 'da');
+    $pruefe('E3: Zaehler 121 s', marstek_abwesend_lage($mv_e3c, $mv_e3q('0', $mv_e3j - 121, $mv_e3j - 25 * 3600), $mv_e3j)['lage'], 'schweigt');
+    $pruefe('E3: Wert -', marstek_abwesend_lage($mv_e3c, $mv_e3q('-', $mv_e3j - 20, $mv_e3j - 25 * 3600), $mv_e3j)['lage'], 'schweigt');
+    $pruefe('E3: wie Urlaub', marstek_urlaub_lage($mv_e3c, $mv_e3q('0', $mv_e3j - 20, $mv_e3j - 25 * 3600), $mv_e3j), 'urlaub');
+    $pruefe('E3: Haken aus', marstek_urlaub_lage(array('haus_abwesend_ein' => 0, 'haus_urlaub_ein' => 0), $mv_e3q('0', $mv_e3j - 20, $mv_e3j - 25 * 3600), $mv_e3j), 'aus');
+    $mv_e3f = marstek_abwesend_fortschreiben($mv_e3q('0', $mv_e3j - 20, null), $mv_e3j);
+    $pruefe('E3: Beginn gesetzt', $mv_e3f['anwesenheit']['weg_seit'], $mv_e3j);
+    $mv_e3f = marstek_abwesend_fortschreiben($mv_e3q('1', $mv_e3j - 20, $mv_e3j - 999), $mv_e3j);
+    $pruefe('E3: Beginn geloescht bei 1', isset($mv_e3f['anwesenheit']['weg_seit']), false);
+    // 1.1.39 E2: Fahrzeugliste (Bauart Abfahrts-Assistent 1.6.45) und Entladesperre
+    $mv_e2g = '';
+    $pruefe('E2: Liste a, b', marstek_fahrzeug_liste_pruefen(' auto1 , zoe ', $mv_e2g), array('auto1', 'zoe'));
+    $pruefe('E2: Liste leer', marstek_fahrzeug_liste_pruefen('', $mv_e2g), array());
+    foreach (array('A' => 'FAHRZEUG_NAME|1', 'a,,b' => 'FAHRZEUG_LEER', 'a,a' => 'FAHRZEUG_DOPPELT|2',
+                   'zaehler' => 'FAHRZEUG_RESERVIERT|1', 'a,b,c,d,e' => 'MEHR_FAHRZEUGE|4') as $mv_e2s => $mv_e2w) {
+        $pruefe('E2: Liste ' . $mv_e2s . ' abgewiesen', array(marstek_fahrzeug_liste_pruefen($mv_e2s, $mv_e2g), $mv_e2g), array(null, $mv_e2w));
+    }
+    $mv_e2c = array('fahrzeug_sperre_ein' => 1, 'fahrzeug_namen' => 'auto1');
+    $mv_e2j = mktime(12, 0, 0, 11, 21, 2026);
+    $mv_e2q = function ($l, $z, $seit) {
+        return array('fahrzeug/auto1' => array('werte' => array('laedt' => $l, 'zuhause' => $z), 'zaehler' => '7', 'seit' => $seit));
+    };
+    $pruefe('E2: laedt zu Hause', marstek_fahrzeug_lage($mv_e2c, $mv_e2q('1', '1', $mv_e2j - 30), $mv_e2j)['lage'], 'laedt');
+    $pruefe('E2: laedt, zuhause -', marstek_fahrzeug_lage($mv_e2c, $mv_e2q('1', '-', $mv_e2j - 30), $mv_e2j)['lage'], 'laedt');
+    $pruefe('E2: laedt, nicht zu Hause', marstek_fahrzeug_lage($mv_e2c, $mv_e2q('1', '0', $mv_e2j - 30), $mv_e2j)['lage'], 'frei');
+    $pruefe('E2: Zaehler 121 s', marstek_fahrzeug_lage($mv_e2c, $mv_e2q('1', '1', $mv_e2j - 121), $mv_e2j)['lage'], 'schweigt');
+    $pruefe('E2: Sperre Entladen', marstek_fahrzeug_grenze(-300, $mv_e2c, array('lage' => 'laedt')), 'FAHRZEUG_LAEDT');
+    $pruefe('E2: Laden frei', marstek_fahrzeug_grenze(300, $mv_e2c, array('lage' => 'laedt')), '');
+    $pruefe('E2: Haken aus', marstek_fahrzeug_grenze(-300, array('fahrzeug_sperre_ein' => 0), array('lage' => 'laedt')), '');
+    // 1.1.39 E1: PV-Prognose (haus/pv) - Zaehler, ok, datum und der Ertrag des kommenden Tages
+    $mv_e1c = array('pv_haus_ein' => 1, 'pv_schwelle_kwh' => 10);
+    $mv_e1v = mktime(9, 0, 0, 11, 21, 2026);
+    $mv_e1n = mktime(15, 0, 0, 11, 21, 2026);
+    $mv_e1q = function ($ok, $datum, $rest, $morgen, $seit) {
+        return array('pv' => array('werte' => array('ok' => $ok, 'datum' => $datum, 'heute_rest_kwh' => $rest,
+            'morgen_kwh' => $morgen), 'zaehler' => '5', 'seit' => $seit));
+    };
+    $pruefe('E1: vormittags Rest 12,5 kWh', marstek_pv_lage($mv_e1c, $mv_e1q('1', '20261121', '12.50', '3.00', $mv_e1v - 30), $mv_e1v)['lage'], 'genug');
+    $pruefe('E1: nachmittags morgen 3 kWh', marstek_pv_lage($mv_e1c, $mv_e1q('1', '20261121', '12.50', '3.00', $mv_e1n - 30), $mv_e1n)['lage'], 'zu_wenig');
+    $pruefe('E1: Zaehler 121 s', marstek_pv_lage($mv_e1c, $mv_e1q('1', '20261121', '12.50', '3.00', $mv_e1v - 121), $mv_e1v)['lage'], 'schweigt');
+    $pruefe('E1: ok 0', marstek_pv_lage($mv_e1c, $mv_e1q('0', '20261121', '12.50', '3.00', $mv_e1v - 30), $mv_e1v)['lage'], 'ohne_prognose');
+    $pruefe('E1: datum gestern', marstek_pv_lage($mv_e1c, $mv_e1q('1', '20261120', '12.50', '3.00', $mv_e1v - 30), $mv_e1v)['lage'], 'datum');
+    $pruefe('E1: Rest -1', marstek_pv_lage($mv_e1c, $mv_e1q('1', '20261121', '-1', '3.00', $mv_e1v - 30), $mv_e1v)['lage'], 'ungueltig');
+    $pruefe('E1: Haken aus', marstek_pv_lage(array('pv_haus_ein' => 0), $mv_e1q('1', '20261121', '12.50', '3.00', $mv_e1v - 30), $mv_e1v)['lage'], 'aus');
+    $pruefe('E1: Zaehlerthema pv', marstek_haus_zaehlerthema('pv'), 'haus/pv/zaehler/weatherdata');
+    $pruefe('E1: Zaehlerthema kalender', marstek_haus_zaehlerthema('kalender'), 'haus/kalender/zaehler');
     // V5: haus/speicher aus einer Summe (probe_v5 S2/S3/S5), Themenliste beide Richtungen
     $pruefe('V5: S5 ohne Aussage', marstek_haus_speicher_werte(array('ok' => 0, 'n' => 1, 'soc' => -1, 'restkwh' => -1, 'batp' => 0)),
         array('soc' => -1, 'kwh' => -1, 'leistung' => -1, 'richtung' => -1));
@@ -8130,6 +8229,13 @@ function marstek_haus_quellen()
     return is_array($d) ? $d : array();
 }
 
+/** 1.1.39: das Lebenszeichen einer Quelle - haus/<quelle>/zaehler, fuer haus/pv das des Anbieters
+ *  (haus/pv/zaehler/weatherdata, Regeln/07). */
+function marstek_haus_zaehlerthema($q)
+{
+    return $q === 'pv' ? 'haus/pv/zaehler/weatherdata' : 'haus/' . $q . '/zaehler';
+}
+
 /** Welche Themen liest der Abnehmer je Quelle? Nur die eingeschalteten; nie morgen/..., nie ferien_in, nie Namen. */
 function marstek_haus_lesethemen(array $cfg)
 {
@@ -8137,6 +8243,19 @@ function marstek_haus_lesethemen(array $cfg)
     if (!empty($cfg['haus_preis_ein'])) {
         $aus['strompreis'] = array('haus/strompreis/vorschau', 'haus/strompreis/ab', 'haus/strompreis/raster',
                                    'haus/strompreis/anbieter', 'haus/strompreis/zaehler');
+    }
+    if (!empty($cfg['pv_haus_ein'])) {   // 1.1.39 (E1): PV-Prognose fuer die aWATTar-Kopplung
+        $aus['pv'] = array('haus/pv/datum', 'haus/pv/heute_rest_kwh', 'haus/pv/morgen_kwh', 'haus/pv/ok',
+                           'haus/pv/zaehler/weatherdata');
+    }
+    if (!empty($cfg['fahrzeug_sperre_ein'])) {   // 1.1.39 (E2): je eingetragenem Fahrzeug, hoechstens 4
+        foreach (marstek_fahrzeug_namen($cfg) as $n) {
+            $aus['fahrzeug/' . $n] = array('haus/fahrzeug/' . $n . '/laedt', 'haus/fahrzeug/' . $n . '/zuhause',
+                                           'haus/fahrzeug/' . $n . '/zaehler');
+        }
+    }
+    if (!empty($cfg['haus_abwesend_ein'])) {   // 1.1.39 (E3): lange Abwesenheit wie Urlaub
+        $aus['anwesenheit'] = array('haus/anwesenheit/jemand', 'haus/anwesenheit/zaehler');
     }
     if (!empty($cfg['haus_urlaub_ein'])) {
         $aus['kalender'] = array('haus/kalender/datum', 'haus/kalender/heute/urlaub', 'haus/kalender/zaehler');
@@ -8159,7 +8278,7 @@ function marstek_haus_merken(array $alt, array $erg, array $lesethemen, $jetzt)
         foreach ($themen as $t) {
             $k = substr($t, strlen('haus/' . $q . '/'));
             $da = array_key_exists($t, $erg['werte']);
-            if ($k === 'zaehler') {
+            if ($t === marstek_haus_zaehlerthema($q)) {   // 1.1.39: fuer haus/pv das Thema des Anbieters
                 if ($da && !empty($erg['live'][$t]) && (string) $erg['werte'][$t] !== (string) $e['zaehler']) {
                     $e['zaehler'] = (string) $erg['werte'][$t];
                     $e['seit'] = (int) $jetzt;
@@ -8204,7 +8323,8 @@ function marstek_haus_wartethemen(array $themen, array $c, $jetzt, $immer = fals
         $seit = isset($c[$q]['seit']) ? (int) $c[$q]['seit'] : 0;
         if (!$immer && $seit > 0 && $seit <= $jetzt && $jetzt - $seit <= 45) { continue; }
         if (isset($c[$q]) && marstek_haus_lange_still($c, $q, $jetzt) && !$zehnter) { continue; }
-        $warten[] = 'haus/' . $q . '/zaehler';
+        $warten[] = marstek_haus_zaehlerthema($q);
+        if ($q === 'pv') { $warten[] = 'haus/pv/ok'; }   // 1.1.39 (E1): ok kommt nie retained - mit abwarten
     }
     return $warten;
 }
@@ -8245,6 +8365,7 @@ function marstek_haus_abnehmer(array $cfg, $jetzt = null, $fenster = null)
     }
     $erg = marstek_haus_sitzung(array(), $lesen, $warten, $fenster !== null ? (float) $fenster : min(32, 55 - $sek));
     $c = marstek_haus_merken($c, $erg, $themen, time());
+    if (isset($themen['anwesenheit'])) { $c = marstek_abwesend_fortschreiben($c, time()); }   // 1.1.39 (E3)
     if ($sp) {
         $c['speicher'] = hanb_merken(marstek_haus_speicher_quelle($c), $erg, 'haus/speicher/zaehler',
             array('anbieter' => 'haus/speicher/anbieter'), time(), in_array('haus/speicher/zaehler', $warten, true));
@@ -8252,8 +8373,10 @@ function marstek_haus_abnehmer(array $cfg, $jetzt = null, $fenster = null)
         unset($c['speicher']);
     }
     $c['sitzung'] = array('zeit' => time(), 'lage' => $erg['lage'], 'gewartet' => count($warten));
-    foreach (array_keys(marstek_haus_lesethemen(array('haus_preis_ein' => 1, 'haus_urlaub_ein' => 1))) as $q) {
-        if (!isset($themen[$q])) { unset($c[$q]); }
+    /* 1.1.39: jede Lesequelle, deren Haken aus ist (auch ein ausgetragenes Fahrzeug), faellt aus der Ablage - bis
+     * 1.1.38 standen hier nur strompreis und kalender. 'sitzung' und 'speicher' sind keine Lesequellen. */
+    foreach (array_keys($c) as $q) {
+        if ($q !== 'sitzung' && $q !== 'speicher' && !isset($themen[$q])) { unset($c[$q]); }
     }
     if ($erg['lage'] !== 'ok') {
         marstek_log_if_changed('haus_abnehmer', 'Haus-Themen lesen: Sitzung am Broker gescheitert (' . $erg['lage']
@@ -8522,6 +8645,21 @@ function marstek_ranks_aus_liste($liste, $now)
  *  urlaub nur bei Zaehler binnen 120 s live gewechselt, datum = heute (Europe/Berlin) und heute/urlaub = "1". */
 function marstek_urlaub_lage($cfg = null, $c = null, $jetzt = null)
 {
+    /* 1.1.39 (E3): die Urlaubslage, wie sie wirkt - die des Kalenders (marstek_urlaub_lage_kalender(), bis 1.1.38 diese
+     * Funktion), und mit dem Haken haus_abwesend_ein auch eine lange Abwesenheit (haus/anwesenheit/jemand = 0 seit
+     * mindestens abwesend_stunden). Ohne den Haken genau die Lage des Kalenders. */
+    if ($cfg === null) { $cfg = marstek_config(false); }
+    $lage = marstek_urlaub_lage_kalender($cfg, $c, $jetzt);
+    if ($lage !== 'urlaub' && !empty($cfg['haus_abwesend_ein'])) {
+        $a = marstek_abwesend_lage($cfg, $c, $jetzt);
+        if ($a['lage'] === 'abwesend') { return 'urlaub'; }
+    }
+    return $lage;
+}
+
+/** Die Urlaubslage des Kalenders allein (bis 1.1.38 marstek_urlaub_lage()). */
+function marstek_urlaub_lage_kalender($cfg = null, $c = null, $jetzt = null)
+{
     if ($cfg === null) { $cfg = marstek_config(false); }
     if (empty($cfg['haus_urlaub_ein'])) { return 'aus'; }
     if ($c === null) { $c = marstek_haus_quellen(); }
@@ -8592,6 +8730,157 @@ function marstek_mqtt_publish_urlaub($wert)
         return;
     }
     marstek_mqtt_senden_bei_aenderung(array('urlaub' => (int) $wert), marstek_mqtt_prefix(1), 'urlaub');
+}
+
+/* ---------------- 1.1.39 (E1): PV-Prognose aus haus/pv fuer die aWATTar-Kopplung ---------------- */
+
+/**
+ * Lage der PV-Bremse (ab Werk aus, Haken pv_haus_ein): aus | schweigt | ohne_prognose | datum | ungueltig | genug |
+ * zu_wenig, dazu der verglichene Ertrag ('kwh'), welcher Wert es war ('wert') und die Schwelle. Anbieter Weatherdata
+ * (Regeln/07, haus/pv): gilt nur, solange sich haus/pv/zaehler/weatherdata binnen 120 s aendert, haus/pv/ok zuletzt 1
+ * war und haus/pv/datum heute ist (dieselben drei Fragen wie die Fensterbilanz 0.12.37). Verglichen wird der Ertrag
+ * des kommenden Tages: vor 12 Uhr der Rest von heute (heute_rest_kwh), ab 12 Uhr der morgige (morgen_kwh). -1 oder
+ * eine Nicht-Zahl heisst ohne Aussage - dann wird nicht gebremst.
+ */
+function marstek_pv_lage($cfg = null, $c = null, $jetzt = null)
+{
+    if ($cfg === null) { $cfg = marstek_config(false); }
+    $aus = array('lage' => 'aus', 'kwh' => null, 'wert' => '',
+                 'schwelle' => isset($cfg['pv_schwelle_kwh']) ? (int) $cfg['pv_schwelle_kwh'] : 10);
+    if (empty($cfg['pv_haus_ein'])) { return $aus; }
+    if ($c === null) { $c = marstek_haus_quellen(); }
+    if ($jetzt === null) { $jetzt = time(); }
+    if (!marstek_haus_frisch($c, 'pv', $jetzt)) { $aus['lage'] = 'schweigt'; return $aus; }
+    $w = (isset($c['pv']['werte']) && is_array($c['pv']['werte'])) ? $c['pv']['werte'] : array();
+    if (!isset($w['ok']) || trim((string) $w['ok']) !== '1') { $aus['lage'] = 'ohne_prognose'; return $aus; }
+    if (!isset($w['datum']) || trim((string) $w['datum']) !== date('Ymd', $jetzt)) { $aus['lage'] = 'datum'; return $aus; }
+    $aus['wert'] = ((int) date('G', $jetzt) < 12) ? 'heute_rest_kwh' : 'morgen_kwh';
+    $v = isset($w[$aus['wert']]) ? trim((string) $w[$aus['wert']]) : '';
+    if (!preg_match('/^\d{1,5}(\.\d{1,3})?\z/', $v)) { $aus['lage'] = 'ungueltig'; return $aus; }
+    $aus['kwh'] = (float) $v;
+    $aus['lage'] = $aus['kwh'] >= (float) $aus['schwelle'] ? 'genug' : 'zu_wenig';
+    return $aus;
+}
+
+/* ---------------- 1.1.39 (E2): Entladesperre, solange ein E-Auto laedt (haus/fahrzeug) ---------------- */
+
+/** Die Fahrzeugliste pruefen (Bauart Abfahrts-Assistent 1.6.45 abfahrt_reichweite_liste_pruefen()): kommagetrennt, je
+ *  Name ^[a-z0-9_-]{1,40}$, nicht zaehler oder anbieter, keiner doppelt, hoechstens 4; nur Leerraum um die Kommas faellt
+ *  weg. Rueckgabe die Namen (leer = array()) oder null mit Grund (Sprachschluessel unter PRUEF und Stelle). */
+function marstek_fahrzeug_liste_pruefen($s, &$grund = '')
+{
+    $grund = '';
+    $s = trim((string) $s);
+    if ($s === '') { return array(); }
+    $aus = array();
+    foreach (explode(',', $s) as $i => $n) {
+        $n = trim($n);
+        if ($n === '') { $grund = 'FAHRZEUG_LEER'; return null; }
+        if (!preg_match('/^[a-z0-9_-]{1,40}\z/', $n)) { $grund = 'FAHRZEUG_NAME|' . ($i + 1); return null; }
+        if ($n === 'zaehler' || $n === 'anbieter') { $grund = 'FAHRZEUG_RESERVIERT|' . ($i + 1); return null; }
+        if (in_array($n, $aus, true)) { $grund = 'FAHRZEUG_DOPPELT|' . ($i + 1); return null; }
+        $aus[] = $n;
+    }
+    if (count($aus) > 4) { $grund = 'MEHR_FAHRZEUGE|4'; return null; }
+    return $aus;
+}
+
+/** Die eingetragenen Fahrzeuge (eine ungueltige Liste gilt als leer - das Formular hat sie abgewiesen). */
+function marstek_fahrzeug_namen(array $cfg)
+{
+    $g = '';
+    $l = marstek_fahrzeug_liste_pruefen(isset($cfg['fahrzeug_namen']) && is_string($cfg['fahrzeug_namen'])
+        ? $cfg['fahrzeug_namen'] : '', $g);
+    return $l === null ? array() : $l;
+}
+
+/** Lage der Entladesperre: aus | kein_fahrzeug | laedt | frei | schweigt, dazu je Fahrzeug laedt | steht | weg |
+ *  schweigt | kein_wert. Ein Fahrzeug zaehlt nur, solange sich haus/fahrzeug/<name>/zaehler binnen 120 s aendert
+ *  (Regeln/07); es laedt, wenn laedt = 1 und zuhause nicht 0 ist (Bauart Abfahrts-Assistent: zuhause != 0). */
+function marstek_fahrzeug_lage($cfg = null, $c = null, $jetzt = null)
+{
+    if ($cfg === null) { $cfg = marstek_config(false); }
+    $aus = array('lage' => 'aus', 'fahrzeuge' => array());
+    if (empty($cfg['fahrzeug_sperre_ein'])) { return $aus; }
+    $namen = marstek_fahrzeug_namen($cfg);
+    if (!$namen) { $aus['lage'] = 'kein_fahrzeug'; return $aus; }
+    if ($c === null) { $c = marstek_haus_quellen(); }
+    if ($jetzt === null) { $jetzt = time(); }
+    $laedt = false;
+    $frisch = false;
+    foreach ($namen as $n) {
+        $q = 'fahrzeug/' . $n;
+        if (!marstek_haus_frisch($c, $q, $jetzt)) { $aus['fahrzeuge'][$n] = 'schweigt'; continue; }
+        $frisch = true;
+        $w = (isset($c[$q]['werte']) && is_array($c[$q]['werte'])) ? $c[$q]['werte'] : array();
+        $l = isset($w['laedt']) ? trim((string) $w['laedt']) : '';
+        $z = isset($w['zuhause']) ? trim((string) $w['zuhause']) : '';
+        if ($l === '1' && $z !== '0') { $aus['fahrzeuge'][$n] = 'laedt'; $laedt = true; }
+        elseif ($l === '1') { $aus['fahrzeuge'][$n] = 'weg'; }
+        elseif ($l === '0') { $aus['fahrzeuge'][$n] = 'steht'; }
+        else { $aus['fahrzeuge'][$n] = 'kein_wert'; }
+    }
+    $aus['lage'] = $laedt ? 'laedt' : ($frisch ? 'frei' : 'schweigt');
+    return $aus;
+}
+
+/** Entladesperre (E2): 'FAHRZEUG_LAEDT' fuer einen Entladesollwert, solange ein Fahrzeug laedt; sonst ''. */
+function marstek_fahrzeug_grenze($p, $cfg = null, $lage = null)
+{
+    if ((int) $p >= 0) { return ''; }
+    if ($cfg === null) { $cfg = marstek_config(false); }
+    if (empty($cfg['fahrzeug_sperre_ein'])) { return ''; }
+    if ($lage === null) { $lage = marstek_fahrzeug_lage($cfg); }
+    return $lage['lage'] === 'laedt' ? 'FAHRZEUG_LAEDT' : '';
+}
+
+/** Die letzte Begrenzung durch die Entladesperre merken (Reiter Test). */
+function marstek_fahrzeug_begrenzung_merken($dev, $p, $grund)
+{
+    marstek_write_json(marstek_tmpdir() . '/fahrzeug_letzte.json',
+        array('zeit' => time(), 'dev' => (int) $dev, 'p' => (int) $p, 'grund' => (string) $grund));
+    marstek_log_if_changed('fahrzeug_dev' . (int) $dev, 'Entladesperre: Sollwert p=' . (int) $p
+        . ' auf 0 W begrenzt (ein E-Auto laedt).', $grund);
+}
+
+/* ---------------- 1.1.39 (E3): lange Abwesenheit wie Urlaub (haus/anwesenheit) ---------------- */
+
+/** Den Beginn der Abwesenheit fortschreiben (Leser, nach marstek_haus_merken()): 'weg_seit' entsteht mit der ersten
+ *  frischen Meldung jemand = 0 und bleibt, solange sie frisch 0 bleibt; 1, '-', ein anderer Wert oder eine schweigende
+ *  Quelle (Zaehler aelter als 120 s, Regeln/07) loeschen ihn - die Zaehlung beginnt dann neu. */
+function marstek_abwesend_fortschreiben(array $c, $jetzt)
+{
+    if (!isset($c['anwesenheit']) || !is_array($c['anwesenheit'])) { return $c; }
+    $e = $c['anwesenheit'];
+    $j = isset($e['werte']['jemand']) ? trim((string) $e['werte']['jemand']) : '';
+    if (marstek_haus_frisch($c, 'anwesenheit', $jetzt) && $j === '0') {
+        if (empty($e['weg_seit']) || (int) $e['weg_seit'] > (int) $jetzt) { $e['weg_seit'] = (int) $jetzt; }
+    } else {
+        unset($e['weg_seit']);
+    }
+    $c['anwesenheit'] = $e;
+    return $c;
+}
+
+/** Lage der Abwesenheit: aus | schweigt | da | weg_kurz | abwesend, dazu 'seit' (Beginn, 0 unbekannt) und 'stunden'.
+ *  abwesend nur bei frischem Zaehler, jemand = 0 und mindestens abwesend_stunden seit dem Beginn. */
+function marstek_abwesend_lage($cfg = null, $c = null, $jetzt = null)
+{
+    if ($cfg === null) { $cfg = marstek_config(false); }
+    $aus = array('lage' => 'aus', 'seit' => 0,
+                 'stunden' => isset($cfg['abwesend_stunden']) ? (int) $cfg['abwesend_stunden'] : 24);
+    if (empty($cfg['haus_abwesend_ein'])) { return $aus; }
+    if ($c === null) { $c = marstek_haus_quellen(); }
+    if ($jetzt === null) { $jetzt = time(); }
+    if (!marstek_haus_frisch($c, 'anwesenheit', $jetzt)) { $aus['lage'] = 'schweigt'; return $aus; }
+    $j = isset($c['anwesenheit']['werte']['jemand']) ? trim((string) $c['anwesenheit']['werte']['jemand']) : '';
+    if ($j === '1') { $aus['lage'] = 'da'; return $aus; }
+    if ($j !== '0') { $aus['lage'] = 'schweigt'; return $aus; }
+    $seit = isset($c['anwesenheit']['weg_seit']) ? (int) $c['anwesenheit']['weg_seit'] : 0;
+    if ($seit <= 0 || $seit > (int) $jetzt) { $aus['lage'] = 'weg_kurz'; return $aus; }
+    $aus['seit'] = $seit;
+    $aus['lage'] = ((int) $jetzt - $seit >= $aus['stunden'] * 3600) ? 'abwesend' : 'weg_kurz';
+    return $aus;
 }
 
 /* ---------------- V5: Anbieter haus/speicher ---------------- */

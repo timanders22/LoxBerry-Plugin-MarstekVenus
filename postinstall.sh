@@ -4,6 +4,11 @@
 ARGV3=$3
 ARGV5=$5
 PFOLDER="${ARGV3:-marstekvenus}"
+# 1.1.39 (fremder Pruefer M1/M3): ein Ordnername mit "/" oder "." waere ein Pfad hinaus - dieselbe Formel wie
+# preupgrade.sh, Hausstandard in allen Hakenskripten (Fensterbilanz 0.12.37, Alexa-NG 1.0.22). Vor jedem mkdir, cp und rm.
+case "$PFOLDER" in
+    ''|.|..|*/*) echo "<FAIL> Unbrauchbarer Ordnername '$PFOLDER' - nichts angelegt, nichts zurueckgespielt."; exit 1 ;;
+esac
 BASE="${ARGV5:-$LBHOMEDIR}"
 # Die Wurzel: $5 (vom Installer) oder $LBHOMEDIR, wenn dort config/plugins
 # und data/plugins liegen - sonst vom eigenen Ablageort AUFWAERTS SUCHEN, bis
@@ -86,6 +91,21 @@ mv_hat_token() {
     # Plugin noch einmal (marstek_config()).
     [ -s "$1" ] && [ "$(cat "$1" 2>/dev/null)" != "{}" ]
 }
+# 1.1.39 (fremder Pruefer M4): die Zweitschrift kommt ueber eine Nebendatei zurueck - zs_hinlegen() wortgleich wie in
+# preupgrade.sh (0600 vor dem Inhalt, cmp, dann mv -f). Bis 1.1.38 kopierte "cp -p" direkt an den Platz; brach die
+# Kopie ab (Platte voll), lag dort eine halbe Datei.
+zs_hinlegen() {   # $1 Quelle, $2 Ziel
+    [ -d "$2" ] && return 1
+    zs_neu="$2.neu.$$"
+    rm -f "$zs_neu" 2>/dev/null
+    if { : > "$zs_neu"; } 2>/dev/null && chmod 600 "$zs_neu" 2>/dev/null \
+       && cp "$1" "$zs_neu" 2>/dev/null && cmp -s "$1" "$zs_neu" \
+       && mv -f "$zs_neu" "$2" 2>/dev/null; then
+        return 0
+    fi
+    rm -f "$zs_neu" 2>/dev/null
+    return 1
+}
 if [ "$UPGRADE" = 1 ] && mv_hat_token "$BK" && ! mv_hat_token "$CF"; then
     # Der verdraengte Stand bleibt lesbar liegen, wenn er ueberhaupt etwas
     # traegt - es kann darin stehen, was nur der Bediener wiederherstellen kann.
@@ -94,7 +114,7 @@ if [ "$UPGRADE" = 1 ] && mv_hat_token "$BK" && ! mv_hat_token "$CF"; then
         chmod 600 "$CF.kaputt" 2>/dev/null
         echo "<INFO> Der vorherige Inhalt der Konfiguration liegt unter $CF.kaputt."
     fi
-    if cp -p "$BK" "$CF"; then
+    if zs_hinlegen "$BK" "$CF"; then
         chmod 600 "$CF" 2>/dev/null
         echo "<OK> Konfiguration aus der Zweitschrift wiederhergestellt."
     else
@@ -111,7 +131,15 @@ fi
 # Datei laeuft nichts von dem, was das Plugin minuetlich tut.
 PNAME="${2:-marstekvenus}"
 CRON="$BASE/system/cron/cron.01min/$PNAME"
-if [ -d "$CRON" ]; then
+# 1.1.39 (fremder Pruefer M1): der Plugin-Name aus $2 bildet den Pfad, den rm -r trifft - dieselbe Formel wie beim
+# Ordnernamen. Ein unbrauchbarer Name laesst das Cron-Verzeichnis unangesehen (gemeldet, nicht zurechtgebogen).
+MV_PNAME_OK=1
+case "$PNAME" in
+    ''|.|..|*/*) MV_PNAME_OK=0; echo "<WARNING> Unbrauchbarer Plugin-Name '$PNAME' - das Cron-Verzeichnis wurde nicht angesehen." ;;
+esac
+if [ "$MV_PNAME_OK" = 0 ]; then
+    :
+elif [ -d "$CRON" ]; then
     if [ -f "$CRON/cron.01min" ]; then
         T="$(mktemp 2>/dev/null || echo "/tmp/marstek_cron.$$")"
         if mv "$CRON/cron.01min" "$T" && rm -r "$CRON" && mv "$T" "$CRON" && chmod 755 "$CRON"; then
