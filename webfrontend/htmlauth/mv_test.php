@@ -479,6 +479,10 @@ function mv_test_seite($ft, $plugindir, array $cfg, array $devices, $suchergebni
     // --- Gruppe 1 (1.1.25): Befehlsbruecke und Namenstabelle
     list($mv_bz_ok, $mv_bz_text) = marstek_bruecke_zustand();
     mv_pruefzeile(marstek_t('TEST.Z_BRUECKE'), $mv_bz_ok, $mv_bz_text);
+    // 1.1.41: faellt das Themen-Praefix auf einen gemeinsamen Bereich unter haus/ (Regeln/07)?
+    $mv_hb = marstek_pruef_praefix_haus($cfg);
+    mv_pruefzeile(marstek_t('HAUSBEREICH.F_TEST'),
+                  $mv_hb[0] === 1 ? true : ($mv_hb[0] === 0 ? false : null), $mv_hb[1]);
     list($mv_bp_ok, $mv_bp_text) = mv_bruecke_pruefen();
     mv_pruefzeile(marstek_t('TEST.Z_BRUECKE_PRUEFEN'), $mv_bp_ok, $mv_bp_text);
     list($mv_vm_ok, $mv_vm_text) = mv_namenstabelle_pruefen();

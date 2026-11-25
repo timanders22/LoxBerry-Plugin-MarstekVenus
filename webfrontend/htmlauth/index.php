@@ -513,6 +513,11 @@ if ($mv_post && isset($_POST['verlauf_csv'])) {
  * haus/speicher/anbieter = marstekvenus; der bisherige Anbieter hoert selbst auf, wenn er die Regel kennt (Zendure
  * SolarFlow ab 0.9.38) - sonst sagt die Meldung, wo der Haken auszuschalten ist. */
 /* 1.1.30: Sprachansagen, eigenes Formular, eigene Datei. Die Testansage spricht immer. */
+/* 1.1.41: Testmeldung an SignalBot (Knopf unter den Sprachansagen) - wie die Testansage darunter. */
+if ($mv_post && isset($_POST['meld_test'])) {
+    list($mv_at, $mv_ag) = marstek_meld_test();
+    mv_weiter('tab-settings', $mv_at ? array('meldung' => marstek_t('SIGNALMELDUNG.T_OK')) : array('fehler' => $mv_ag));
+}
 if ($mv_post && isset($_POST['ansage_test'])) {
     list($mv_at, $mv_ag) = marstek_ansage_test();
     mv_weiter('tab-settings', $mv_at ? array('meldung' => marstek_t('ANSAGEPLUGIN.M_TEST_OK')) : array('fehler' => marstek_t('ANSAGEPLUGIN.M_TEST_FEHL') . ' ' . $mv_ag));
@@ -543,6 +548,13 @@ if ($mv_post && isset($_POST['mqtt_save'])) {
     $mv_alt_cfg = $mv_lauf_cfg;   // Gruppe 22 (M3): Vergleich in marstek_nach_konfigwechsel()
     $topic = (isset($_POST['mqtt_topic']) && is_string($_POST['mqtt_topic'])) ? trim($_POST['mqtt_topic']) : '';
     $mv_g = marstek_wert_pruefen('mqtt_topic', $topic);
+    /* 1.1.41 (Entscheidung des Hausherrn 23.11.2026 "Nur gemeinsame Bereiche", Regeln/07): kein Praefix auf einem
+     * gemeinsamen Bereich unter haus/ - nur hier und beim Zurueckspielen, nicht in der Pruefung beim Lesen der
+     * Konfiguration: ein schon gespeichertes bleibt in Betrieb, der Reiter Test meldet es. */
+    if ($mv_g === '' && hb_bereich($topic) !== '' && $topic !== (string) $mv_lauf_cfg['mqtt_topic']) {   // nur NEUE Eingaben: ein schon gespeichertes Praefix sperrt das Speichern
+        // des Reiters nicht (Regeln/07; Bauart Einspeisebremse 0.9.25)
+        $mv_g = sprintf(marstek_t('HAUSBEREICH.SICH_W'), hb_bereich($topic));
+    }
     if ($mv_g !== '') {
         // X-2: das eingetippte Praefix und der Schalter kommen zurueck ins Formular.
         mv_weiter('tab-mqtt', array('fehler' => sprintf(marstek_t('MELD.PRAEFIX_UNGUELTIG'), $topic, $mv_g),
